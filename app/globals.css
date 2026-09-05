@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+:root {
+  --color-bg-primary: #0a0e1a;
+  --color-bg-secondary: #0f1729;
+  --color-surface: #141d33;
+  --color-surface-glass: rgba(20, 29, 51, 0.7);
+  --color-primary: #3b82f6;
+  --color-primary-light: #60a5fa;
+  --color-primary-glow: rgba(59, 130, 246, 0.5);
+  --color-secondary: #a855f7;
+  --color-text-primary: #e8edf9;
+  --color-text-secondary: #8b9bc4;
+  --color-border: rgba(59, 130, 246, 0.25);
+  --gradient-main: linear-gradient(135deg, #0a0e1a 0%, #142240 50%, #1e3a8a 100%);
+  --gradient-accent: linear-gradient(135deg, #3b82f6 0%, #a855f7 100%);
+  --glow-shadow: 0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15);
+  --font-heading: var(--font-orbitron);
+  --font-body: var(--font-inter);
+  --radius-card: 1rem;
+  --radius-button: 0.75rem;
+  --border-width: 1px;
+  --letter-spacing: 0.02em;
+}
+
+body {
+  font-family: var(--font-body);
+  letter-spacing: var(--letter-spacing);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-heading);
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: var(--glow-shadow);
+  }
+  50% {
+    box-shadow: 0 0 30px var(--color-primary-glow), 0 0 60px var(--color-primary-glow);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.theme-pulse {
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+.theme-shimmer-border {
+  position: relative;
+}
+
+.theme-shimmer-border::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: var(--border-width);
+  background: var(--gradient-accent);
+  background-size: 200% 100%;
+  animation: shimmer 3s linear infinite;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
