@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { auth } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import ThemeSwitcher from "../components/ThemeSwitcher";
+import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
 
@@ -60,22 +61,39 @@ export default function SettingsPage() {
           </div>
         </header>
 
-        <main className="p-6">
-          <h2
-            className="text-base font-semibold mb-1"
-            style={{ color: theme.colors.textPrimary }}
-          >
-            Choose Your Theme
-          </h2>
-          <p
-            className="text-sm mb-5"
-            style={{ color: theme.colors.textSecondary }}
-          >
-            Pick the look that fits your shop's vibe. Changes apply instantly across
-            the whole app.
-          </p>
+        <main className="p-6 space-y-10 max-w-2xl">
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Choose Your Theme
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Pick the look that fits your shop's vibe. Changes apply instantly across
+              the whole app.
+            </p>
+            <ThemeSwitcher />
+          </section>
 
-          <ThemeSwitcher />
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Graph Style
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Choose how your Dashboard trend chart is drawn.
+            </p>
+            <GraphStyleSwitcher />
+          </section>
         </main>
       </div>
     </div>

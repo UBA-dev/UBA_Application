@@ -32,26 +32,28 @@ function applyThemeToDOM(theme) {
 }
 export function ThemeProvider({ children }) {
   const [themeId, setThemeId] = useState(defaultThemeId);
+  const [graphStyle, setGraphStyle] = useState("line");
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) {
+        if (!user) {
         applyThemeToDOM(getTheme(defaultThemeId));
         setLoaded(true);
         return;
       }
       const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
-      const savedTheme = tenantSnap.exists() ? tenantSnap.data().theme : null;
-      const theme = getTheme(savedTheme || defaultThemeId);
+      const tenantData = tenantSnap.exists() ? tenantSnap.data() : null;
+      const theme = getTheme(tenantData?.theme || defaultThemeId);
       setThemeId(theme.id);
+      setGraphStyle(tenantData?.graphStyle || "line");
       applyThemeToDOM(theme);
       setLoaded(true);
     });
     return () => unsubscribe();
   }, []);
 
-  const changeTheme = async (newThemeId) => {
+    const changeTheme = async (newThemeId) => {
     const theme = getTheme(newThemeId);
     setThemeId(theme.id);
     applyThemeToDOM(theme);
@@ -62,8 +64,16 @@ export function ThemeProvider({ children }) {
     }
   };
 
+  const changeGraphStyle = async (newStyle) => {
+    setGraphStyle(newStyle);
+    const user = auth.currentUser;
+    if (user) {
+      await updateDoc(doc(db, "tenants", user.uid), { graphStyle: newStyle });
+    }
+  };
+
   return (
-    <ThemeContext.Provider value={{ themeId, changeTheme, loaded }}>
+    <ThemeContext.Provider value={{ themeId, changeTheme, graphStyle, changeGraphStyle, loaded }}>
       {children}
     </ThemeContext.Provider>
   );
