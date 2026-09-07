@@ -10,6 +10,10 @@ export async function POST(req: NextRequest) {
       lowStockItems,
       categoryBreakdown,
       repairMetrics,
+      currentMonth,
+      marginAnalysis,
+      commonIssues,
+      periodSeries,
     } = await req.json();
 
     const apiKey = process.env.GEMINI_API_KEY;
@@ -17,9 +21,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Server not configured" }, { status: 500 });
     }
 
-    const prompt = `You are a professional but plain-spoken business analyst for a small electronics repair/retail shop owner in the Philippines. The owner is busy and not an accountant — they want direct, specific, short advice, not a long explanation.
+        const prompt = `You are a professional but plain-spoken business analyst for a small electronics repair/retail shop owner in the Philippines. The owner is busy and not an accountant — they want direct, specific, short advice, not a long explanation.
 
-Time range: ${rangeLabel}
+Current month: ${currentMonth}
+(Consider Philippine seasonal patterns if relevant — e.g. back-to-school demand around June, holiday shopping peak around October-December, lean months typically January-February.)
+
+Time range being analyzed: ${rangeLabel}
+
+Day-by-day / period-by-period breakdown (spot patterns like a specific weekday or date that's consistently weak or strong):
+${JSON.stringify(periodSeries)}
 
 Performance vs previous equivalent period:
 ${JSON.stringify(comparison)}
@@ -36,8 +46,14 @@ ${JSON.stringify(lowStockItems)}
 Revenue by category this period:
 ${JSON.stringify(categoryBreakdown)}
 
+Items with a LOW profit margin (name + current margin %) — may need a price adjustment:
+${JSON.stringify(marginAnalysis)}
+
 Repair ticket activity this period (this shop also does device repairs, not just retail):
 ${JSON.stringify(repairMetrics)}
+
+Recurring repair issues reported by customers more than once (possible signal to stock specific parts):
+${JSON.stringify(commonIssues)}
 
 Respond with ONLY this exact JSON shape, no markdown, no extra text:
 
@@ -51,10 +67,11 @@ Respond with ONLY this exact JSON shape, no markdown, no extra text:
 }
 
 Rules:
-- "summary": ONE short sentence stating whether the business is trending up or down and by roughly how much, weighing both retail sales AND repair activity if relevant. No fluff.
-- "tasks": Give 2 to 4 SHORT, SPECIFIC, actionable tasks — under 15 words each. Pull from ALL the data given: inventory, sales, AND repair tickets. Reference actual item names, device names, or numbers (e.g. "Restock RAM — only 2 left and selling fast", "3 repair tickets pending over 5 days — follow up with customers", "Bundle SSD-256 — no sales in 30 days"). Assign "priority": "high" for urgent/time-sensitive items (overdue tickets, critical low stock), "medium" for important but not urgent, "low" for nice-to-have. Never give vague advice like "improve marketing" — always tie it to a real item, ticket, or number from the data. If there isn't enough data for 4 tasks, give fewer rather than inventing generic advice.
-- "suggestedGoal": A realistic, slightly challenging revenue or profit target for next month based on the current trend (retail + repair labor combined), e.g. current revenue + 10-15% if growing, or a modest recovery target if declining. "label" should be short like "Sales Target Next Month". "value" should be a peso amount like "₱145,000".
+- "summary": ONE short sentence stating whether the business is trending up or down and by roughly how much, weighing both retail sales AND repair activity if relevant. Mention the seasonal context only if it's genuinely relevant to explain the trend. No fluff.
+- "tasks": Give AT MOST 5 tasks total, and ONLY the highest-impact ones. Draw from ALL the data provided — stock issues, pricing/margin issues, recurring repair patterns, weekday/date patterns, and seasonal timing are all fair game, not just sales totals. Under 15 words each. Reference actual item names, device names, issues, or numbers. Assign "priority": "high" for urgent/time-sensitive items, "medium" for important but not urgent. Skip "low" priority items entirely. Never give vague advice. If there's truly only 1-2 high-value issues, give just those instead of padding to 5.
+- "suggestedGoal": A realistic, slightly challenging revenue or profit target for next month based on the current trend AND seasonal context (retail + repair labor combined). "label" should be short like "Sales Target Next Month". "value" should be a peso amount like "₱145,000".
 - Keep everything short. The owner should be able to read this in 10 seconds.`;
+
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,

@@ -822,7 +822,7 @@ export default function InventoryPage() {
 
         setScanDocumentType("spreadsheet_import");
         setScanRows(
-          rows.map((it) => ({
+          rows.map((it: any) => ({
             selected: true,
             name: it.name || "",
             description: it.description || "",
@@ -1105,8 +1105,8 @@ export default function InventoryPage() {
                         className="align-top"
                         style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
                       >
-                        <td className="px-4 py-3">
-  <div className="flex items-start gap-2">
+                                                <td className="px-4 py-3">
+                          <div className="flex items-start gap-2">
     <button
   type="button"
   onClick={(e) => {
@@ -1140,6 +1140,14 @@ export default function InventoryPage() {
     </div>
   </div>
 </td>
+                        <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
+                          {item.category}
+                          {item.subCategory && (
+                            <span className="block text-xs" style={{ color: "var(--color-primary-light)" }}>
+                              {item.subCategory}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <span
                             className="px-2 py-1 rounded-full text-xs font-medium"

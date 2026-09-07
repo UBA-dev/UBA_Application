@@ -39,11 +39,22 @@ type Tenant = {
   businessType: string;
   theme: string;
   subscriptionStatus: string;
+  aiAnalyticsEnabled?: boolean;
+  lastInsight?: AIInsight;
+  lastInsightAt?: string;
+  lastInsightRange?: string;
 };
-
 type SaleRecord = { id: string; itemName: string; total: number; profit: number; quantity: number; date: string };
 type ExpenseRecord = { id: string; amount: number; date: string };
-type InventoryItemLite = { id: string; name: string; category: string; stock: number; threshold: number };
+type InventoryItemLite = {
+  id: string;
+  name: string;
+  category: string;
+  stock: number;
+  threshold: number;
+  unitCost: number;
+  sellingPrice: number;
+};
 type RepairTicketLite = {
   id: string;
   deviceInfo: string;
@@ -257,61 +268,109 @@ export default function DashboardPage() {
     };
   }, [ticketsInRange, repairTickets]);
 
+    // Items with a thin profit margin — a real analyst would flag these for a price review
+  const marginAnalysis = useMemo(() => {
+    return items
+      .filter((i) => i.sellingPrice > 0 && i.unitCost > 0)
+      .map((i) => ({
+        name: i.name,
+        marginPct: Math.round(((i.sellingPrice - i.unitCost) / i.sellingPrice) * 100),
+      }))
+      .filter((i) => i.marginPct < 15)
+      .sort((a, b) => a.marginPct - b.marginPct)
+      .slice(0, 5);
+  }, [items]);
+
+  // Repair issues reported more than once — a signal to pre-stock the relevant parts
+  const commonIssues = useMemo(() => {
+    const map = new Map<string, number>();
+    ticketsInRange.forEach((t) => {
+      const key = (t.issueDescription || "").trim().toLowerCase();
+      if (!key) return;
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    return Array.from(map.entries())
+      .filter(([, count]) => count > 1)
+      .map(([issue, count]) => ({ issue, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+  }, [ticketsInRange]);
+
   const hasEnoughData = sales.length > 0 || expenses.length > 0 || repairTickets.length > 0;
 
+    // Load the cached insight (if any) when the tenant doc arrives — no API call here
   useEffect(() => {
-    if (!hasEnoughData || !uid) return;
+    if (tenant?.lastInsight) {
+      setInsight(tenant.lastInsight);
+    }
+  }, [tenant]);
 
-    const fetchInsight = async () => {
-      setLoadingInsight(true);
-      setInsightError("");
-      try {
+  const runAnalysis = async () => {
+    if (!uid) return;
+    setLoadingInsight(true);
+    setInsightError("");
+    try {
         const res = await fetch("/api/analyze-business", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            rangeLabel: RANGE_LABELS[range],
-            comparison,
-            topSellingItems,
-            slowMovingItems,
-            lowStockItems,
-            categoryBreakdown,
-            repairMetrics,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setInsightError(data.error || "Couldn't generate an insight right now.");
-          return;
-        }
-        setInsight(data);
-
-        // Persist new tasks to Firestore — skip ones that already exist (by text match)
-        if (Array.isArray(data.tasks)) {
-          const existingTexts = new Set(aiTasksRef.current.map((t) => t.text.trim().toLowerCase()));
-          for (const t of data.tasks) {
-            const norm = (t.text || "").trim().toLowerCase();
-            if (!norm || existingTexts.has(norm)) continue;
-            await addDoc(collection(db, "tenants", uid, "aiTasks"), {
-              text: t.text,
-              priority: t.priority || "medium",
-              completed: false,
-              createdAt: new Date().toISOString(),
-            });
-            existingTexts.add(norm);
-          }
-        }
-      } catch (err) {
-        console.error(err);
-        setInsightError("Couldn't generate an insight right now.");
-      } finally {
-        setLoadingInsight(false);
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rangeLabel: (RANGE_LABELS as Record<string, string>)[range],
+          comparison,
+          topSellingItems,
+          slowMovingItems,
+          lowStockItems,
+          categoryBreakdown,
+          repairMetrics,
+          currentMonth: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+          marginAnalysis,
+          commonIssues,
+          periodSeries: series,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setInsightError(data.error || "Couldn't generate an insight right now.");
+        return;
       }
-    };
+      setInsight(data);
 
-    fetchInsight();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, sales.length, expenses.length, items.length, repairTickets.length, uid]);
+      // Cache the result on the tenant doc so we don't need to re-call the API
+      // just to display the same insight again later.
+      await updateDoc(doc(db, "tenants", uid), {
+        lastInsight: data,
+        lastInsightAt: new Date().toISOString(),
+        lastInsightRange: range,
+      });
+
+      // Persist new tasks — skip ones that already exist (by text match)
+      if (Array.isArray(data.tasks)) {
+        const existingTexts = new Set(aiTasksRef.current.map((t) => t.text.trim().toLowerCase()));
+        for (const t of data.tasks) {
+          const norm = (t.text || "").trim().toLowerCase();
+          if (!norm || existingTexts.has(norm)) continue;
+          await addDoc(collection(db, "tenants", uid, "aiTasks"), {
+            text: t.text,
+            priority: t.priority || "medium",
+            completed: false,
+            createdAt: new Date().toISOString(),
+          });
+          existingTexts.add(norm);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setInsightError("Couldn't generate an insight right now.");
+    } finally {
+      setLoadingInsight(false);
+    }
+  };
+
+  const handleToggleAiAnalytics = async () => {
+    if (!uid || !tenant) return;
+    const newValue = !tenant.aiAnalyticsEnabled;
+    await updateDoc(doc(db, "tenants", uid), { aiAnalyticsEnabled: newValue });
+    setTenant({ ...tenant, aiAnalyticsEnabled: newValue });
+  };
 
   const handleToggleTask = async (task: AITask) => {
     if (!uid) return;
@@ -438,7 +497,7 @@ export default function DashboardPage() {
               {/* Trend chart */}
               <div className="p-4 mb-6" style={cardStyle}>
                 <p className="text-sm font-semibold mb-3" style={{ color: "var(--color-text-primary)" }}>
-                  {RANGE_LABELS[range]}
+                  {(RANGE_LABELS as Record<string, string>)[range]}
                 </p>
                 <ResponsiveContainer width="100%" height={280}>
   {graphStyle === "bar" ? (
@@ -453,7 +512,7 @@ export default function DashboardPage() {
           borderRadius: "8px",
           color: "var(--color-text-primary)",
         }}
-        formatter={(value: number) => `₱${value.toLocaleString()}`}
+        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
       />
       <Legend wrapperStyle={{ fontSize: 12 }} />
       <Bar dataKey="revenue" name="Revenue" fill="var(--color-primary-light)" radius={[4, 4, 0, 0]} />
@@ -472,7 +531,7 @@ export default function DashboardPage() {
           borderRadius: "8px",
           color: "var(--color-text-primary)",
         }}
-        formatter={(value: number) => `₱${value.toLocaleString()}`}
+        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
       />
       <Legend wrapperStyle={{ fontSize: 12 }} />
       <Area type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" fill="var(--color-primary-light)" fillOpacity={0.25} strokeWidth={2} />
@@ -491,7 +550,7 @@ export default function DashboardPage() {
           borderRadius: "8px",
           color: "var(--color-text-primary)",
         }}
-        formatter={(value: number) => `₱${value.toLocaleString()}`}
+        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
       />
       <Legend wrapperStyle={{ fontSize: 12 }} />
       <Line type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" strokeWidth={2} dot={false} />
@@ -502,13 +561,57 @@ export default function DashboardPage() {
 </ResponsiveContainer>
               </div>
 
-              {/* AI Business Analyst — short, specific, actionable */}
+                            {/* AI Business Analyst — toggleable, manual-trigger, cached */}
               <div className="p-5 mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
-                <p className="text-sm font-semibold mb-3" style={{ color: "var(--color-primary-light)" }}>
-                  🤖 Your AI Business Analyst
-                </p>
+                <div className="flex justify-between items-center mb-3">
+                  <p className="text-sm font-semibold" style={{ color: "var(--color-primary-light)" }}>
+                    🤖 Your AI Business Analyst
+                  </p>
+                  <button
+                    onClick={handleToggleAiAnalytics}
+                    className="text-xs font-medium px-3 py-1 rounded-full transition"
+                    style={{
+                      background: tenant.aiAnalyticsEnabled ? "rgba(34, 197, 94, 0.15)" : "var(--color-bg-secondary)",
+                      color: tenant.aiAnalyticsEnabled ? "#4ade80" : "var(--color-text-secondary)",
+                    }}
+                  >
+                    {tenant.aiAnalyticsEnabled ? "● Enabled" : "○ Disabled"}
+                  </button>
+                </div>
 
-                {loadingInsight ? (
+                {!tenant.aiAnalyticsEnabled ? (
+                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                    AI Analytics is off. Turn it on above to get insights and priority tasks — you control when it runs, so it won't use extra AI usage automatically.
+                  </p>
+                ) : (
+                  <>
+                    <button
+                      onClick={runAnalysis}
+                      disabled={loadingInsight}
+                      className="w-full font-semibold py-2 mb-4 text-sm disabled:opacity-50 hover:opacity-90"
+                      style={{
+                        background: "var(--gradient-accent)",
+                        color: "#fff",
+                        borderRadius: "var(--radius-button)",
+                      }}
+                    >
+                      {loadingInsight
+                        ? "Analyzing..."
+                        : insight
+                        ? "🔄 Re-analyze My Business"
+                        : "🔍 Analyze My Business"}
+                    </button>
+
+                    {tenant.lastInsightAt && (
+                      <p className="text-xs mb-3" style={{ color: "var(--color-text-secondary)" }}>
+                        Last analyzed: {new Date(tenant.lastInsightAt).toLocaleString()}
+                        {tenant.lastInsightRange && ` · ${(RANGE_LABELS as Record<string, string>)[tenant.lastInsightRange] || tenant.lastInsightRange}`}
+                      </p>
+                    )}
+                  </>
+                )}
+
+                {tenant.aiAnalyticsEnabled && loadingInsight ? (
                   <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
                     Analyzing your shop's data...
                   </p>
@@ -536,8 +639,8 @@ export default function DashboardPage() {
                   </>
                 ) : null}
 
-                {/* Persistent, checkable task list */}
-                {activeTasks.length > 0 && (
+                {/* Persistent, checkable task list — shown regardless of toggle, since these are already saved */}
+                {tenant.aiAnalyticsEnabled && activeTasks.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
                       Action items

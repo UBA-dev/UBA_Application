@@ -39,16 +39,37 @@ export async function POST(req: NextRequest) {
     // --- OPTIMIZATION 2: I-trim ang businessContext, huwag ipadala nang buo ---
     // Sample lang - i-adjust base sa actual shape ng businessContext mo.
     // Layunin: kunin lang yung summary/relevant fields, hindi buong raw arrays.
-    const trimmedContext = businessContext
-      ? {
-          totalItems: businessContext.inventory?.length ?? 0,
-          lowStockItems: businessContext.inventory
-            ?.filter((i: any) => i.stock <= (i.threshold ?? 0))
-            ?.map((i: any) => ({ name: i.name, stock: i.stock })) ?? [],
-          recentSalesSummary: businessContext.salesSummary ?? null,
-          // idagdag lang dito ang fields na TALAGANG ginagamit ng assistant sa pagsagot
-        }
-      : {};
+        const inventory = businessContext?.inventory || [];
+    const recentSales = businessContext?.recentSales || [];
+    const recentRepairTickets = businessContext?.recentRepairTickets || [];
+
+    const lowStockItems = inventory
+      .filter((i: any) => i.stock <= (i.threshold ?? 0))
+      .map((i: any) => ({ name: i.name, stock: i.stock }));
+
+    const recentSalesRevenue = recentSales.reduce((sum: number, s: any) => sum + (s.total || 0), 0);
+
+    const repairStatusCounts = recentRepairTickets.reduce((acc: Record<string, number>, t: any) => {
+      acc[t.status] = (acc[t.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    const trimmedContext = {
+      businessName: businessContext?.businessName || "",
+      totalInventoryItems: inventory.length,
+      lowStockItems,
+      // Compact sample of the inventory — enough for the assistant to answer
+      // "how much is X" or "what's my stock of Y" without sending everything raw
+      inventorySample: inventory.slice(0, 40).map((i: any) => ({
+        name: i.name,
+        category: i.category,
+        stock: i.stock,
+        price: i.sellingPrice,
+      })),
+      recentSalesCount: recentSales.length,
+      recentSalesRevenue,
+      recentRepairTicketStatusCounts: repairStatusCounts,
+    };
 
     const systemInstruction = `You are "UBA Assistant" — a personal business assistant built into UBA (a shop management app), speaking directly to the shop owner.
 
@@ -61,11 +82,13 @@ SCOPE — you may ONLY help with things related to running THIS owner's business
 
 If the owner asks something with NO connection to running their business (trivia, history, celebrities, unrelated general knowledge, etc.), politely decline in ONE short sentence and redirect back to how you can help with their shop. Do not answer the off-topic question even partially.
 
+IMPORTANT — search tool usage: Even when the Google Search tool is available to you, ONLY use it to look up things directly relevant to THIS shop's business — computer/electronics parts, accessories, repair tools, or supplies they might stock or need for repairs. If a message mentions buying/pricing something with NO connection to a computer/electronics repair-retail shop (e.g. pet food, groceries, clothing, unrelated services), do NOT search — immediately apply the off-topic decline rule above instead.
+
 STYLE — this is critical:
-- Business owners are busy and do not want to read a lot. Keep every reply SHORT — a few sentences at most, or a short list if genuinely needed. Never write long paragraphs.
-- Be direct and specific. No filler, no "I hope this helps," no over-explaining.
-- Match the owner's language/tone (Tagalog, English, or Taglish — mirror however they write to you).
-- When recommending suppliers/shops/prices from search, name specific real options with rough prices if found, not vague generalities.
+- Write in professional, natural English by default. If the owner writes to you in another language (Tagalog, Taglish, or anything else), respond fluently in that same language instead — you understand and can respond in any language the owner uses, mirroring them naturally.
+- Be concise but complete: a few clear sentences or a short list is usually right. Don't pad with filler ("I hope this helps," "Great question!") — but don't over-compress either. If a question genuinely needs a bit more detail to be useful (e.g. a specific number, a short explanation, or a few options), include it. The goal is a reply a busy owner can read in a few seconds AND actually act on, not the shortest possible reply.
+- Be direct and specific. No vague generalities.
+- When recommending suppliers/shops/prices from search, name specific real options with rough prices if found.
 
 THIS SHOP'S CURRENT DATA SUMMARY (use this to answer questions about their own business — do not invent numbers not present here):
 ${JSON.stringify(trimmedContext)}`;
@@ -87,11 +110,14 @@ ${JSON.stringify(trimmedContext)}`;
     // --- OPTIMIZATION 4: I-on lang ang google_search kung kailangan talaga ---
     const useSearch = needsWebSearch(message);
 
-    const requestBody: any = {
+        const requestBody: any = {
       system_instruction: { parts: [{ text: systemInstruction }] },
       contents,
-      generationConfig: {
-        maxOutputTokens: 300, // takda para hindi sumobra ang sagot
+            generationConfig: {
+        // Newer Gemini models spend part of this budget on internal "thinking"
+        // before writing the visible reply, so this needs real headroom —
+        // a low number here was cutting off the actual answer.
+        maxOutputTokens: 1024,
       },
     };
 

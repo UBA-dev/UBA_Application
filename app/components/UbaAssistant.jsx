@@ -72,10 +72,10 @@ export default function UbaAssistant() {
     setOpen(true);
     if (!contextLoaded) await loadBusinessContext();
     if (messages.length === 0) {
-      setMessages([
+            setMessages([
         {
           role: "assistant",
-          content: "Hi! Ako si UBA Assistant. Tanong lang tungkol sa shop mo — inventory, sales, repair tickets, o kahit saan pwede bumili ng parts.",
+          content: "Hi, I'm UBA Assistant. Ask me anything about your shop — inventory, sales, repair tickets, or where to source parts.",
         },
       ]);
     }
@@ -200,7 +200,7 @@ export default function UbaAssistant() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Tanong mo tungkol sa shop mo..."
+                            placeholder="Ask about your shop..."
               className="flex-1 px-3 py-2 text-sm"
               style={{
                 background: "var(--color-bg-secondary)",

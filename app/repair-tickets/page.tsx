@@ -9,6 +9,7 @@ import {
   query,
   orderBy,
   doc,
+  getDoc,
   updateDoc,
   deleteDoc,
   increment,
@@ -31,7 +32,7 @@ type PartUsed = {
   unitCost: number;
 };
 
-type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Claimed" | "Cancelled";
+type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
 
 type RepairTicket = {
   id: string;
@@ -44,17 +45,24 @@ type RepairTicket = {
   laborPayment: number;
   createdAt: string;
   updatedAt: string;
+  salesRecorded?: boolean;
 };
 
-const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Claimed"];
+const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Paid"];
 
 const STATUS_COLORS: Record<Status, { bg: string; text: string }> = {
   Pending: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
   "In Progress": { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa" },
   "Ready for Pickup": { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc" },
-  Claimed: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
+  Paid: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
   Cancelled: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
 };
+
+// Fallback color so an unexpected/missing status value never crashes the UI
+const DEFAULT_STATUS_COLOR = { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" };
+
+const getStatusColors = (status: Status | undefined) =>
+  (status && STATUS_COLORS[status]) || DEFAULT_STATUS_COLOR;
 
 const inputStyle: React.CSSProperties = {
   background: "var(--color-bg-secondary)",
@@ -90,9 +98,9 @@ export default function RepairTicketsPage() {
   const [savingTicket, setSavingTicket] = useState(false);
 
   const [detail, setDetail] = useState<RepairTicket | null>(null);
-  const [partPickerCategory, setPartPickerCategory] = useState("All");
   const [laborInput, setLaborInput] = useState("");
   const [savingLabor, setSavingLabor] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
@@ -126,7 +134,6 @@ export default function RepairTicketsPage() {
     return () => unsubscribe();
   }, [router]);
 
-  // Keep the detail panel's data fresh as Firestore updates come in
   useEffect(() => {
     if (!detail) return;
     const fresh = tickets.find((t) => t.id === detail.id);
@@ -146,11 +153,6 @@ export default function RepairTicketsPage() {
       );
     });
   }, [tickets, statusFilter, searchText]);
-
-  const partPickerCategoryList = ["All"]; // parts picker just lists all items, kept simple
-  const partPickerItems = items;
-
-  // ---- Create ticket ----
 
   const resetNewForm = () => {
     setCustomerName("");
@@ -175,6 +177,7 @@ export default function RepairTicketsPage() {
         laborPayment: 0,
         createdAt: now,
         updatedAt: now,
+        salesRecorded: false,
       });
       resetNewForm();
       setShowNewForm(false);
@@ -185,34 +188,103 @@ export default function RepairTicketsPage() {
     }
   };
 
-  // ---- Ticket detail actions ----
+  // Safely adjust an inventory item's stock. Checks that the document still
+  // exists before calling updateDoc, since parts referenced by older repair
+  // tickets can point to inventory items that were later deleted. Returns
+  // true if the stock was actually adjusted, false if the item no longer
+  // exists (so callers can warn the user instead of crashing).
+  const safeAdjustStock = async (
+    uidParam: string,
+    itemId: string,
+    delta: number
+  ): Promise<boolean> => {
+    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      console.warn(`Inventory item ${itemId} no longer exists — skipping stock update.`);
+      return false;
+    }
+    await updateDoc(ref, { stock: increment(delta) });
+    return true;
+  };
 
   const openDetail = (ticket: RepairTicket) => {
     setDetail(ticket);
     setLaborInput(String(ticket.laborPayment || 0));
-    setPartPickerCategory("All");
+  };
+
+  const partsCostOf = (ticket: RepairTicket) =>
+    ticket.partsUsed.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
+
+  const totalCostOf = (ticket: RepairTicket) => partsCostOf(ticket) + (ticket.laborPayment || 0);
+
+  // Records the ticket as a sale. Called automatically the moment a ticket is
+  // marked "Paid". Guarded by salesRecorded so it can never double-post,
+  // even if the button is clicked more than once or the write is retried.
+  const recordTicketAsSale = async (uidParam: string, ticket: RepairTicket) => {
+    const partsCost = partsCostOf(ticket);
+    const totalCharge = partsCost + (ticket.laborPayment || 0);
+
+    await addDoc(collection(db, "tenants", uidParam, "sales"), {
+      itemName: `Repair: ${ticket.deviceInfo} (${ticket.customerName})`,
+      quantity: 1,
+      price: totalCharge,
+      total: totalCharge,
+      profit: ticket.laborPayment || 0,
+      serialNumberUsed: null,
+      date: new Date().toISOString(),
+      source: "repairTicket",
+      repairTicketId: ticket.id,
+    });
   };
 
   const handleChangeStatus = async (ticket: RepairTicket, newStatus: Status) => {
-    if (!uid) return;
+    if (!uid || changingStatus) return;
+    setChangingStatus(true);
 
-    // Cancelling a ticket restocks any parts that were already assigned to it
-    if (newStatus === "Cancelled" && ticket.partsUsed.length > 0) {
-      const confirmed = window.confirm(
-        "Cancelling this ticket will return all assigned parts back to inventory stock. Continue?"
-      );
-      if (!confirmed) return;
-      for (const part of ticket.partsUsed) {
-        await updateDoc(doc(db, "tenants", uid, "inventory", part.itemId), {
-          stock: increment(part.quantity),
-        });
+    try {
+      // Returning parts to stock when a ticket is cancelled
+      if (newStatus === "Cancelled" && ticket.partsUsed.length > 0) {
+        const confirmed = window.confirm(
+          "Cancelling this ticket will return all assigned parts back to inventory stock. Continue?"
+        );
+        if (!confirmed) {
+          setChangingStatus(false);
+          return;
+        }
+        const missingParts: string[] = [];
+        for (const part of ticket.partsUsed) {
+          const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
+          if (!ok) missingParts.push(part.itemName);
+        }
+        if (missingParts.length > 0) {
+          window.alert(
+            `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
+              missingParts.length > 1 ? "them" : "it"
+            }.`
+          );
+        }
       }
-    }
 
-    await updateDoc(doc(db, "tenants", uid, "repairTickets", ticket.id), {
-      status: newStatus,
-      updatedAt: new Date().toISOString(),
-    });
+      // Auto-list sa Sales sa sandaling naging "Paid" ang ticket.
+      // salesRecorded guard = kahit ilang beses ma-trigger ito, minsan lang
+      // talaga siya makakapasok sa sales collection.
+      const shouldRecordSale = newStatus === "Paid" && !ticket.salesRecorded;
+      if (shouldRecordSale) {
+        await recordTicketAsSale(uid, ticket);
+      }
+
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", ticket.id), {
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+        ...(shouldRecordSale ? { salesRecorded: true } : {}),
+      });
+    } catch (err) {
+      console.error("Failed to change ticket status:", err);
+      window.alert("May problema sa pag-update ng ticket. Subukan ulit.");
+    } finally {
+      setChangingStatus(false);
+    }
   };
 
   const handleAddPart = async (item: InventoryItem) => {
@@ -226,13 +298,21 @@ export default function RepairTicketsPage() {
         )
       : [...detail.partsUsed, { itemId: item.id, itemName: item.name, quantity: 1, unitCost: item.unitCost || 0 }];
 
-    await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-      partsUsed: updatedParts,
-      updatedAt: new Date().toISOString(),
-    });
-    await updateDoc(doc(db, "tenants", uid, "inventory", item.id), {
-      stock: increment(-1),
-    });
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        partsUsed: updatedParts,
+        updatedAt: new Date().toISOString(),
+      });
+      const ok = await safeAdjustStock(uid, item.id, -1);
+      if (!ok) {
+        window.alert(
+          `"${item.name}" was removed from inventory just now, so stock could not be reduced. Please refresh.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to add part:", err);
+      window.alert("May problema sa pagdagdag ng part. Subukan ulit.");
+    }
   };
 
   const handleRemovePart = async (part: PartUsed) => {
@@ -245,13 +325,21 @@ export default function RepairTicketsPage() {
             p.itemId === part.itemId ? { ...p, quantity: p.quantity - 1 } : p
           );
 
-    await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-      partsUsed: updatedParts,
-      updatedAt: new Date().toISOString(),
-    });
-    await updateDoc(doc(db, "tenants", uid, "inventory", part.itemId), {
-      stock: increment(1),
-    });
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        partsUsed: updatedParts,
+        updatedAt: new Date().toISOString(),
+      });
+      const ok = await safeAdjustStock(uid, part.itemId, 1);
+      if (!ok) {
+        window.alert(
+          `"${part.itemName}" no longer exists in inventory, so stock was not restored.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to remove part:", err);
+      window.alert("May problema sa pagtanggal ng part. Subukan ulit.");
+    }
   };
 
   const handleSaveLabor = async () => {
@@ -274,21 +362,30 @@ export default function RepairTicketsPage() {
     );
     if (!confirmed) return;
 
-    // Restock any assigned parts before deleting, so inventory stays accurate
-    for (const part of ticket.partsUsed) {
-      await updateDoc(doc(db, "tenants", uid, "inventory", part.itemId), {
-        stock: increment(part.quantity),
-      });
-    }
+    try {
+      const missingParts: string[] = [];
+      for (const part of ticket.partsUsed) {
+        const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
+        if (!ok) missingParts.push(part.itemName);
+      }
 
-    await deleteDoc(doc(db, "tenants", uid, "repairTickets", ticket.id));
-    setDetail(null);
+      await deleteDoc(doc(db, "tenants", uid, "repairTickets", ticket.id));
+      setDetail(null);
+
+      if (missingParts.length > 0) {
+        window.alert(
+          `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
+            missingParts.length > 1 ? "them" : "it"
+          }.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to delete ticket:", err);
+      window.alert("May problema sa pagbura ng ticket. Subukan ulit.");
+    }
   };
 
-  const partsCostOf = (ticket: RepairTicket) =>
-    ticket.partsUsed.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
-
-  const totalCostOf = (ticket: RepairTicket) => partsCostOf(ticket) + (ticket.laborPayment || 0);
+  const isLocked = (status: Status) => status === "Cancelled" || status === "Paid";
 
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
@@ -362,7 +459,7 @@ export default function RepairTicketsPage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredTickets.map((ticket) => {
-              const colors = STATUS_COLORS[ticket.status];
+              const colors = getStatusColors(ticket.status);
               return (
                 <button
                   key={ticket.id}
@@ -378,7 +475,7 @@ export default function RepairTicketsPage() {
                       className="text-xs font-medium px-2 py-1 rounded-full"
                       style={{ background: colors.bg, color: colors.text }}
                     >
-                      {ticket.status}
+                      {ticket.status || "Unknown"}
                     </span>
                   </div>
                   <p className="text-sm mb-1" style={{ color: "var(--color-text-secondary)" }}>
@@ -389,7 +486,7 @@ export default function RepairTicketsPage() {
                   </p>
                   <div className="flex justify-between items-center text-xs">
                     <span style={{ color: "var(--color-text-secondary)" }}>
-                      {ticket.partsUsed.length} part(s)
+                      {ticket.partsUsed?.length || 0} part(s)
                     </span>
                     <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>
                       ₱{totalCostOf(ticket).toLocaleString()}
@@ -528,6 +625,11 @@ export default function RepairTicketsPage() {
               {/* Status flow */}
               <div className="mb-6">
                 <p className="text-sm font-medium mb-2" style={labelStyle}>Status</p>
+                {detail.status === "Paid" && detail.salesRecorded && (
+                <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
+                 ✓ Recorded in Sales
+                </p>
+                )}
                 <div className="flex flex-wrap gap-2">
                   {STATUS_FLOW.map((s) => {
                     const isActive = detail.status === s;
@@ -536,7 +638,7 @@ export default function RepairTicketsPage() {
                       <button
                         key={s}
                         onClick={() => handleChangeStatus(detail, s)}
-                        disabled={detail.status === "Cancelled"}
+                        disabled={isLocked(detail.status) || changingStatus}
                         className="px-3 py-1.5 rounded-full text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed"
                         style={{
                           background: isActive ? colors.bg : "var(--color-bg-secondary)",
@@ -544,14 +646,15 @@ export default function RepairTicketsPage() {
                           boxShadow: isActive ? `0 0 12px ${colors.bg}` : "none",
                         }}
                       >
-                        {s}
+                        {s === "Paid" ? "Mark as Paid" : s}
                       </button>
                     );
                   })}
-                  {detail.status !== "Cancelled" && detail.status !== "Claimed" && (
+                  {!isLocked(detail.status) && (
                     <button
                       onClick={() => handleChangeStatus(detail, "Cancelled")}
-                      className="px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80"
+                      disabled={changingStatus}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80 disabled:opacity-40"
                       style={{ background: STATUS_COLORS.Cancelled.bg, color: STATUS_COLORS.Cancelled.text }}
                     >
                       Cancel Ticket
@@ -579,7 +682,7 @@ export default function RepairTicketsPage() {
                           </span>
                           <button
                             onClick={() => handleRemovePart(p)}
-                            disabled={detail.status === "Cancelled" || detail.status === "Claimed"}
+                            disabled={isLocked(detail.status)}
                             className="w-6 h-6 rounded-full font-bold disabled:opacity-30"
                             style={{ background: "var(--color-surface)", color: "#f87171" }}
                           >
@@ -591,7 +694,7 @@ export default function RepairTicketsPage() {
                   </div>
                 )}
 
-                {detail.status !== "Cancelled" && detail.status !== "Claimed" && (
+                {!isLocked(detail.status) && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
                     {items.length === 0 ? (
                       <p className="col-span-full text-sm py-3 text-center" style={{ color: "var(--color-text-secondary)" }}>
@@ -632,13 +735,13 @@ export default function RepairTicketsPage() {
                     type="number"
                     value={laborInput}
                     onChange={(e) => setLaborInput(e.target.value)}
-                    disabled={detail.status === "Cancelled"}
+                    disabled={isLocked(detail.status)}
                     className="flex-1 px-3 py-2 disabled:opacity-50"
                     style={inputStyle}
                   />
                   <button
                     onClick={handleSaveLabor}
-                    disabled={savingLabor || detail.status === "Cancelled"}
+                    disabled={savingLabor || isLocked(detail.status)}
                     className="px-4 py-2 text-sm font-semibold disabled:opacity-50 hover:opacity-90"
                     style={{
                       background: "var(--color-primary)",
