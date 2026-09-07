@@ -15,7 +15,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  const handleLogin = async (e: React.FormEvent) => {
+    const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
@@ -23,6 +23,12 @@ export default function LoginPage() {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
+
+      await user.reload();
+      if (!auth.currentUser?.emailVerified) {
+        router.push("/verify-email");
+        return;
+      }
 
       const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
 

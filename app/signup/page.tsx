@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 import { auth } from "../lib/firebase";
 
 const BOOT_LINES = [
@@ -75,13 +75,14 @@ export default function SignUpPage() {
     setPhase("form");
   };
 
-  const handleSignUp = async (e: React.FormEvent) => {
+    const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
-      router.push("/onboarding");
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await sendEmailVerification(cred.user);
+      router.push("/verify-email");
     } catch (err: any) {
       setError(err.message);
     } finally {

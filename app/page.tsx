@@ -12,12 +12,16 @@ export default function RootPage() {
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (!user) {
-        // Not logged in at all
         router.push("/login");
         return;
       }
 
-      // Logged in — check if onboarding is already done
+      await user.reload();
+      if (!auth.currentUser?.emailVerified) {
+        router.push("/verify-email");
+        return;
+      }
+
       const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
 
       if (tenantDoc.exists()) {
