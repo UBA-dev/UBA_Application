@@ -9,6 +9,7 @@ import {
   query,
   orderBy,
   doc,
+  getDoc,
   updateDoc,
   deleteDoc,
   increment,
@@ -32,7 +33,8 @@ type InventoryItem = {
   supplierLink: string;
   serialNumbers: string[];
   photoUrl?: string | null;
-  barcode?: string | null;
+  lowStockAlertSent?: boolean;
+  barcode?: string;
 };
 
 type BundleComponent = {
@@ -242,7 +244,8 @@ function fieldHighlightStyle(fieldName: string, row: ScannedItemRow): React.CSSP
 export default function InventoryPage() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [bundles, setBundles] = useState<Bundle[]>([]);
-  const [uid, setUid] = useState<string | null>(null);
+    const [uid, setUid] = useState<string | null>(null);
+  const [businessName, setBusinessName] = useState("");
   const router = useRouter();
 
   const [searchText, setSearchText] = useState("");
@@ -301,18 +304,28 @@ export default function InventoryPage() {
   const [bulkMessage, setBulkMessage] = useState("");
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    let unsubInv = () => {};
+    let unsubBundles = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubInv();
+      unsubBundles();
+
       if (!user) {
         router.push("/login");
         return;
       }
       setUid(user.uid);
 
+      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+      });
+
       const invQuery = query(
         collection(db, "tenants", user.uid, "inventory"),
         orderBy("name")
       );
-      const unsubInv = onSnapshot(invQuery, (snapshot) => {
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(
           snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]
         );
@@ -322,29 +335,63 @@ export default function InventoryPage() {
         collection(db, "tenants", user.uid, "bundles"),
         orderBy("name")
       );
-      const unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
+      unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
         setBundles(
           snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]
         );
       });
-
-      return () => {
-        unsubInv();
-        unsubBundles();
-      };
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      unsubInv();
+      unsubBundles();
+    };
   }, [router]);
 
+  
+  // ---- Low stock email alert ----
+  // Fires once per item when it crosses at/below its threshold; resets when restocked
   useEffect(() => {
-    if (bundlePriceEdited) return;
-    const total = bundleComponents.reduce((sum, c) => {
-      const item = items.find((i) => i.id === c.itemId);
-      return sum + (item ? item.sellingPrice * c.quantity : 0);
-    }, 0);
-    setBundlePrice(String(total));
-  }, [bundleComponents, items, bundlePriceEdited]);
+    if (!uid || items.length === 0) return;
+
+    const newlyLow = items.filter((i) => i.stock <= i.threshold && !i.lowStockAlertSent);
+    const restocked = items.filter((i) => i.stock > i.threshold && i.lowStockAlertSent);
+
+    restocked.forEach((i) => {
+      updateDoc(doc(db, "tenants", uid, "inventory", i.id), { lowStockAlertSent: false }).catch(
+        console.error
+      );
+    });
+
+    if (newlyLow.length === 0) return;
+
+    const sendAlert = async () => {
+      const ownerEmail = auth.currentUser?.email;
+      if (!ownerEmail) return;
+      try {
+        const res = await fetch("/api/send-low-stock-alert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerEmail,
+            businessName,
+            items: newlyLow.map((i) => ({ name: i.name, stock: i.stock, threshold: i.threshold })),
+          }),
+        });
+        if (res.ok) {
+          for (const i of newlyLow) {
+            await updateDoc(doc(db, "tenants", uid, "inventory", i.id), { lowStockAlertSent: true });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to send low stock alert:", err);
+      }
+    };
+
+    sendAlert();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, uid]);
 
   // ---- Filters ----
 

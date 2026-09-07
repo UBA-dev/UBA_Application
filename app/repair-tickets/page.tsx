@@ -101,37 +101,47 @@ export default function RepairTicketsPage() {
   const [laborInput, setLaborInput] = useState("");
   const [savingLabor, setSavingLabor] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
+  const [businessName, setBusinessName] = useState('');
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    let unsubTickets = () => {};
+    let unsubInv = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubTickets();
+      unsubInv();
+
       if (!user) {
         router.push("/login");
         return;
       }
       setUid(user.uid);
 
+      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+      });
+
       const ticketQuery = query(
         collection(db, "tenants", user.uid, "repairTickets"),
         orderBy("createdAt", "desc")
       );
-      const unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
+      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
         setTickets(
           snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicket[]
         );
       });
 
       const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      const unsubInv = onSnapshot(invQuery, (snapshot) => {
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
       });
-
-      return () => {
-        unsubTickets();
-        unsubInv();
-      };
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      unsubTickets();
+      unsubInv();
+    };
   }, [router]);
 
   useEffect(() => {

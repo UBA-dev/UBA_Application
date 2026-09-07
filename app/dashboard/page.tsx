@@ -117,8 +117,20 @@ export default function DashboardPage() {
   const router = useRouter();
   const { graphStyle } = useTheme();
 
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+    useEffect(() => {
+    let unsubSales = () => {};
+    let unsubExpenses = () => {};
+    let unsubInv = () => {};
+    let unsubTickets = () => {};
+    let unsubTasks = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
+      unsubSales();
+      unsubExpenses();
+      unsubInv();
+      unsubTickets();
+      unsubTasks();
+
       if (!user) {
         router.push("/login");
         return;
@@ -134,17 +146,17 @@ export default function DashboardPage() {
       setLoading(false);
 
       const salesQuery = query(collection(db, "tenants", user.uid, "sales"), orderBy("date", "desc"));
-      const unsubSales = onSnapshot(salesQuery, (snapshot) => {
+      unsubSales = onSnapshot(salesQuery, (snapshot) => {
         setSales(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as SaleRecord[]);
       });
 
       const expenseQuery = query(collection(db, "tenants", user.uid, "expenses"), orderBy("date", "desc"));
-      const unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
+      unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
         setExpenses(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as ExpenseRecord[]);
       });
 
       const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      const unsubInv = onSnapshot(invQuery, (snapshot) => {
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItemLite[]);
       });
 
@@ -152,26 +164,26 @@ export default function DashboardPage() {
         collection(db, "tenants", user.uid, "repairTickets"),
         orderBy("createdAt", "desc")
       );
-      const unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
+      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
         setRepairTickets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicketLite[]);
       });
 
       const taskQuery = query(collection(db, "tenants", user.uid, "aiTasks"), orderBy("createdAt", "desc"));
-      const unsubTasks = onSnapshot(taskQuery, (snapshot) => {
+      unsubTasks = onSnapshot(taskQuery, (snapshot) => {
         const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as AITask[];
         setAiTasks(list);
         aiTasksRef.current = list;
       });
-
-      return () => {
-        unsubSales();
-        unsubExpenses();
-        unsubInv();
-        unsubTickets();
-        unsubTasks();
-      };
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribeAuth();
+      unsubSales();
+      unsubExpenses();
+      unsubInv();
+      unsubTickets();
+      unsubTasks();
+    };
   }, [router]);
 
   const { series, start, end } = useMemo(() => buildTrendSeries(sales, expenses, range), [sales, expenses, range]);
