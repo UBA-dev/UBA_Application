@@ -69,7 +69,13 @@ export default function PosPage() {
   const [receiptChange, setReceiptChange] = useState(0);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    let unsubInv = () => {};
+    let unsubBundles = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubInv();
+      unsubBundles();
+
       if (!user) {
         router.push("/login");
         return;
@@ -77,21 +83,21 @@ export default function PosPage() {
       setUid(user.uid);
 
       const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      const unsubInv = onSnapshot(invQuery, (snapshot) => {
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
       });
 
       const bundleQuery = query(collection(db, "tenants", user.uid, "bundles"), orderBy("name"));
-      const unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
+      unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
         setBundles(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]);
       });
-
-      return () => {
-        unsubInv();
-        unsubBundles();
-      };
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribeAuth();
+      unsubInv();
+      unsubBundles();
+    };
   }, [router]);
 
   const categories = useMemo(() => {

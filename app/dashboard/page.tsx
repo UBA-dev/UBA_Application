@@ -18,6 +18,7 @@ import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
+import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import {
   ResponsiveContainer,
   LineChart,
@@ -309,6 +310,7 @@ export default function DashboardPage() {
   }, [ticketsInRange]);
 
   const hasEnoughData = sales.length > 0 || expenses.length > 0 || repairTickets.length > 0;
+  const aiAccess = useMemo(() => getAiAccess(tenant), [tenant]);
 
     // Load the cached insight (if any) when the tenant doc arrives — no API call here
   useEffect(() => {
@@ -318,7 +320,7 @@ export default function DashboardPage() {
   }, [tenant]);
 
   const runAnalysis = async () => {
-    if (!uid) return;
+    if (!uid || !aiAccess.allowed) return;
     setLoadingInsight(true);
     setInsightError("");
     try {
@@ -591,7 +593,12 @@ export default function DashboardPage() {
                   </button>
                 </div>
 
-                {!tenant.aiAnalyticsEnabled ? (
+                
+                {!aiAccess.allowed ? (
+                  <p className="text-sm p-3 rounded-lg" style={{ color: "#facc15", background: "rgba(250, 204, 21, 0.1)" }}>
+                    {AI_LOCKED_MESSAGE}
+                  </p>
+                ) : !tenant.aiAnalyticsEnabled ? (
                   <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
                     AI Analytics is off. Turn it on above to get insights and priority tasks — you control when it runs, so it won't use extra AI usage automatically.
                   </p>

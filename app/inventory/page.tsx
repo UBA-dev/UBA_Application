@@ -17,6 +17,7 @@ import {
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
+import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 
 
 type InventoryItem = {
@@ -244,9 +245,12 @@ function fieldHighlightStyle(fieldName: string, row: ScannedItemRow): React.CSSP
 export default function InventoryPage() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [bundles, setBundles] = useState<Bundle[]>([]);
-    const [uid, setUid] = useState<string | null>(null);
+  const [uid, setUid] = useState<string | null>(null);
   const [businessName, setBusinessName] = useState("");
+  const [tenantData, setTenantData] = useState<any>(null);
   const router = useRouter();
+
+  const aiAccess = useMemo(() => getAiAccess(tenantData), [tenantData]);
 
   const [searchText, setSearchText] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
@@ -318,9 +322,12 @@ export default function InventoryPage() {
       setUid(user.uid);
 
       getDoc(doc(db, "tenants", user.uid)).then((snap) => {
-        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          setTenantData(data);
+        }
       });
-
       const invQuery = query(
         collection(db, "tenants", user.uid, "inventory"),
         orderBy("name")
@@ -353,7 +360,7 @@ export default function InventoryPage() {
   // ---- Low stock email alert ----
   // Fires once per item when it crosses at/below its threshold; resets when restocked
   useEffect(() => {
-    if (!uid || items.length === 0) return;
+    if (!uid || items.length === 0 || !aiAccess.allowed) return;
 
     const newlyLow = items.filter((i) => i.stock <= i.threshold && !i.lowStockAlertSent);
     const restocked = items.filter((i) => i.stock > i.threshold && i.lowStockAlertSent);
@@ -853,6 +860,13 @@ export default function InventoryPage() {
     setScanError("");
 
     const kind = detectFileKind(scanFile);
+    const needsAi = kind === "image" || kind === "docx" || kind === "pdf";
+
+    if (needsAi && !aiAccess.allowed) {
+      setScanError(AI_LOCKED_MESSAGE);
+      setScanning(false);
+      return;
+    }
 
     try {
       if (kind === "image") {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 
@@ -14,6 +14,7 @@ const navItems: { href: string; label: string; icon: string; disabled?: boolean 
   { href: "/sales", label: "Sales & Expenses", icon: "💰" },
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
+  { href: "/admin", label: "Admin", icon: "👑" },
 ];
 
 interface LowStockItem {
@@ -65,10 +66,13 @@ function resizeImageToBase64(file: File, maxSize = 160): Promise<string> {
   });
 }
 
+const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
+
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [editingName, setEditingName] = useState(false);
@@ -85,6 +89,7 @@ export default function Sidebar() {
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (!user) return;
+      setIsAdmin(user.uid === ADMIN_UID);
       const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
       if (tenantSnap.exists()) {
         const data = tenantSnap.data();
@@ -96,22 +101,54 @@ export default function Sidebar() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch low stock reorder notifications
+  // Fetch low stock reorder notifications directly from Firestore (tenant-scoped)
   useEffect(() => {
-    async function fetchNotifications() {
-      try {
-        const res = await fetch("/api/generate-notification");
-        const data = await res.json();
-        if (data.hasNotification) {
-          setNotification(data);
-        }
-      } catch (err) {
-        console.error("Failed to check stock notifications:", err);
-      }
-    }
+    let unsubInv = () => {};
 
-    fetchNotifications();
-  }, [pathname]);
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubInv();
+
+      if (!user) {
+        setNotification(null);
+        return;
+      }
+
+      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
+        const lowStockItems: LowStockItem[] = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as any))
+          .filter((i) => (i.stock ?? 0) <= (i.threshold ?? 0))
+          .map((i) => ({
+            id: i.id,
+            name: i.name,
+            stock: i.stock ?? 0,
+            minStock: i.threshold ?? 0,
+            suggestedOrder: Math.max((i.threshold ?? 0) * 2 - (i.stock ?? 0), i.threshold || 1),
+            supplier: i.supplierName?.trim() || "N/A",
+          }));
+
+        if (lowStockItems.length === 0) {
+          setNotification(null);
+          return;
+        }
+
+        setNotification({
+          hasNotification: true,
+          count: lowStockItems.length,
+          title: "⚠️ Low Stock Alert",
+          message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
+            .map((i) => i.name)
+            .join(", ")}.`,
+          items: lowStockItems,
+        });
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubInv();
+    };
+  }, []);
 
   const saveBusinessName = async () => {
     const user = auth.currentUser;
@@ -340,6 +377,17 @@ export default function Sidebar() {
             );
           })}
         </nav>
+
+        {isAdmin && (
+          <Link
+            href="/admin"
+            className="flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 mb-1"
+            style={{ color: "#a855f7" }}
+          >
+            <span>🛡️</span>
+            {!collapsed && <span>Admin</span>}
+          </Link>
+        )}
 
         {/* Logout Button */}
         <button

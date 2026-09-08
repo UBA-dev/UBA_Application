@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { collection, doc, getDoc, getDocs, query, orderBy, limit } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 
 export default function UbaAssistant() {
   const [uid, setUid] = useState(null);
+  const [aiAccess, setAiAccess] = useState({ allowed: true });
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -15,8 +17,12 @@ export default function UbaAssistant() {
   const scrollRef = useRef(null);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
       setUid(user ? user.uid : null);
+      if (user) {
+        const snap = await getDoc(doc(db, "tenants", user.uid));
+        if (snap.exists()) setAiAccess(getAiAccess(snap.data()));
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -84,6 +90,16 @@ export default function UbaAssistant() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || sending) return;
+
+    if (!aiAccess.allowed) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: text },
+        { role: "assistant", content: AI_LOCKED_MESSAGE },
+      ]);
+      setInput("");
+      return;
+    }
 
     const newMessages = [...messages, { role: "user", content: text }];
     setMessages(newMessages);
@@ -200,7 +216,7 @@ export default function UbaAssistant() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-                            placeholder="Ask about your shop..."
+                            placeholder={aiAccess.allowed ? "Ask about your shop..." : "AI trial ended — still readable"}
               className="flex-1 px-3 py-2 text-sm"
               style={{
                 background: "var(--color-bg-secondary)",

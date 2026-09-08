@@ -1,61 +1,68 @@
-import { NextResponse } from "next/server";
-import { db } from "@/app/lib/firebase";
-import { collection, getDocs } from "firebase/firestore";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function POST(req: NextRequest) {
   try {
-    const querySnapshot = await getDocs(collection(db, "inventory"));
-    const lowStockItems: {
-      id: string;
-      name: string;
-      stock: number;
-      minStock: number;
-      suggestedOrder: number;
-      supplier: string;
-    }[] = [];
+    const { customerName, deviceInfo, totalCost, businessName } = await req.json();
 
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      const stock = Number(data.stock ?? data.quantity ?? 0);
-      const minStock = Number(data.minStock ?? data.minQuantity ?? 5);
-
-      if (stock <= minStock) {
-        lowStockItems.push({
-          id: doc.id,
-          name: data.name || data.itemName || "Unnamed Item",
-          stock,
-          minStock,
-          suggestedOrder: Math.max(minStock * 2 - stock, 10),
-          supplier: data.supplier || "N/A",
-        });
-      }
-    });
-
-    if (lowStockItems.length === 0) {
-      return NextResponse.json({
-        hasNotification: false,
-        count: 0,
-        message: "All inventory stocks are healthy.",
-        items: [],
-      });
+    if (!customerName || !deviceInfo) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const itemNames = lowStockItems.map((i) => i.name).join(", ");
-    const notification = {
-      hasNotification: true,
-      title: "⚠️ Low Stock Alert",
-      count: lowStockItems.length,
-      message: `${lowStockItems.length} item(s) need reordering immediately: ${itemNames}.`,
-      items: lowStockItems,
-      createdAt: new Date().toISOString(),
-    };
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+    }
 
-    return NextResponse.json(notification);
-  } catch (error) {
-    console.error("Error generating notification:", error);
-    return NextResponse.json(
-      { error: "Failed to generate notification" },
-      { status: 500 }
+    const prompt = `Write a short, friendly SMS/text message in Taglish (mix of Tagalog and English, casual but polite) from a repair shop to a customer, letting them know their device is ready for pickup.
+
+Details:
+- Customer name: ${customerName}
+- Device: ${deviceInfo}
+- Total amount due: ₱${Number(totalCost).toLocaleString()}
+- Shop name: ${businessName || "the shop"}
+
+Rules:
+- Keep it under 3 sentences, SMS-length (this will be sent via text message).
+- Mention the customer's name, the device, and the amount due.
+- Sound warm and professional, like a small local shop owner — not robotic.
+- Do NOT include a greeting like "Dear" or a formal closing/signature.
+- Respond with ONLY the message text, nothing else — no quotes, no labels, no markdown.`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+        }),
+      }
     );
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("Gemini API error:", errText);
+      return NextResponse.json({ error: "Couldn't draft a message" }, { status: 502 });
+    }
+
+    const data = await response.json();
+
+    // Filter thinking-only parts (no text), keep only actual message text
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const message = parts
+      .filter((p: any) => typeof p.text === "string")
+      .map((p: any) => p.text)
+      .join("")
+      .trim();
+
+    if (!message) {
+      console.error("Unexpected Gemini response shape:", JSON.stringify(data));
+      return NextResponse.json({ error: "No message generated" }, { status: 502 });
+    }
+
+    return NextResponse.json({ message });
+  } catch (err) {
+    console.error("generate-notification error:", err);
+    return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }
 }

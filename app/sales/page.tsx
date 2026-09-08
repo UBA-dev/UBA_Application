@@ -118,7 +118,13 @@ export default function SalesExpensesPage() {
   const [savingExpense, setSavingExpense] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    let unsubSales = () => {};
+    let unsubExpenses = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubSales();
+      unsubExpenses();
+
       if (!user) {
         router.push("/login");
         return;
@@ -129,7 +135,7 @@ export default function SalesExpensesPage() {
         collection(db, "tenants", user.uid, "sales"),
         orderBy("date", "desc")
       );
-      const unsubSales = onSnapshot(salesQuery, (snapshot) => {
+      unsubSales = onSnapshot(salesQuery, (snapshot) => {
         setSales(
           snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as SaleRecord[]
         );
@@ -139,19 +145,18 @@ export default function SalesExpensesPage() {
         collection(db, "tenants", user.uid, "expenses"),
         orderBy("date", "desc")
       );
-      const unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
+      unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
         setExpenses(
           snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as ExpenseRecord[]
         );
       });
-
-      return () => {
-        unsubSales();
-        unsubExpenses();
-      };
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      unsubSales();
+      unsubExpenses();
+    };
   }, [router]);
 
   const reference = useMemo(() => new Date(refDate + "T00:00:00"), [refDate]);
