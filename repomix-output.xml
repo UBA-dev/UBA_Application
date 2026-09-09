@@ -118,309 +118,6 @@ tsconfig.json
 <files>
 This section contains the contents of the repository's files.
 
-<file path="app/lib/usageLimits.js">
-// Soft, client-enforced monthly usage caps per tenant for AI-powered features.
-// Tracks counts in Firestore (tenants/{uid}/usage/{YYYY-MM}), protected by the
-// same tenant-scoped security rules as everything else — a tenant can only
-// read/write their OWN usage doc. This is not attacker-proof (a determined
-// user could bypass it client-side), but it catches accidental overuse/bugs,
-// which is the real risk during the manual pilot phase.
-
-import { doc, getDoc, setDoc, increment } from "firebase/firestore";
-import { db } from "./firebase";
-
-export const MONTHLY_LIMITS = {
-  scanCount: 100, // Universal Scanner (photo/PDF/Word)
-  chatCount: 150, // UBA Assistant messages
-  analysisCount: 60, // Dashboard "Analyze My Business"
-  notificationCount: 100, // AI-drafted customer notifications
-};
-
-export const LIMIT_LABELS = {
-  scanCount: "AI scans",
-  chatCount: "assistant messages",
-  analysisCount: "business analyses",
-  notificationCount: "customer notifications",
-};
-
-function currentMonthKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
-
-// Checks whether the tenant still has room for one more call of `feature`
-// this month. If allowed, increments the count. Returns { allowed, count, limit }.
-export async function checkAndIncrementUsage(uid, feature) {
-  const limit = MONTHLY_LIMITS[feature];
-  const usageRef = doc(db, "tenants", uid, "usage", currentMonthKey());
-
-  const snap = await getDoc(usageRef);
-  const currentCount = snap.exists() ? snap.data()[feature] || 0 : 0;
-
-  if (currentCount >= limit) {
-    return { allowed: false, count: currentCount, limit };
-  }
-
-  await setDoc(usageRef, { [feature]: increment(1) }, { merge: true });
-  return { allowed: true, count: currentCount + 1, limit };
-}
-
-export function usageLimitMessage(feature, limit) {
-  return `You've used all ${limit} ${LIMIT_LABELS[feature]} for this month. This resets on the 1st — contact your UBA provider if you need a higher limit.`;
-}
-</file>
-
-<file path="app/privacy/page.tsx">
-"use client";
-
-import Link from "next/link";
-
-export default function PrivacyPage() {
-  return (
-    <div className="min-h-screen bg-white text-gray-800 px-6 py-12">
-      <div className="max-w-2xl mx-auto">
-        <Link href="/" className="text-sm text-blue-600 hover:underline">
-          ← Back to UBA
-        </Link>
-
-        <h1 className="text-2xl font-bold mt-4 mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-500 mb-8">Last updated: September 2026</p>
-
-        <div className="space-y-6 text-sm leading-relaxed">
-          <section>
-            <h2 className="font-semibold text-base mb-1">1. What We Collect</h2>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>Account information: your email address and business name.</li>
-              <li>
-                Business data you enter: inventory items, sales records, expenses, and repair
-                ticket details.
-              </li>
-              <li>
-                Customer information you choose to record through Repair Tickets: customer name
-                and contact number, used solely to help you manage repairs and notify customers.
-              </li>
-              <li>
-                Photos or documents you upload to the Scanner feature, processed to extract
-                inventory information.
-              </li>
-            </ul>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">2. How We Use It</h2>
-            <p>
-              Your data is used solely to operate UBA for your business — displaying your
-              inventory, generating reports, processing sales, and powering optional AI features
-              you choose to use. We do not sell your data or share it with other businesses using
-              UBA.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">3. Third-Party Services</h2>
-            <p>UBA relies on the following third-party services to operate:</p>
-            <ul className="list-disc pl-5 space-y-1 mt-1">
-              <li>
-                <strong>Google Firebase</strong> — stores your account and business data.
-              </li>
-              <li>
-                <strong>Google Gemini API</strong> — processes data you submit to AI features
-                (Scanner, Business Analyst, Assistant) to generate results.
-              </li>
-              <li>
-                <strong>Resend</strong> — sends automated low-stock email alerts to your
-                registered email.
-              </li>
-            </ul>
-            <p className="mt-2">
-              These providers process data according to their own privacy and security practices.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">4. Data Isolation & Security</h2>
-            <p>
-              Each business's data is stored separately and protected by access rules that only
-              allow the account owner (and, for support purposes, the UBA administrator) to read
-              or modify it. No other UBA customer can access your data.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">5. Data Retention</h2>
-            <p>
-              Your data is retained for as long as your account remains active. If you discontinue
-              use of UBA, you may request deletion of your data by contacting your UBA provider.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">6. Your Rights</h2>
-            <p>
-              Under the Philippine Data Privacy Act (RA 10173), you have the right to access,
-              correct, or request deletion of your personal data. Contact your UBA provider to
-              exercise these rights.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">7. Changes to This Policy</h2>
-            <p>
-              This policy may be updated as UBA's features evolve. Continued use of the service
-              after changes constitutes acceptance of the updated policy.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">8. Contact</h2>
-            <p>
-              Questions about this policy or your data can be directed to your UBA provider
-              through the contact details they gave you at onboarding.
-            </p>
-          </section>
-        </div>
-
-        <p className="text-xs text-gray-400 mt-10">
-          See also our{" "}
-          <Link href="/terms" className="text-blue-600 hover:underline">
-            Terms of Service
-          </Link>
-          .
-        </p>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="app/terms/page.tsx">
-"use client";
-
-import Link from "next/link";
-
-export default function TermsPage() {
-  return (
-    <div className="min-h-screen bg-white text-gray-800 px-6 py-12">
-      <div className="max-w-2xl mx-auto">
-        <Link href="/" className="text-sm text-blue-600 hover:underline">
-          ← Back to UBA
-        </Link>
-
-        <h1 className="text-2xl font-bold mt-4 mb-2">Terms of Service</h1>
-        <p className="text-sm text-gray-500 mb-8">Last updated: September 2026</p>
-
-        <div className="space-y-6 text-sm leading-relaxed">
-          <section>
-            <h2 className="font-semibold text-base mb-1">1. What UBA Is</h2>
-            <p>
-              UBA (Universal Business Assistant) is a business management application for small
-              retail and repair shops, providing inventory management, point-of-sale, sales
-              tracking, repair ticket management, and optional AI-powered features (scanning,
-              business analysis, and a chat assistant).
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">2. Accounts</h2>
-            <p>
-              Each account is tied to one business ("shop"). Your business data — inventory,
-              sales, expenses, repair tickets, and related records — is stored separately from
-              every other UBA customer and is not shared or visible to other users.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">3. Subscription & Fees</h2>
-            <p>
-              New accounts begin with a free trial period. After the trial, continued access to
-              AI-powered features (Scanner, Business Analyst, Assistant, automated low-stock
-              alerts) requires an active paid plan (monthly or one-time/lifetime, as agreed with
-              your UBA provider). Core business tools — inventory, point-of-sale, sales
-              tracking, and repair tickets — remain available regardless of subscription status.
-            </p>
-            <p className="mt-2">
-              Payment terms, amounts, and billing frequency are agreed directly between you and
-              your UBA provider outside of this app. UBA does not process payments automatically
-              within the application at this time.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">4. AI Features & Usage Limits</h2>
-            <p>
-              AI-powered features send relevant business data (e.g. item descriptions, sales
-              summaries, uploaded photos or documents) to third-party AI providers (Google
-              Gemini) to generate results. AI-generated content (item details, business
-              insights, draft customer messages) should be reviewed before relying on it — it
-              may occasionally be inaccurate. AI features are subject to reasonable monthly
-              usage limits to prevent abuse.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">5. Your Data</h2>
-            <p>
-              You own the business data you enter into UBA. You are responsible for the accuracy
-              of the data you input and for any customer information (such as names and phone
-              numbers) you record through the Repair Tickets feature — you are responsible for
-              having the appropriate basis to collect and use that information under applicable
-              law.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">6. Acceptable Use</h2>
-            <p>
-              You agree not to attempt to access other tenants' data, share your account across
-              multiple unrelated businesses, or use the service for unlawful purposes.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">7. Availability & Limitation of Liability</h2>
-            <p>
-              UBA is provided "as is." While reasonable efforts are made to keep the service
-              available and your data safe, UBA and its provider are not liable for lost profits,
-              data loss, or business interruption arising from use of the service, to the fullest
-              extent permitted by law.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">8. Termination</h2>
-            <p>
-              Either party may discontinue use of the service. Upon termination, your data may be
-              retained for a reasonable period and then deleted, unless otherwise agreed.
-            </p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">9. Governing Law</h2>
-            <p>These terms are governed by the laws of the Republic of the Philippines.</p>
-          </section>
-
-          <section>
-            <h2 className="font-semibold text-base mb-1">10. Contact</h2>
-            <p>
-              Questions about these terms can be directed to your UBA provider through the
-              contact details they gave you at onboarding.
-            </p>
-          </section>
-        </div>
-
-        <p className="text-xs text-gray-400 mt-10">
-          See also our{" "}
-          <Link href="/privacy" className="text-blue-600 hover:underline">
-            Privacy Policy
-          </Link>
-          .
-        </p>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="app/admin/page.tsx">
 "use client";
 
@@ -1745,6 +1442,309 @@ export function themeList() {
 }
 </file>
 
+<file path="app/lib/usageLimits.js">
+// Soft, client-enforced monthly usage caps per tenant for AI-powered features.
+// Tracks counts in Firestore (tenants/{uid}/usage/{YYYY-MM}), protected by the
+// same tenant-scoped security rules as everything else — a tenant can only
+// read/write their OWN usage doc. This is not attacker-proof (a determined
+// user could bypass it client-side), but it catches accidental overuse/bugs,
+// which is the real risk during the manual pilot phase.
+
+import { doc, getDoc, setDoc, increment } from "firebase/firestore";
+import { db } from "./firebase";
+
+export const MONTHLY_LIMITS = {
+  scanCount: 100, // Universal Scanner (photo/PDF/Word)
+  chatCount: 150, // UBA Assistant messages
+  analysisCount: 60, // Dashboard "Analyze My Business"
+  notificationCount: 100, // AI-drafted customer notifications
+};
+
+export const LIMIT_LABELS = {
+  scanCount: "AI scans",
+  chatCount: "assistant messages",
+  analysisCount: "business analyses",
+  notificationCount: "customer notifications",
+};
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// Checks whether the tenant still has room for one more call of `feature`
+// this month. If allowed, increments the count. Returns { allowed, count, limit }.
+export async function checkAndIncrementUsage(uid, feature) {
+  const limit = MONTHLY_LIMITS[feature];
+  const usageRef = doc(db, "tenants", uid, "usage", currentMonthKey());
+
+  const snap = await getDoc(usageRef);
+  const currentCount = snap.exists() ? snap.data()[feature] || 0 : 0;
+
+  if (currentCount >= limit) {
+    return { allowed: false, count: currentCount, limit };
+  }
+
+  await setDoc(usageRef, { [feature]: increment(1) }, { merge: true });
+  return { allowed: true, count: currentCount + 1, limit };
+}
+
+export function usageLimitMessage(feature, limit) {
+  return `You've used all ${limit} ${LIMIT_LABELS[feature]} for this month. This resets on the 1st — contact your UBA provider if you need a higher limit.`;
+}
+</file>
+
+<file path="app/privacy/page.tsx">
+"use client";
+
+import Link from "next/link";
+
+export default function PrivacyPage() {
+  return (
+    <div className="min-h-screen bg-white text-gray-800 px-6 py-12">
+      <div className="max-w-2xl mx-auto">
+        <Link href="/" className="text-sm text-blue-600 hover:underline">
+          ← Back to UBA
+        </Link>
+
+        <h1 className="text-2xl font-bold mt-4 mb-2">Privacy Policy</h1>
+        <p className="text-sm text-gray-500 mb-8">Last updated: September 2026</p>
+
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="font-semibold text-base mb-1">1. What We Collect</h2>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Account information: your email address and business name.</li>
+              <li>
+                Business data you enter: inventory items, sales records, expenses, and repair
+                ticket details.
+              </li>
+              <li>
+                Customer information you choose to record through Repair Tickets: customer name
+                and contact number, used solely to help you manage repairs and notify customers.
+              </li>
+              <li>
+                Photos or documents you upload to the Scanner feature, processed to extract
+                inventory information.
+              </li>
+            </ul>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">2. How We Use It</h2>
+            <p>
+              Your data is used solely to operate UBA for your business — displaying your
+              inventory, generating reports, processing sales, and powering optional AI features
+              you choose to use. We do not sell your data or share it with other businesses using
+              UBA.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">3. Third-Party Services</h2>
+            <p>UBA relies on the following third-party services to operate:</p>
+            <ul className="list-disc pl-5 space-y-1 mt-1">
+              <li>
+                <strong>Google Firebase</strong> — stores your account and business data.
+              </li>
+              <li>
+                <strong>Google Gemini API</strong> — processes data you submit to AI features
+                (Scanner, Business Analyst, Assistant) to generate results.
+              </li>
+              <li>
+                <strong>Resend</strong> — sends automated low-stock email alerts to your
+                registered email.
+              </li>
+            </ul>
+            <p className="mt-2">
+              These providers process data according to their own privacy and security practices.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">4. Data Isolation & Security</h2>
+            <p>
+              Each business's data is stored separately and protected by access rules that only
+              allow the account owner (and, for support purposes, the UBA administrator) to read
+              or modify it. No other UBA customer can access your data.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">5. Data Retention</h2>
+            <p>
+              Your data is retained for as long as your account remains active. If you discontinue
+              use of UBA, you may request deletion of your data by contacting your UBA provider.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">6. Your Rights</h2>
+            <p>
+              Under the Philippine Data Privacy Act (RA 10173), you have the right to access,
+              correct, or request deletion of your personal data. Contact your UBA provider to
+              exercise these rights.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">7. Changes to This Policy</h2>
+            <p>
+              This policy may be updated as UBA's features evolve. Continued use of the service
+              after changes constitutes acceptance of the updated policy.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">8. Contact</h2>
+            <p>
+              Questions about this policy or your data can be directed to your UBA provider
+              through the contact details they gave you at onboarding.
+            </p>
+          </section>
+        </div>
+
+        <p className="text-xs text-gray-400 mt-10">
+          See also our{" "}
+          <Link href="/terms" className="text-blue-600 hover:underline">
+            Terms of Service
+          </Link>
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/terms/page.tsx">
+"use client";
+
+import Link from "next/link";
+
+export default function TermsPage() {
+  return (
+    <div className="min-h-screen bg-white text-gray-800 px-6 py-12">
+      <div className="max-w-2xl mx-auto">
+        <Link href="/" className="text-sm text-blue-600 hover:underline">
+          ← Back to UBA
+        </Link>
+
+        <h1 className="text-2xl font-bold mt-4 mb-2">Terms of Service</h1>
+        <p className="text-sm text-gray-500 mb-8">Last updated: September 2026</p>
+
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="font-semibold text-base mb-1">1. What UBA Is</h2>
+            <p>
+              UBA (Universal Business Assistant) is a business management application for small
+              retail and repair shops, providing inventory management, point-of-sale, sales
+              tracking, repair ticket management, and optional AI-powered features (scanning,
+              business analysis, and a chat assistant).
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">2. Accounts</h2>
+            <p>
+              Each account is tied to one business ("shop"). Your business data — inventory,
+              sales, expenses, repair tickets, and related records — is stored separately from
+              every other UBA customer and is not shared or visible to other users.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">3. Subscription & Fees</h2>
+            <p>
+              New accounts begin with a free trial period. After the trial, continued access to
+              AI-powered features (Scanner, Business Analyst, Assistant, automated low-stock
+              alerts) requires an active paid plan (monthly or one-time/lifetime, as agreed with
+              your UBA provider). Core business tools — inventory, point-of-sale, sales
+              tracking, and repair tickets — remain available regardless of subscription status.
+            </p>
+            <p className="mt-2">
+              Payment terms, amounts, and billing frequency are agreed directly between you and
+              your UBA provider outside of this app. UBA does not process payments automatically
+              within the application at this time.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">4. AI Features & Usage Limits</h2>
+            <p>
+              AI-powered features send relevant business data (e.g. item descriptions, sales
+              summaries, uploaded photos or documents) to third-party AI providers (Google
+              Gemini) to generate results. AI-generated content (item details, business
+              insights, draft customer messages) should be reviewed before relying on it — it
+              may occasionally be inaccurate. AI features are subject to reasonable monthly
+              usage limits to prevent abuse.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">5. Your Data</h2>
+            <p>
+              You own the business data you enter into UBA. You are responsible for the accuracy
+              of the data you input and for any customer information (such as names and phone
+              numbers) you record through the Repair Tickets feature — you are responsible for
+              having the appropriate basis to collect and use that information under applicable
+              law.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">6. Acceptable Use</h2>
+            <p>
+              You agree not to attempt to access other tenants' data, share your account across
+              multiple unrelated businesses, or use the service for unlawful purposes.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">7. Availability & Limitation of Liability</h2>
+            <p>
+              UBA is provided "as is." While reasonable efforts are made to keep the service
+              available and your data safe, UBA and its provider are not liable for lost profits,
+              data loss, or business interruption arising from use of the service, to the fullest
+              extent permitted by law.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">8. Termination</h2>
+            <p>
+              Either party may discontinue use of the service. Upon termination, your data may be
+              retained for a reasonable period and then deleted, unless otherwise agreed.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">9. Governing Law</h2>
+            <p>These terms are governed by the laws of the Republic of the Philippines.</p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">10. Contact</h2>
+            <p>
+              Questions about these terms can be directed to your UBA provider through the
+              contact details they gave you at onboarding.
+            </p>
+          </section>
+        </div>
+
+        <p className="text-xs text-gray-400 mt-10">
+          See also our{" "}
+          <Link href="/privacy" className="text-blue-600 hover:underline">
+            Privacy Policy
+          </Link>
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="app/verify-email/page.tsx">
 "use client";
 
@@ -1925,108 +1925,6 @@ export default function VerifyEmailPage() {
       </div>
     </div>
   );
-}
-</file>
-
-<file path="app/globals.css">
-@import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
-
-:root {
-  --color-bg-primary: #0a0e1a;
-  --color-bg-secondary: #0f1729;
-  --color-surface: #141d33;
-  --color-surface-glass: rgba(20, 29, 51, 0.7);
-  --color-primary: #3b82f6;
-  --color-primary-light: #60a5fa;
-  --color-primary-glow: rgba(59, 130, 246, 0.5);
-  --color-secondary: #a855f7;
-  --color-text-primary: #e8edf9;
-  --color-text-secondary: #8b9bc4;
-  --color-border: rgba(59, 130, 246, 0.25);
-  --gradient-main: linear-gradient(135deg, #0a0e1a 0%, #142240 50%, #1e3a8a 100%);
-  --gradient-accent: linear-gradient(135deg, #3b82f6 0%, #a855f7 100%);
-  --glow-shadow: 0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15);
-  --font-heading: var(--font-orbitron);
-  --font-body: var(--font-inter);
-  --radius-card: 1rem;
-  --radius-button: 0.75rem;
-  --border-width: 1px;
-  --letter-spacing: 0.02em;
-}
-
-body {
-  font-family: var(--font-body);
-  letter-spacing: var(--letter-spacing);
-}
-
-h1, h2, h3, h4 {
-  font-family: var(--font-heading);
-}
-
-@keyframes pulse-glow {
-  0%, 100% {
-    box-shadow: var(--glow-shadow);
-  }
-  50% {
-    box-shadow: 0 0 30px var(--color-primary-glow), 0 0 60px var(--color-primary-glow);
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
-
-.theme-pulse {
-  animation: pulse-glow 2.5s ease-in-out infinite;
-}
-
-.theme-shimmer-border {
-  position: relative;
-}
-
-.theme-shimmer-border::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: var(--border-width);
-  background: var(--gradient-accent);
-  background-size: 200% 100%;
-  animation: shimmer 3s linear infinite;
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
 }
 </file>
 
@@ -3714,345 +3612,6 @@ export default function SalesExpensesPage() {
 }
 </file>
 
-<file path="app/signup/page.tsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { createUserWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
-import { auth } from "../lib/firebase";
-
-const BOOT_LINES = [
-  "> BOOTING UBA CORE...",
-  "> LOADING BUSINESS INTELLIGENCE MODULE...",
-  "> ASSISTANT PROTOCOL — ONLINE",
-  "> AWAITING NEW USER REGISTRATION...",
-  "> WELCOME. LET'S BEGIN.",
-];
-
-export default function SignUpPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const router = useRouter();
-
-  const [phase, setPhase] = useState<"boot" | "form">("boot");
-  const [completedLines, setCompletedLines] = useState<string[]>([]);
-  const [typingText, setTypingText] = useState("");
-  const [formVisible, setFormVisible] = useState(false);
-
-  useEffect(() => {
-    const skipAnimation =
-      typeof window !== "undefined" &&
-      (sessionStorage.getItem("uba_boot_seen") === "1" ||
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-
-    if (skipAnimation) {
-      setPhase("form");
-      return;
-    }
-
-    let cancelled = false;
-
-    const run = async () => {
-      for (const line of BOOT_LINES) {
-        for (let c = 1; c <= line.length; c++) {
-          if (cancelled) return;
-          setTypingText(line.slice(0, c));
-          await new Promise((r) => setTimeout(r, 16));
-        }
-        await new Promise((r) => setTimeout(r, 260));
-        if (cancelled) return;
-        setCompletedLines((prev) => [...prev, line]);
-        setTypingText("");
-      }
-      await new Promise((r) => setTimeout(r, 450));
-      if (cancelled) return;
-      sessionStorage.setItem("uba_boot_seen", "1");
-      setPhase("form");
-    };
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (phase === "form") {
-      const t = setTimeout(() => setFormVisible(true), 30);
-      return () => clearTimeout(t);
-    }
-  }, [phase]);
-
-  const handleSkip = () => {
-    sessionStorage.setItem("uba_boot_seen", "1");
-    setPhase("form");
-  };
-
-    const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const cred = await createUserWithEmailAndPassword(auth, email, password);
-      await sendEmailVerification(cred.user);
-      router.push("/verify-email");
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div
-      className="min-h-screen relative flex items-center justify-center overflow-hidden px-4"
-      style={{ background: "var(--color-bg-primary, #0a0e1a)" }}
-    >
-      {/* Ambient backdrop: radial glow + grid */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59,130,246,0.18) 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="absolute inset-0 pointer-events-none opacity-[0.25]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(59,130,246,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.15) 1px, transparent 1px)",
-          backgroundSize: "42px 42px",
-        }}
-      />
-
-      {/* ---- BOOT SEQUENCE ---- */}
-      {phase === "boot" && (
-        <div className="relative z-10 w-full max-w-md font-mono text-sm">
-          <div className="space-y-1.5 min-h-[160px]">
-            {completedLines.map((line, i) => (
-              <p key={i} style={{ color: "#60a5fa" }}>
-                {line}
-              </p>
-            ))}
-            {typingText && (
-              <p style={{ color: "#60a5fa" }}>
-                {typingText}
-                <span className="uba-cursor">▌</span>
-              </p>
-            )}
-          </div>
-          <button
-            onClick={handleSkip}
-            className="mt-6 text-xs tracking-wide hover:opacity-80"
-            style={{ color: "#8b9bc4" }}
-          >
-            skip →
-          </button>
-        </div>
-      )}
-
-      {/* ---- REGISTRATION HUD ---- */}
-      {phase === "form" && (
-        <div
-          className="relative z-10 w-full max-w-md transition-all duration-700 ease-out"
-          style={{
-            opacity: formVisible ? 1 : 0,
-            transform: formVisible ? "translateY(0)" : "translateY(12px)",
-          }}
-        >
-          <div
-            className="relative p-8"
-            style={{
-              background: "rgba(20, 29, 51, 0.7)",
-              backdropFilter: "blur(10px)",
-              border: "1px solid rgba(59, 130, 246, 0.25)",
-              borderRadius: "1rem",
-              boxShadow:
-                "0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15)",
-            }}
-          >
-            <span className="uba-corner uba-corner-tl" />
-            <span className="uba-corner uba-corner-tr" />
-            <span className="uba-corner uba-corner-bl" />
-            <span className="uba-corner uba-corner-br" />
-            <div className="uba-scanline" />
-
-            <p
-              className="text-xs font-mono tracking-[0.15em] mb-3"
-              style={{ color: "#60a5fa" }}
-            >
-              UBA SYSTEM // NEW USER PROTOCOL
-            </p>
-
-            <h1
-              className="text-2xl font-bold mb-1"
-              style={{
-                color: "#e8edf9",
-                fontFamily: "var(--font-heading, inherit)",
-                textShadow: "0 0 18px rgba(59,130,246,0.5)",
-              }}
-            >
-              Awaken Your Business
-            </h1>
-            <p className="text-sm mb-6" style={{ color: "#8b9bc4" }}>
-              Register to activate your Business Assistant Core.
-            </p>
-
-            <form onSubmit={handleSignUp} className="space-y-4">
-              <div>
-                <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                  Email
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
-                  style={{ color: "#e8edf9" }}
-                  placeholder="you@example.com"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                  Password
-                </label>
-                <div className="relative mt-1">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    required
-                    minLength={6}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
-                    style={{ color: "#e8edf9" }}
-                    placeholder="At least 6 characters"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
-                    style={{ color: "#60a5fa" }}
-                  >
-                    {showPassword ? "hide" : "show"}
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <p
-                  className="text-xs px-3 py-2 rounded-lg"
-                  style={{
-                    color: "#f87171",
-                    background: "rgba(239, 68, 68, 0.1)",
-                    border: "1px solid rgba(239, 68, 68, 0.25)",
-                  }}
-                >
-                  {error}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
-                style={{
-                  background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
-                  color: "#fff",
-                  borderRadius: "0.75rem",
-                  boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
-                }}
-              >
-                {loading ? "Initializing..." : "Create Account"}
-              </button>
-
-              <p
-                className="text-[11px] font-mono text-center pt-1 tracking-wide"
-                style={{ color: "#54608a" }}
-              >
-                {loading
-                  ? "> compiling business profile..."
-                  : "> system ready // awaiting input"}
-              </p>
-            </form>
-
-            <p className="text-sm text-center mt-6" style={{ color: "#8b9bc4" }}>
-              Already registered?{" "}
-              <a href="/login" className="font-medium hover:opacity-80" style={{ color: "#60a5fa" }}>
-                Sign in
-              </a>
-            </p>
-
-            <p className="text-xs text-center mt-4" style={{ color: "#54608a" }}>
-              By creating an account, you agree to our{" "}
-              <a href="/terms" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
-                Terms
-              </a>{" "}
-              and{" "}
-              <a href="/privacy" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
-                Privacy Policy
-              </a>
-              .
-            </p>
-          </div>
-        </div>
-      )}
-
-      <style jsx>{`
-        .uba-cursor {
-          display: inline-block;
-          animation: uba-blink 1s steps(1) infinite;
-        }
-        @keyframes uba-blink {
-          50% { opacity: 0; }
-        }
-        .uba-input {
-          border: none;
-          border-bottom: 1px solid rgba(59, 130, 246, 0.25);
-          border-radius: 0;
-          transition: border-color 0.2s ease;
-        }
-        .uba-input:focus {
-          border-bottom-color: #60a5fa;
-        }
-        .uba-corner {
-          position: absolute;
-          width: 18px;
-          height: 18px;
-          border-color: #60a5fa;
-          opacity: 0.8;
-        }
-        .uba-corner-tl { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; border-top-left-radius: 4px; }
-        .uba-corner-tr { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; border-top-right-radius: 4px; }
-        .uba-corner-bl { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; border-bottom-left-radius: 4px; }
-        .uba-corner-br { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; border-bottom-right-radius: 4px; }
-        .uba-scanline {
-          position: absolute;
-          left: 0; right: 0;
-          height: 2px;
-          background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.6), transparent);
-          top: 0;
-          animation: uba-scan 4s linear infinite;
-          pointer-events: none;
-        }
-        @keyframes uba-scan {
-          0% { top: 0%; }
-          100% { top: 100%; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .uba-cursor, .uba-scanline { animation: none; }
-        }
-      `}</style>
-    </div>
-  );
-}
-</file>
-
 <file path="app/page.tsx">
 "use client";
 
@@ -4094,749 +3653,6 @@ export default function RootPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <p className="text-gray-500 text-sm">Loading...</p>
     </div>
-  );
-}
-</file>
-
-<file path="app/components/Sidebar.tsx">
-"use client";
-
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
-import { signOut } from "firebase/auth";
-import { auth, db } from "../lib/firebase";
-
-const navItems: { href: string; label: string; icon: string; disabled?: boolean }[] = [
-  { href: "/dashboard", label: "Dashboard", icon: "🏠" },
-  { href: "/inventory", label: "Inventory", icon: "📦" },
-  { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️" },
-  { href: "/sales", label: "Sales & Expenses", icon: "💰" },
-  { href: "/pos", label: "POS / Checkout", icon: "🧾" },
-  { href: "/settings", label: "Settings", icon: "⚙️" },
-  { href: "/admin", label: "Admin", icon: "👑" },
-];
-
-interface LowStockItem {
-  id: string;
-  name: string;
-  stock: number;
-  minStock: number;
-  suggestedOrder: number;
-  supplier: string;
-}
-
-interface NotificationData {
-  hasNotification: boolean;
-  count: number;
-  title: string;
-  message: string;
-  items: LowStockItem[];
-}
-
-function resizeImageToBase64(file: File, maxSize = 160): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let { width, height } = img;
-        if (width > height) {
-          if (width > maxSize) {
-            height *= maxSize / width;
-            width = maxSize;
-          }
-        } else {
-          if (height > maxSize) {
-            width *= maxSize / height;
-            height = maxSize;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", 0.8));
-      };
-      img.onerror = reject;
-      img.src = e.target!.result as string;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
-
-export default function Sidebar() {
-  const pathname = usePathname();
-  const router = useRouter();
-  const [collapsed, setCollapsed] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [businessName, setBusinessName] = useState("");
-  const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Notification states
-  const [notification, setNotification] = useState<NotificationData | null>(null);
-  const [showNotifModal, setShowNotifModal] = useState(false);
-
-  // Fetch shop tenant details
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) return;
-      setIsAdmin(user.uid === ADMIN_UID);
-      const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
-      if (tenantSnap.exists()) {
-        const data = tenantSnap.data();
-        setBusinessName(data.businessName || "");
-        setNameDraft(data.businessName || "");
-        setLogoUrl(data.logoUrl || null);
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Fetch low stock reorder notifications directly from Firestore (tenant-scoped)
-  useEffect(() => {
-    let unsubInv = () => {};
-
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-      unsubInv();
-
-      if (!user) {
-        setNotification(null);
-        return;
-      }
-
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(invQuery, (snapshot) => {
-        const lowStockItems: LowStockItem[] = snapshot.docs
-          .map((d) => ({ id: d.id, ...d.data() } as any))
-          .filter((i) => (i.stock ?? 0) <= (i.threshold ?? 0))
-          .map((i) => ({
-            id: i.id,
-            name: i.name,
-            stock: i.stock ?? 0,
-            minStock: i.threshold ?? 0,
-            suggestedOrder: Math.max((i.threshold ?? 0) * 2 - (i.stock ?? 0), i.threshold || 1),
-            supplier: i.supplierName?.trim() || "N/A",
-          }));
-
-        if (lowStockItems.length === 0) {
-          setNotification(null);
-          return;
-        }
-
-        setNotification({
-          hasNotification: true,
-          count: lowStockItems.length,
-          title: "⚠️ Low Stock Alert",
-          message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
-            .map((i) => i.name)
-            .join(", ")}.`,
-          items: lowStockItems,
-        });
-      });
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubInv();
-    };
-  }, []);
-
-  const saveBusinessName = async () => {
-    const user = auth.currentUser;
-    if (!user || !nameDraft.trim()) {
-      setNameDraft(businessName);
-      setEditingName(false);
-      return;
-    }
-    const trimmed = nameDraft.trim();
-    await updateDoc(doc(db, "tenants", user.uid), { businessName: trimmed });
-    setBusinessName(trimmed);
-    setEditingName(false);
-  };
-
-  const handleLogoClick = () => {
-    if (collapsed) return;
-    fileInputRef.current?.click();
-  };
-
-  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    const user = auth.currentUser;
-    if (!file || !user) return;
-
-    setUploading(true);
-    setUploadError("");
-    try {
-      const base64 = await resizeImageToBase64(file);
-      await updateDoc(doc(db, "tenants", user.uid), { logoUrl: base64 });
-      setLogoUrl(base64);
-    } catch (err) {
-      console.error("Logo upload failed:", err);
-      setUploadError("Couldn't process that image. Try a different photo.");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    await signOut(auth);
-    router.push("/login");
-  };
-
-  return (
-    <>
-      <aside
-        className={`${
-          collapsed ? "w-16" : "w-64"
-        } min-h-screen p-3 hidden sm:flex sm:flex-col transition-all duration-200 border-r relative`}
-        style={{
-          background: "var(--color-bg-secondary)",
-          borderColor: "var(--color-border)",
-        }}
-      >
-        {/* Header & Collapse Toggle */}
-        <div className="flex items-center justify-between mb-4 px-1">
-          {!collapsed && (
-            <p
-              className="text-xs font-semibold uppercase tracking-wide"
-              style={{ color: "var(--color-text-secondary)" }}
-            >
-              My Shop
-            </p>
-          )}
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            className="p-1.5 rounded-lg transition ml-auto hover:opacity-80"
-            style={{ color: "var(--color-text-secondary)" }}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {collapsed ? "»" : "«"}
-          </button>
-        </div>
-
-        {/* Logo Section */}
-        <div className="flex flex-col items-center mb-6 px-1">
-          <input
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            onChange={handleLogoChange}
-            className="hidden"
-          />
-          <button
-            onClick={handleLogoClick}
-            disabled={collapsed}
-            title="Click to change logo"
-            className={`relative rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 border transition theme-pulse ${
-              collapsed ? "w-9 h-9" : "w-16 h-16"
-            } ${!collapsed ? "hover:opacity-80 cursor-pointer" : ""}`}
-            style={{
-              background: "var(--color-surface)",
-              borderColor: "var(--color-border)",
-              boxShadow: logoUrl ? "var(--glow-shadow)" : "none",
-            }}
-          >
-            {logoUrl ? (
-              <img src={logoUrl} alt="Shop logo" className="w-full h-full object-cover" />
-            ) : (
-              <span className={collapsed ? "text-sm" : "text-xl"}>🏪</span>
-            )}
-            {uploading && (
-              <span
-                className="absolute inset-0 flex items-center justify-center text-[10px]"
-                style={{ background: "var(--color-surface-glass)", color: "var(--color-text-secondary)" }}
-              >
-                ...
-              </span>
-            )}
-          </button>
-
-          {!collapsed && uploadError && (
-            <p className="text-[11px] text-red-400 mt-1 text-center">{uploadError}</p>
-          )}
-
-          {!collapsed && (
-            <div className="mt-2 w-full text-center px-1">
-              {editingName ? (
-                <textarea
-                  autoFocus
-                  rows={2}
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  onBlur={saveBusinessName}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      saveBusinessName();
-                    }
-                    if (e.key === "Escape") {
-                      setNameDraft(businessName);
-                      setEditingName(false);
-                    }
-                  }}
-                  className="w-full text-sm font-semibold text-center leading-snug rounded px-1 py-1 resize-none focus:outline-none focus:ring-1"
-                  style={{
-                    background: "var(--color-surface)",
-                    color: "var(--color-text-primary)",
-                    borderWidth: "1px",
-                    borderColor: "var(--color-primary)",
-                  }}
-                />
-              ) : (
-                <button
-                  onClick={() => setEditingName(true)}
-                  title="Click to edit shop name"
-                  className="text-sm font-semibold leading-snug break-words whitespace-normal w-full hover:opacity-80"
-                  style={{ color: "var(--color-text-primary)" }}
-                >
-                  {businessName || "Set shop name"}{" "}
-                  <span style={{ color: "var(--color-text-secondary)" }}>✎</span>
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Owner Quick Alert Trigger Button */}
-        {notification && notification.count > 0 && (
-          <button
-            onClick={() => setShowNotifModal(true)}
-            className="mb-4 w-full p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20 transition flex items-center justify-between text-xs font-semibold"
-          >
-            <span className="flex items-center gap-1.5">
-              🔔 {!collapsed && "Reorder Alerts"}
-            </span>
-            <span className="bg-red-500 text-white px-1.5 py-0.5 rounded-full text-[10px] font-bold">
-              {notification.count}
-            </span>
-          </button>
-        )}
-
-        {/* Navigation Items */}
-        <nav className="space-y-1">
-          {navItems.map((item) => {
-            const isActive = pathname === item.href;
-            const isSettings = item.href === "/settings";
-            const isInventory = item.href === "/inventory";
-
-            if (item.disabled) {
-              return (
-                <div
-                  key={item.href}
-                  className={`flex items-center gap-3 px-2 py-2 rounded-lg cursor-not-allowed text-sm ${
-                    collapsed ? "justify-center" : ""
-                  }`}
-                  style={{ color: "var(--color-text-secondary)", opacity: 0.4 }}
-                  title="Coming soon"
-                >
-                  <span>{item.icon}</span>
-                  {!collapsed && <span>{item.label}</span>}
-                </div>
-              );
-            }
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={collapsed ? item.label : ""}
-                className={`relative flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition ${
-                  collapsed ? "justify-center" : ""
-                }`}
-                style={{
-                  background: isActive ? "var(--color-surface)" : "transparent",
-                  color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
-                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
-                }}
-              >
-                <span>{item.icon}</span>
-                {!collapsed && <span>{item.label}</span>}
-
-                {/* Badge Indicator for Inventory or Settings */}
-                {(isSettings || isInventory) && notification && notification.count > 0 && (
-                  <span
-                    className={`bg-red-500 text-white rounded-full font-bold flex items-center justify-center ${
-                      collapsed
-                        ? "absolute -top-1 -right-1 w-4 h-4 text-[9px]"
-                        : "ml-auto px-1.5 py-0.2 text-[10px]"
-                    }`}
-                  >
-                    {notification.count}
-                  </span>
-                )}
-              </Link>
-            );
-          })}
-        </nav>
-
-        {isAdmin && (
-          <Link
-            href="/admin"
-            className="flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 mb-1"
-            style={{ color: "#a855f7" }}
-          >
-            <span>🛡️</span>
-            {!collapsed && <span>Admin</span>}
-          </Link>
-        )}
-
-        {/* Logout Button */}
-        <button
-          onClick={handleLogout}
-          title={collapsed ? "Log out" : ""}
-          className={`mt-auto flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 ${
-            collapsed ? "justify-center" : ""
-          }`}
-          style={{ color: "#f87171" }}
-        >
-          <span>🚪</span>
-          {!collapsed && <span>Log Out</span>}
-        </button>
-      </aside>
-
-      {/* Owner Reorder Notification Modal */}
-      {showNotifModal && notification && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div
-            className="w-full max-w-lg rounded-xl p-5 shadow-2xl border space-y-4"
-            style={{
-              background: "var(--color-bg-secondary)",
-              borderColor: "var(--color-border)",
-              color: "var(--color-text-primary)",
-            }}
-          >
-            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--color-border)" }}>
-              <div className="flex items-center gap-2">
-                <span className="text-xl">⚠️</span>
-                <h3 className="font-bold text-base">Owner Reorder Notifications</h3>
-              </div>
-              <button
-                onClick={() => setShowNotifModal(false)}
-                className="text-gray-400 hover:text-white text-lg font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-gray-400">
-              {notification.message}
-            </p>
-
-            <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-              {notification.items.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-3 rounded-lg border text-xs flex items-center justify-between"
-                  style={{
-                    background: "var(--color-surface)",
-                    borderColor: "var(--color-border)",
-                  }}
-                >
-                  <div>
-                    <p className="font-semibold text-sm">{item.name}</p>
-                    <p className="text-[11px] text-gray-400">Supplier: {item.supplier}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-red-400 font-bold">Stock: {item.stock} / {item.minStock}</p>
-                    <p className="text-blue-400 font-semibold">Order: +{item.suggestedOrder} pcs</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                onClick={() => setShowNotifModal(false)}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg border"
-                style={{ borderColor: "var(--color-border)" }}
-              >
-                Close
-              </button>
-              <Link
-                href="/settings"
-                onClick={() => setShowNotifModal(false)}
-                className="px-4 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
-              >
-                Open Settings & Download CSV 📥
-              </Link>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-</file>
-
-<file path="app/components/UbaAssistant.jsx">
-"use client";
-
-import { useEffect, useRef, useState } from "react";
-import { collection, doc, getDoc, getDocs, query, orderBy, limit } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
-import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
-
-export default function UbaAssistant() {
-  const [uid, setUid] = useState(null);
-  const [aiAccess, setAiAccess] = useState({ allowed: true });
-  const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [contextLoaded, setContextLoaded] = useState(false);
-  const businessContextRef = useRef(null);
-  const scrollRef = useRef(null);
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      setUid(user ? user.uid : null);
-      if (user) {
-        const snap = await getDoc(doc(db, "tenants", user.uid));
-        if (snap.exists()) setAiAccess(getAiAccess(snap.data()));
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, open]);
-
-  const loadBusinessContext = async () => {
-    if (!uid || businessContextRef.current) return;
-
-    const [tenantSnap, invSnap, salesSnap, ticketsSnap] = await Promise.all([
-      getDoc(doc(db, "tenants", uid)),
-      getDocs(query(collection(db, "tenants", uid, "inventory"), orderBy("name"), limit(60))),
-      getDocs(query(collection(db, "tenants", uid, "sales"), orderBy("date", "desc"), limit(25))),
-      getDocs(query(collection(db, "tenants", uid, "repairTickets"), orderBy("createdAt", "desc"), limit(20))),
-    ]);
-
-    const tenant = tenantSnap.exists() ? tenantSnap.data() : {};
-
-    businessContextRef.current = {
-      businessName: tenant.businessName || "",
-      businessType: tenant.businessType || "",
-      inventory: invSnap.docs.map((d) => {
-        const i = d.data();
-        return {
-          name: i.name,
-          category: i.category,
-          stock: i.stock,
-          threshold: i.threshold,
-          unitCost: i.unitCost,
-          sellingPrice: i.sellingPrice,
-        };
-      }),
-      recentSales: salesSnap.docs.map((d) => {
-        const s = d.data();
-        return { itemName: s.itemName, quantity: s.quantity, total: s.total, date: s.date };
-      }),
-      recentRepairTickets: ticketsSnap.docs.map((d) => {
-        const t = d.data();
-        return {
-          deviceInfo: t.deviceInfo,
-          status: t.status,
-          laborPayment: t.laborPayment,
-          createdAt: t.createdAt,
-        };
-      }),
-    };
-    setContextLoaded(true);
-  };
-
-  const handleOpen = async () => {
-    setOpen(true);
-    if (!contextLoaded) await loadBusinessContext();
-    if (messages.length === 0) {
-            setMessages([
-        {
-          role: "assistant",
-          content: "Hi, I'm UBA Assistant. Ask me anything about your shop — inventory, sales, repair tickets, or where to source parts.",
-        },
-      ]);
-    }
-  };
-
-  const handleSend = async () => {
-    const text = input.trim();
-    if (!text || sending) return;
-
-    if (!aiAccess.allowed) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content: text },
-        { role: "assistant", content: AI_LOCKED_MESSAGE },
-      ]);
-      setInput("");
-      return;
-    }
-
-    if (uid) {
-      const usage = await checkAndIncrementUsage(uid, "chatCount");
-      if (!usage.allowed) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "user", content: text },
-          { role: "assistant", content: usageLimitMessage("chatCount", usage.limit) },
-        ]);
-        setInput("");
-        return;
-      }
-    }
-
-    const newMessages = [...messages, { role: "user", content: text }];
-    setMessages(newMessages);
-    setInput("");
-    setSending(true);
-
-    try {
-      const res = await fetch("/api/uba-assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: text,
-          history: newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
-          businessContext: businessContextRef.current || {},
-        }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: data.error || "May problema, subukan ulit." },
-        ]);
-        return;
-      }
-
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-    } catch (err) {
-      console.error(err);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "May problema sa koneksyon, subukan ulit." },
-      ]);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  if (!uid) return null;
-
-  return (
-    <>
-      {/* Floating toggle button */}
-      <button
-        onClick={() => (open ? setOpen(false) : handleOpen())}
-        className="fixed bottom-5 right-5 w-14 h-14 rounded-full flex items-center justify-center z-[70] hover:opacity-90 transition"
-        style={{
-          background: "var(--gradient-accent)",
-          boxShadow: "var(--glow-shadow)",
-        }}
-        title="UBA Assistant"
-      >
-        <span className="text-2xl">{open ? "×" : "🤖"}</span>
-      </button>
-
-      {/* Chat panel */}
-      {open && (
-        <div
-          className="fixed bottom-24 right-5 w-[92vw] max-w-sm h-[70vh] max-h-[560px] flex flex-col z-[70] overflow-hidden"
-          style={{
-            background: "var(--color-surface)",
-            borderRadius: "var(--radius-card)",
-            borderWidth: "var(--border-width)",
-            borderColor: "var(--color-border)",
-            boxShadow: "var(--glow-shadow)",
-          }}
-        >
-          <div
-            className="px-4 py-3 flex items-center gap-2"
-            style={{ background: "var(--color-bg-secondary)", borderBottom: "1px solid var(--color-border)" }}
-          >
-            <span>🤖</span>
-            <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
-              UBA Assistant
-            </p>
-          </div>
-
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
-            {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className="max-w-[85%] px-3 py-2 rounded-2xl text-sm whitespace-pre-wrap"
-                  style={
-                    m.role === "user"
-                      ? { background: "var(--gradient-accent)", color: "#fff" }
-                      : { background: "var(--color-bg-secondary)", color: "var(--color-text-primary)" }
-                  }
-                >
-                  {m.content}
-                </div>
-              </div>
-            ))}
-            {sending && (
-              <div className="flex justify-start">
-                <div
-                  className="px-3 py-2 rounded-2xl text-sm"
-                  style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
-                >
-                  ...
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="p-3 flex gap-2" style={{ borderTop: "1px solid var(--color-border)" }}>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-                            placeholder={aiAccess.allowed ? "Ask about your shop..." : "AI trial ended — still readable"}
-              className="flex-1 px-3 py-2 text-sm"
-              style={{
-                background: "var(--color-bg-secondary)",
-                color: "var(--color-text-primary)",
-                borderRadius: "var(--radius-button)",
-                borderWidth: "var(--border-width)",
-                borderColor: "var(--color-border)",
-              }}
-            />
-            <button
-              onClick={handleSend}
-              disabled={sending || !input.trim()}
-              className="px-4 py-2 text-sm font-semibold disabled:opacity-50"
-              style={{
-                background: "var(--gradient-accent)",
-                color: "#fff",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-              Send
-            </button>
-          </div>
-        </div>
-      )}
-    </>
   );
 }
 </file>
@@ -5451,6 +4267,447 @@ export default function PosPage() {
 }
 </file>
 
+<file path="app/signup/page.tsx">
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { createUserWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
+import { auth } from "../lib/firebase";
+
+const BOOT_LINES = [
+  "> BOOTING UBA CORE...",
+  "> LOADING BUSINESS INTELLIGENCE MODULE...",
+  "> ASSISTANT PROTOCOL — ONLINE",
+  "> AWAITING NEW USER REGISTRATION...",
+  "> WELCOME. LET'S BEGIN.",
+];
+
+export default function SignUpPage() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
+  const [phase, setPhase] = useState<"boot" | "form">("boot");
+  const [completedLines, setCompletedLines] = useState<string[]>([]);
+  const [typingText, setTypingText] = useState("");
+  const [formVisible, setFormVisible] = useState(false);
+
+  useEffect(() => {
+    const skipAnimation =
+      typeof window !== "undefined" &&
+      (sessionStorage.getItem("uba_boot_seen") === "1" ||
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+    if (skipAnimation) {
+      setPhase("form");
+      return;
+    }
+
+    let cancelled = false;
+
+    const run = async () => {
+      for (const line of BOOT_LINES) {
+        for (let c = 1; c <= line.length; c++) {
+          if (cancelled) return;
+          setTypingText(line.slice(0, c));
+          await new Promise((r) => setTimeout(r, 16));
+        }
+        await new Promise((r) => setTimeout(r, 260));
+        if (cancelled) return;
+        setCompletedLines((prev) => [...prev, line]);
+        setTypingText("");
+      }
+      await new Promise((r) => setTimeout(r, 450));
+      if (cancelled) return;
+      sessionStorage.setItem("uba_boot_seen", "1");
+      setPhase("form");
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (phase === "form") {
+      const t = setTimeout(() => setFormVisible(true), 30);
+      return () => clearTimeout(t);
+    }
+  }, [phase]);
+
+  const handleSkip = () => {
+    sessionStorage.setItem("uba_boot_seen", "1");
+    setPhase("form");
+  };
+
+    const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await sendEmailVerification(cred.user);
+      router.push("/verify-email");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      className="min-h-screen relative flex items-center justify-center overflow-hidden px-4"
+      style={{ background: "var(--color-bg-primary, #0a0e1a)" }}
+    >
+      {/* Ambient backdrop: radial glow + grid */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59,130,246,0.18) 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="absolute inset-0 pointer-events-none opacity-[0.25]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(59,130,246,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.15) 1px, transparent 1px)",
+          backgroundSize: "42px 42px",
+        }}
+      />
+
+      {/* ---- BOOT SEQUENCE ---- */}
+      {phase === "boot" && (
+        <div className="relative z-10 w-full max-w-md font-mono text-sm">
+          <div className="space-y-1.5 min-h-[160px]">
+            {completedLines.map((line, i) => (
+              <p key={i} style={{ color: "#60a5fa" }}>
+                {line}
+              </p>
+            ))}
+            {typingText && (
+              <p style={{ color: "#60a5fa" }}>
+                {typingText}
+                <span className="uba-cursor">▌</span>
+              </p>
+            )}
+          </div>
+          <button
+            onClick={handleSkip}
+            className="mt-6 text-xs tracking-wide hover:opacity-80"
+            style={{ color: "#8b9bc4" }}
+          >
+            skip →
+          </button>
+        </div>
+      )}
+
+      {/* ---- REGISTRATION HUD ---- */}
+      {phase === "form" && (
+        <div
+          className="relative z-10 w-full max-w-md transition-all duration-700 ease-out"
+          style={{
+            opacity: formVisible ? 1 : 0,
+            transform: formVisible ? "translateY(0)" : "translateY(12px)",
+          }}
+        >
+          <div
+            className="relative p-8"
+            style={{
+              background: "rgba(20, 29, 51, 0.7)",
+              backdropFilter: "blur(10px)",
+              border: "1px solid rgba(59, 130, 246, 0.25)",
+              borderRadius: "1rem",
+              boxShadow:
+                "0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15)",
+            }}
+          >
+            <span className="uba-corner uba-corner-tl" />
+            <span className="uba-corner uba-corner-tr" />
+            <span className="uba-corner uba-corner-bl" />
+            <span className="uba-corner uba-corner-br" />
+            <div className="uba-scanline" />
+
+            <p
+              className="text-xs font-mono tracking-[0.15em] mb-3"
+              style={{ color: "#60a5fa" }}
+            >
+              UBA SYSTEM // NEW USER PROTOCOL
+            </p>
+
+            <h1
+              className="text-2xl font-bold mb-1"
+              style={{
+                color: "#e8edf9",
+                fontFamily: "var(--font-heading, inherit)",
+                textShadow: "0 0 18px rgba(59,130,246,0.5)",
+              }}
+            >
+              Awaken Your Business
+            </h1>
+            <p className="text-sm mb-6" style={{ color: "#8b9bc4" }}>
+              Register to activate your Business Assistant Core.
+            </p>
+
+            <form onSubmit={handleSignUp} className="space-y-4">
+              <div>
+                <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                  Email
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
+                  style={{ color: "#e8edf9" }}
+                  placeholder="you@example.com"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                  Password
+                </label>
+                <div className="relative mt-1">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    required
+                    minLength={6}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
+                    style={{ color: "#e8edf9" }}
+                    placeholder="At least 6 characters"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
+                    style={{ color: "#60a5fa" }}
+                  >
+                    {showPassword ? "hide" : "show"}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <p
+                  className="text-xs px-3 py-2 rounded-lg"
+                  style={{
+                    color: "#f87171",
+                    background: "rgba(239, 68, 68, 0.1)",
+                    border: "1px solid rgba(239, 68, 68, 0.25)",
+                  }}
+                >
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
+                style={{
+                  background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
+                  color: "#fff",
+                  borderRadius: "0.75rem",
+                  boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
+                }}
+              >
+                {loading ? "Initializing..." : "Create Account"}
+              </button>
+
+              <p
+                className="text-[11px] font-mono text-center pt-1 tracking-wide"
+                style={{ color: "#54608a" }}
+              >
+                {loading
+                  ? "> compiling business profile..."
+                  : "> system ready // awaiting input"}
+              </p>
+            </form>
+
+            <p className="text-sm text-center mt-6" style={{ color: "#8b9bc4" }}>
+              Already registered?{" "}
+              <a href="/login" className="font-medium hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Sign in
+              </a>
+            </p>
+
+            <p className="text-xs text-center mt-4" style={{ color: "#54608a" }}>
+              By creating an account, you agree to our{" "}
+              <a href="/terms" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Terms
+              </a>{" "}
+              and{" "}
+              <a href="/privacy" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Privacy Policy
+              </a>
+              .
+            </p>
+          </div>
+        </div>
+      )}
+
+      <style jsx>{`
+        .uba-cursor {
+          display: inline-block;
+          animation: uba-blink 1s steps(1) infinite;
+        }
+        @keyframes uba-blink {
+          50% { opacity: 0; }
+        }
+        .uba-input {
+          border: none;
+          border-bottom: 1px solid rgba(59, 130, 246, 0.25);
+          border-radius: 0;
+          transition: border-color 0.2s ease;
+        }
+        .uba-input:focus {
+          border-bottom-color: #60a5fa;
+        }
+        .uba-corner {
+          position: absolute;
+          width: 18px;
+          height: 18px;
+          border-color: #60a5fa;
+          opacity: 0.8;
+        }
+        .uba-corner-tl { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; border-top-left-radius: 4px; }
+        .uba-corner-tr { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; border-top-right-radius: 4px; }
+        .uba-corner-bl { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; border-bottom-left-radius: 4px; }
+        .uba-corner-br { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; border-bottom-right-radius: 4px; }
+        .uba-scanline {
+          position: absolute;
+          left: 0; right: 0;
+          height: 2px;
+          background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.6), transparent);
+          top: 0;
+          animation: uba-scan 4s linear infinite;
+          pointer-events: none;
+        }
+        @keyframes uba-scan {
+          0% { top: 0%; }
+          100% { top: 100%; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .uba-cursor, .uba-scanline { animation: none; }
+        }
+      `}</style>
+    </div>
+  );
+}
+</file>
+
+<file path="app/globals.css">
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+:root {
+  --color-bg-primary: #0a0e1a;
+  --color-bg-secondary: #0f1729;
+  --color-surface: #141d33;
+  --color-surface-glass: rgba(20, 29, 51, 0.7);
+  --color-primary: #3b82f6;
+  --color-primary-light: #60a5fa;
+  --color-primary-glow: rgba(59, 130, 246, 0.5);
+  --color-secondary: #a855f7;
+  --color-text-primary: #e8edf9;
+  --color-text-secondary: #8b9bc4;
+  --color-border: rgba(59, 130, 246, 0.25);
+  --gradient-main: linear-gradient(135deg, #0a0e1a 0%, #142240 50%, #1e3a8a 100%);
+  --gradient-accent: linear-gradient(135deg, #3b82f6 0%, #a855f7 100%);
+  --glow-shadow: 0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15);
+  --font-heading: var(--font-orbitron);
+  --font-body: var(--font-inter);
+  --radius-card: 1rem;
+  --radius-button: 0.75rem;
+  --border-width: 1px;
+  --letter-spacing: 0.02em;
+}
+
+body {
+  font-family: var(--font-body);
+  letter-spacing: var(--letter-spacing);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-heading);
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: var(--glow-shadow);
+  }
+  50% {
+    box-shadow: 0 0 30px var(--color-primary-glow), 0 0 60px var(--color-primary-glow);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.theme-pulse {
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+.theme-shimmer-border {
+  position: relative;
+}
+
+.theme-shimmer-border::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: var(--border-width);
+  background: var(--gradient-accent);
+  background-size: 200% 100%;
+  animation: shimmer 3s linear infinite;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+</file>
+
 <file path="app/layout.tsx">
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Orbitron, Cinzel, Inter } from "next/font/google";
@@ -5543,6 +4800,1827 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     "tailwindcss": "^4",
     "typescript": "^5"
   }
+}
+</file>
+
+<file path="app/components/Sidebar.tsx">
+"use client";
+
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
+import { signOut } from "firebase/auth";
+import { auth, db } from "../lib/firebase";
+
+const navItems: { href: string; label: string; icon: string; disabled?: boolean }[] = [
+  { href: "/dashboard", label: "Dashboard", icon: "🏠" },
+  { href: "/inventory", label: "Inventory", icon: "📦" },
+  { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️" },
+  { href: "/sales", label: "Sales & Expenses", icon: "💰" },
+  { href: "/pos", label: "POS / Checkout", icon: "🧾" },
+  { href: "/settings", label: "Settings", icon: "⚙️" },
+  { href: "/admin", label: "Admin", icon: "👑" },
+];
+
+interface LowStockItem {
+  id: string;
+  name: string;
+  stock: number;
+  minStock: number;
+  suggestedOrder: number;
+  supplier: string;
+}
+
+interface NotificationData {
+  hasNotification: boolean;
+  count: number;
+  title: string;
+  message: string;
+  items: LowStockItem[];
+}
+
+function resizeImageToBase64(file: File, maxSize = 160): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxSize) {
+            height *= maxSize / width;
+            width = maxSize;
+          }
+        } else {
+          if (height > maxSize) {
+            width *= maxSize / height;
+            height = maxSize;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.onerror = reject;
+      img.src = e.target!.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
+
+export default function Sidebar() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [businessName, setBusinessName] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Notification states
+  const [notification, setNotification] = useState<NotificationData | null>(null);
+  const [showNotifModal, setShowNotifModal] = useState(false);
+
+  // Fetch shop tenant details
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) return;
+      setIsAdmin(user.uid === ADMIN_UID);
+      const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
+      if (tenantSnap.exists()) {
+        const data = tenantSnap.data();
+        setBusinessName(data.businessName || "");
+        setNameDraft(data.businessName || "");
+        setLogoUrl(data.logoUrl || null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch low stock reorder notifications directly from Firestore (tenant-scoped)
+  useEffect(() => {
+    let unsubInv = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubInv();
+
+      if (!user) {
+        setNotification(null);
+        return;
+      }
+
+      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
+        const lowStockItems: LowStockItem[] = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as any))
+          .filter((i) => (i.stock ?? 0) <= (i.threshold ?? 0))
+          .map((i) => ({
+            id: i.id,
+            name: i.name,
+            stock: i.stock ?? 0,
+            minStock: i.threshold ?? 0,
+            suggestedOrder: Math.max((i.threshold ?? 0) * 2 - (i.stock ?? 0), i.threshold || 1),
+            supplier: i.supplierName?.trim() || "N/A",
+          }));
+
+        if (lowStockItems.length === 0) {
+          setNotification(null);
+          return;
+        }
+
+        setNotification({
+          hasNotification: true,
+          count: lowStockItems.length,
+          title: "⚠️ Low Stock Alert",
+          message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
+            .map((i) => i.name)
+            .join(", ")}.`,
+          items: lowStockItems,
+        });
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubInv();
+    };
+  }, []);
+
+  const saveBusinessName = async () => {
+    const user = auth.currentUser;
+    if (!user || !nameDraft.trim()) {
+      setNameDraft(businessName);
+      setEditingName(false);
+      return;
+    }
+    const trimmed = nameDraft.trim();
+    await updateDoc(doc(db, "tenants", user.uid), { businessName: trimmed });
+    setBusinessName(trimmed);
+    setEditingName(false);
+  };
+
+  const handleLogoClick = () => {
+    if (collapsed) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const user = auth.currentUser;
+    if (!file || !user) return;
+
+    setUploading(true);
+    setUploadError("");
+    try {
+      const base64 = await resizeImageToBase64(file);
+      await updateDoc(doc(db, "tenants", user.uid), { logoUrl: base64 });
+      setLogoUrl(base64);
+    } catch (err) {
+      console.error("Logo upload failed:", err);
+      setUploadError("Couldn't process that image. Try a different photo.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    router.push("/login");
+  };
+
+  return (
+    <>
+      {/* Mobile top bar with hamburger — visible only below sm breakpoint */}
+      <div
+        className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
+        style={{
+          background: "var(--color-bg-secondary)",
+          borderBottom: "1px solid var(--color-border)",
+        }}
+      >
+        <button
+          onClick={() => setMobileMenuOpen(true)}
+          className="text-2xl leading-none"
+          style={{ color: "var(--color-text-primary)" }}
+          aria-label="Open menu"
+        >
+          ☰
+        </button>
+        <p
+          className="text-sm font-semibold truncate max-w-[60%]"
+          style={{ color: "var(--color-text-primary)" }}
+        >
+          {businessName || "My Shop"}
+        </p>
+        {notification && notification.count > 0 ? (
+          <button
+            onClick={() => setShowNotifModal(true)}
+            className="relative text-xl"
+            aria-label="Notifications"
+          >
+            🔔
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+              {notification.count}
+            </span>
+          </button>
+        ) : (
+          <span className="w-6" />
+        )}
+      </div>
+
+      {/* Mobile drawer overlay */}
+      {mobileMenuOpen && (
+        <div className="sm:hidden fixed inset-0 z-50 flex">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div
+            className="relative w-72 max-w-[80vw] h-full flex flex-col p-4 overflow-y-auto"
+            style={{ background: "var(--color-bg-secondary)" }}
+          >
+            <div className="flex justify-between items-center mb-6">
+              <p
+                className="text-sm font-semibold"
+                style={{ color: "var(--color-text-primary)" }}
+              >
+                {businessName || "My Shop"}
+              </p>
+              <button
+                onClick={() => setMobileMenuOpen(false)}
+                className="text-2xl leading-none"
+                style={{ color: "var(--color-text-secondary)" }}
+                aria-label="Close menu"
+              >
+                ×
+              </button>
+            </div>
+
+            <nav className="space-y-1 flex-1">
+              {navItems.map((item) => {
+                const isActive = pathname === item.href;
+                if (item.disabled) {
+                  return (
+                    <div
+                      key={item.href}
+                      className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm opacity-40"
+                      style={{ color: "var(--color-text-secondary)" }}
+                    >
+                      <span>{item.icon}</span>
+                      <span>{item.label}</span>
+                    </div>
+                  );
+                }
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium"
+                    style={{
+                      background: isActive ? "var(--color-surface)" : "transparent",
+                      color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
+                    }}
+                  >
+                    <span>{item.icon}</span>
+                    <span>{item.label}</span>
+                    {(item.href === "/settings" || item.href === "/inventory") &&
+                      notification &&
+                      notification.count > 0 && (
+                        <span className="ml-auto bg-red-500 text-white rounded-full text-[10px] font-bold px-1.5 py-0.5">
+                          {notification.count}
+                        </span>
+                      )}
+                  </Link>
+                );
+              })}
+            </nav>
+
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium mt-4"
+              style={{ color: "#f87171" }}
+            >
+              <span>🚪</span>
+              <span>Log Out</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      <aside
+        className={`${
+          collapsed ? "w-16" : "w-64"
+        } min-h-screen p-3 hidden sm:flex sm:flex-col transition-all duration-200 border-r relative`}
+        style={{
+          background: "var(--color-bg-secondary)",
+          borderColor: "var(--color-border)",
+        }}
+      >
+        {/* Header & Collapse Toggle */}
+        <div className="flex items-center justify-between mb-4 px-1">
+          {!collapsed && (
+            <p
+              className="text-xs font-semibold uppercase tracking-wide"
+              style={{ color: "var(--color-text-secondary)" }}
+            >
+              My Shop
+            </p>
+          )}
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="p-1.5 rounded-lg transition ml-auto hover:opacity-80"
+            style={{ color: "var(--color-text-secondary)" }}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? "»" : "«"}
+          </button>
+        </div>
+
+        {/* Logo Section */}
+        <div className="flex flex-col items-center mb-6 px-1">
+          <input
+            type="file"
+            accept="image/*"
+            ref={fileInputRef}
+            onChange={handleLogoChange}
+            className="hidden"
+          />
+          <button
+            onClick={handleLogoClick}
+            disabled={collapsed}
+            title="Click to change logo"
+            className={`relative rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 border transition theme-pulse ${
+              collapsed ? "w-9 h-9" : "w-16 h-16"
+            } ${!collapsed ? "hover:opacity-80 cursor-pointer" : ""}`}
+            style={{
+              background: "var(--color-surface)",
+              borderColor: "var(--color-border)",
+              boxShadow: logoUrl ? "var(--glow-shadow)" : "none",
+            }}
+          >
+            {logoUrl ? (
+              <img src={logoUrl} alt="Shop logo" className="w-full h-full object-cover" />
+            ) : (
+              <span className={collapsed ? "text-sm" : "text-xl"}>🏪</span>
+            )}
+            {uploading && (
+              <span
+                className="absolute inset-0 flex items-center justify-center text-[10px]"
+                style={{ background: "var(--color-surface-glass)", color: "var(--color-text-secondary)" }}
+              >
+                ...
+              </span>
+            )}
+          </button>
+
+          {!collapsed && uploadError && (
+            <p className="text-[11px] text-red-400 mt-1 text-center">{uploadError}</p>
+          )}
+
+          {!collapsed && (
+            <div className="mt-2 w-full text-center px-1">
+              {editingName ? (
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onBlur={saveBusinessName}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      saveBusinessName();
+                    }
+                    if (e.key === "Escape") {
+                      setNameDraft(businessName);
+                      setEditingName(false);
+                    }
+                  }}
+                  className="w-full text-sm font-semibold text-center leading-snug rounded px-1 py-1 resize-none focus:outline-none focus:ring-1"
+                  style={{
+                    background: "var(--color-surface)",
+                    color: "var(--color-text-primary)",
+                    borderWidth: "1px",
+                    borderColor: "var(--color-primary)",
+                  }}
+                />
+              ) : (
+                <button
+                  onClick={() => setEditingName(true)}
+                  title="Click to edit shop name"
+                  className="text-sm font-semibold leading-snug break-words whitespace-normal w-full hover:opacity-80"
+                  style={{ color: "var(--color-text-primary)" }}
+                >
+                  {businessName || "Set shop name"}{" "}
+                  <span style={{ color: "var(--color-text-secondary)" }}>✎</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Owner Quick Alert Trigger Button */}
+        {notification && notification.count > 0 && (
+          <button
+            onClick={() => setShowNotifModal(true)}
+            className="mb-4 w-full p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20 transition flex items-center justify-between text-xs font-semibold"
+          >
+            <span className="flex items-center gap-1.5">
+              🔔 {!collapsed && "Reorder Alerts"}
+            </span>
+            <span className="bg-red-500 text-white px-1.5 py-0.5 rounded-full text-[10px] font-bold">
+              {notification.count}
+            </span>
+          </button>
+        )}
+
+        {/* Navigation Items */}
+        <nav className="space-y-1">
+          {navItems.map((item) => {
+            const isActive = pathname === item.href;
+            const isSettings = item.href === "/settings";
+            const isInventory = item.href === "/inventory";
+
+            if (item.disabled) {
+              return (
+                <div
+                  key={item.href}
+                  className={`flex items-center gap-3 px-2 py-2 rounded-lg cursor-not-allowed text-sm ${
+                    collapsed ? "justify-center" : ""
+                  }`}
+                  style={{ color: "var(--color-text-secondary)", opacity: 0.4 }}
+                  title="Coming soon"
+                >
+                  <span>{item.icon}</span>
+                  {!collapsed && <span>{item.label}</span>}
+                </div>
+              );
+            }
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                title={collapsed ? item.label : ""}
+                className={`relative flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition ${
+                  collapsed ? "justify-center" : ""
+                }`}
+                style={{
+                  background: isActive ? "var(--color-surface)" : "transparent",
+                  color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
+                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
+                }}
+              >
+                <span>{item.icon}</span>
+                {!collapsed && <span>{item.label}</span>}
+
+                {/* Badge Indicator for Inventory or Settings */}
+                {(isSettings || isInventory) && notification && notification.count > 0 && (
+                  <span
+                    className={`bg-red-500 text-white rounded-full font-bold flex items-center justify-center ${
+                      collapsed
+                        ? "absolute -top-1 -right-1 w-4 h-4 text-[9px]"
+                        : "ml-auto px-1.5 py-0.2 text-[10px]"
+                    }`}
+                  >
+                    {notification.count}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {isAdmin && (
+          <Link
+            href="/admin"
+            className="flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 mb-1"
+            style={{ color: "#a855f7" }}
+          >
+            <span>🛡️</span>
+            {!collapsed && <span>Admin</span>}
+          </Link>
+        )}
+
+        {/* Logout Button */}
+        <button
+          onClick={handleLogout}
+          title={collapsed ? "Log out" : ""}
+          className={`mt-auto flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 ${
+            collapsed ? "justify-center" : ""
+          }`}
+          style={{ color: "#f87171" }}
+        >
+          <span>🚪</span>
+          {!collapsed && <span>Log Out</span>}
+        </button>
+      </aside>
+
+      {/* Owner Reorder Notification Modal */}
+      {showNotifModal && notification && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div
+            className="w-full max-w-lg rounded-xl p-5 shadow-2xl border space-y-4"
+            style={{
+              background: "var(--color-bg-secondary)",
+              borderColor: "var(--color-border)",
+              color: "var(--color-text-primary)",
+            }}
+          >
+            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--color-border)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-xl">⚠️</span>
+                <h3 className="font-bold text-base">Owner Reorder Notifications</h3>
+              </div>
+              <button
+                onClick={() => setShowNotifModal(false)}
+                className="text-gray-400 hover:text-white text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-400">
+              {notification.message}
+            </p>
+
+            <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+              {notification.items.map((item) => (
+                <div
+                  key={item.id}
+                  className="p-3 rounded-lg border text-xs flex items-center justify-between"
+                  style={{
+                    background: "var(--color-surface)",
+                    borderColor: "var(--color-border)",
+                  }}
+                >
+                  <div>
+                    <p className="font-semibold text-sm">{item.name}</p>
+                    <p className="text-[11px] text-gray-400">Supplier: {item.supplier}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-red-400 font-bold">Stock: {item.stock} / {item.minStock}</p>
+                    <p className="text-blue-400 font-semibold">Order: +{item.suggestedOrder} pcs</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setShowNotifModal(false)}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg border"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                Close
+              </button>
+              <Link
+                href="/settings"
+                onClick={() => setShowNotifModal(false)}
+                className="px-4 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
+              >
+                Open Settings & Download CSV 📥
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Spacer so page content isn't hidden behind the fixed mobile top bar */}
+      <div className="sm:hidden h-14" />
+    </>
+  );
+}
+</file>
+
+<file path="app/components/UbaAssistant.jsx">
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { collection, doc, getDoc, getDocs, query, orderBy, limit } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
+
+export default function UbaAssistant() {
+  const [uid, setUid] = useState(null);
+  const [aiAccess, setAiAccess] = useState({ allowed: true });
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [contextLoaded, setContextLoaded] = useState(false);
+  const businessContextRef = useRef(null);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      setUid(user ? user.uid : null);
+      if (user) {
+        const snap = await getDoc(doc(db, "tenants", user.uid));
+        if (snap.exists()) setAiAccess(getAiAccess(snap.data()));
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, open]);
+
+  const loadBusinessContext = async () => {
+    if (!uid || businessContextRef.current) return;
+
+    const [tenantSnap, invSnap, salesSnap, ticketsSnap] = await Promise.all([
+      getDoc(doc(db, "tenants", uid)),
+      getDocs(query(collection(db, "tenants", uid, "inventory"), orderBy("name"), limit(60))),
+      getDocs(query(collection(db, "tenants", uid, "sales"), orderBy("date", "desc"), limit(25))),
+      getDocs(query(collection(db, "tenants", uid, "repairTickets"), orderBy("createdAt", "desc"), limit(20))),
+    ]);
+
+    const tenant = tenantSnap.exists() ? tenantSnap.data() : {};
+
+    businessContextRef.current = {
+      businessName: tenant.businessName || "",
+      businessType: tenant.businessType || "",
+      inventory: invSnap.docs.map((d) => {
+        const i = d.data();
+        return {
+          name: i.name,
+          category: i.category,
+          stock: i.stock,
+          threshold: i.threshold,
+          unitCost: i.unitCost,
+          sellingPrice: i.sellingPrice,
+        };
+      }),
+      recentSales: salesSnap.docs.map((d) => {
+        const s = d.data();
+        return { itemName: s.itemName, quantity: s.quantity, total: s.total, date: s.date };
+      }),
+      recentRepairTickets: ticketsSnap.docs.map((d) => {
+        const t = d.data();
+        return {
+          deviceInfo: t.deviceInfo,
+          status: t.status,
+          laborPayment: t.laborPayment,
+          createdAt: t.createdAt,
+        };
+      }),
+    };
+    setContextLoaded(true);
+  };
+
+  const handleOpen = async () => {
+    setOpen(true);
+    if (!contextLoaded) await loadBusinessContext();
+    if (messages.length === 0) {
+            setMessages([
+        {
+          role: "assistant",
+          content: "Hi, I'm UBA Assistant. Ask me anything about your shop — inventory, sales, repair tickets, or where to source parts.",
+        },
+      ]);
+    }
+  };
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+
+    if (!aiAccess.allowed) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: text },
+        { role: "assistant", content: AI_LOCKED_MESSAGE },
+      ]);
+      setInput("");
+      return;
+    }
+
+    if (uid) {
+      const usage = await checkAndIncrementUsage(uid, "chatCount");
+      if (!usage.allowed) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "user", content: text },
+          { role: "assistant", content: usageLimitMessage("chatCount", usage.limit) },
+        ]);
+        setInput("");
+        return;
+      }
+    }
+
+    const newMessages = [...messages, { role: "user", content: text }];
+    setMessages(newMessages);
+    setInput("");
+    setSending(true);
+
+    try {
+      const res = await fetch("/api/uba-assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
+          businessContext: businessContextRef.current || {},
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.error || "May problema, subukan ulit." },
+        ]);
+        return;
+      }
+
+      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+    } catch (err) {
+      console.error(err);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "May problema sa koneksyon, subukan ulit." },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  if (!uid) return null;
+
+  return (
+    <>
+      {/* Floating toggle button */}
+      <button
+        onClick={() => (open ? setOpen(false) : handleOpen())}
+        className="fixed bottom-5 right-5 w-14 h-14 rounded-full flex items-center justify-center z-[70] hover:opacity-90 transition"
+        style={{
+          background: "var(--gradient-accent)",
+          boxShadow: "var(--glow-shadow)",
+        }}
+        title="UBA Assistant"
+      >
+        <span className="text-2xl">{open ? "×" : "🤖"}</span>
+      </button>
+
+      {/* Chat panel */}
+      {open && (
+        <div
+          className="fixed bottom-24 right-5 w-[92vw] max-w-sm h-[70vh] max-h-[560px] flex flex-col z-[70] overflow-hidden"
+          style={{
+            background: "var(--color-surface)",
+            borderRadius: "var(--radius-card)",
+            borderWidth: "var(--border-width)",
+            borderColor: "var(--color-border)",
+            boxShadow: "var(--glow-shadow)",
+          }}
+        >
+          <div
+            className="px-4 py-3 flex items-center gap-2"
+            style={{ background: "var(--color-bg-secondary)", borderBottom: "1px solid var(--color-border)" }}
+          >
+            <span>🤖</span>
+            <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+              UBA Assistant
+            </p>
+          </div>
+
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className="max-w-[85%] px-3 py-2 rounded-2xl text-sm whitespace-pre-wrap"
+                  style={
+                    m.role === "user"
+                      ? { background: "var(--gradient-accent)", color: "#fff" }
+                      : { background: "var(--color-bg-secondary)", color: "var(--color-text-primary)" }
+                  }
+                >
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {sending && (
+              <div className="flex justify-start">
+                <div
+                  className="px-3 py-2 rounded-2xl text-sm"
+                  style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
+                >
+                  ...
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="p-3 flex gap-2" style={{ borderTop: "1px solid var(--color-border)" }}>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+                            placeholder={aiAccess.allowed ? "Ask about your shop..." : "AI trial ended — still readable"}
+              className="flex-1 px-3 py-2 text-sm"
+              style={{
+                background: "var(--color-bg-secondary)",
+                color: "var(--color-text-primary)",
+                borderRadius: "var(--radius-button)",
+                borderWidth: "var(--border-width)",
+                borderColor: "var(--color-border)",
+              }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={sending || !input.trim()}
+              className="px-4 py-2 text-sm font-semibold disabled:opacity-50"
+              style={{
+                background: "var(--gradient-accent)",
+                color: "#fff",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+</file>
+
+<file path="app/repair-tickets/page.tsx">
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import {
+  collection,
+  addDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  doc,
+  getDoc,
+  updateDoc,
+  deleteDoc,
+  increment,
+} from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
+
+type InventoryItem = {
+  id: string;
+  name: string;
+  stock: number;
+  unitCost: number;
+  sellingPrice: number;
+};
+
+type PartUsed = {
+  itemId: string;
+  itemName: string;
+  quantity: number;
+  unitCost: number;
+};
+
+type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
+
+type RepairTicket = {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  deviceInfo: string;
+  issueDescription: string;
+  status: Status;
+  partsUsed: PartUsed[];
+  laborPayment: number;
+  createdAt: string;
+  updatedAt: string;
+  salesRecorded?: boolean;
+};
+
+const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Paid"];
+
+const STATUS_COLORS: Record<Status, { bg: string; text: string }> = {
+  Pending: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
+  "In Progress": { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa" },
+  "Ready for Pickup": { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc" },
+  Paid: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
+  Cancelled: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
+};
+
+// Fallback color so an unexpected/missing status value never crashes the UI
+const DEFAULT_STATUS_COLOR = { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" };
+
+const getStatusColors = (status: Status | undefined) =>
+  (status && STATUS_COLORS[status]) || DEFAULT_STATUS_COLOR;
+
+const inputStyle: React.CSSProperties = {
+  background: "var(--color-bg-secondary)",
+  color: "var(--color-text-primary)",
+  borderColor: "var(--color-border)",
+  borderRadius: "var(--radius-button)",
+  borderWidth: "var(--border-width)",
+};
+
+const labelStyle: React.CSSProperties = { color: "var(--color-text-secondary)" };
+
+const cardStyle: React.CSSProperties = {
+  background: "var(--color-surface)",
+  borderRadius: "var(--radius-card)",
+  borderWidth: "var(--border-width)",
+  borderColor: "var(--color-border)",
+};
+
+export default function RepairTicketsPage() {
+  const [tickets, setTickets] = useState<RepairTicket[]>([]);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [uid, setUid] = useState<string | null>(null);
+  const router = useRouter();
+
+  const [statusFilter, setStatusFilter] = useState<"All" | Status>("All");
+  const [searchText, setSearchText] = useState("");
+
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [deviceInfo, setDeviceInfo] = useState("");
+  const [issueDescription, setIssueDescription] = useState("");
+  const [savingTicket, setSavingTicket] = useState(false);
+
+  const [detail, setDetail] = useState<RepairTicket | null>(null);
+  const [laborInput, setLaborInput] = useState("");
+  const [savingLabor, setSavingLabor] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
+  const [businessName, setBusinessName] = useState('');
+
+  useEffect(() => {
+    let unsubTickets = () => {};
+    let unsubInv = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubTickets();
+      unsubInv();
+
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+      setUid(user.uid);
+
+      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+      });
+
+      const ticketQuery = query(
+        collection(db, "tenants", user.uid, "repairTickets"),
+        orderBy("createdAt", "desc")
+      );
+      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
+        setTickets(
+          snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicket[]
+        );
+      });
+
+      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
+        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubTickets();
+      unsubInv();
+    };
+  }, [router]);
+
+  useEffect(() => {
+    if (!detail) return;
+    const fresh = tickets.find((t) => t.id === detail.id);
+    if (fresh) setDetail(fresh);
+  }, [tickets]);
+
+  const filteredTickets = useMemo(() => {
+    const searchLower = searchText.toLowerCase().trim();
+    return tickets.filter((t) => {
+      const matchesStatus = statusFilter === "All" || t.status === statusFilter;
+      if (!matchesStatus) return false;
+      if (!searchLower) return true;
+      return (
+        t.customerName.toLowerCase().includes(searchLower) ||
+        t.deviceInfo.toLowerCase().includes(searchLower) ||
+        t.customerPhone.toLowerCase().includes(searchLower)
+      );
+    });
+  }, [tickets, statusFilter, searchText]);
+
+  const resetNewForm = () => {
+    setCustomerName("");
+    setCustomerPhone("");
+    setDeviceInfo("");
+    setIssueDescription("");
+  };
+
+  const handleCreateTicket = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uid) return;
+    setSavingTicket(true);
+    try {
+      const now = new Date().toISOString();
+      await addDoc(collection(db, "tenants", uid, "repairTickets"), {
+        customerName,
+        customerPhone,
+        deviceInfo,
+        issueDescription,
+        status: "Pending" as Status,
+        partsUsed: [],
+        laborPayment: 0,
+        createdAt: now,
+        updatedAt: now,
+        salesRecorded: false,
+      });
+      resetNewForm();
+      setShowNewForm(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingTicket(false);
+    }
+  };
+
+  // Safely adjust an inventory item's stock. Checks that the document still
+  // exists before calling updateDoc, since parts referenced by older repair
+  // tickets can point to inventory items that were later deleted. Returns
+  // true if the stock was actually adjusted, false if the item no longer
+  // exists (so callers can warn the user instead of crashing).
+  const safeAdjustStock = async (
+    uidParam: string,
+    itemId: string,
+    delta: number
+  ): Promise<boolean> => {
+    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      console.warn(`Inventory item ${itemId} no longer exists — skipping stock update.`);
+      return false;
+    }
+    await updateDoc(ref, { stock: increment(delta) });
+    return true;
+  };
+
+  const openDetail = (ticket: RepairTicket) => {
+    setDetail(ticket);
+    setLaborInput(String(ticket.laborPayment || 0));
+  };
+
+  const partsCostOf = (ticket: RepairTicket) =>
+    ticket.partsUsed.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
+
+  const totalCostOf = (ticket: RepairTicket) => partsCostOf(ticket) + (ticket.laborPayment || 0);
+
+  // Records the ticket as a sale. Called automatically the moment a ticket is
+  // marked "Paid". Guarded by salesRecorded so it can never double-post,
+  // even if the button is clicked more than once or the write is retried.
+  const recordTicketAsSale = async (uidParam: string, ticket: RepairTicket) => {
+    const partsCost = partsCostOf(ticket);
+    const totalCharge = partsCost + (ticket.laborPayment || 0);
+
+    await addDoc(collection(db, "tenants", uidParam, "sales"), {
+      itemName: `Repair: ${ticket.deviceInfo} (${ticket.customerName})`,
+      quantity: 1,
+      price: totalCharge,
+      total: totalCharge,
+      profit: ticket.laborPayment || 0,
+      serialNumberUsed: null,
+      date: new Date().toISOString(),
+      source: "repairTicket",
+      repairTicketId: ticket.id,
+    });
+  };
+
+  const handleChangeStatus = async (ticket: RepairTicket, newStatus: Status) => {
+    if (!uid || changingStatus) return;
+    setChangingStatus(true);
+
+    try {
+      // Returning parts to stock when a ticket is cancelled
+      if (newStatus === "Cancelled" && ticket.partsUsed.length > 0) {
+        const confirmed = window.confirm(
+          "Cancelling this ticket will return all assigned parts back to inventory stock. Continue?"
+        );
+        if (!confirmed) {
+          setChangingStatus(false);
+          return;
+        }
+        const missingParts: string[] = [];
+        for (const part of ticket.partsUsed) {
+          const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
+          if (!ok) missingParts.push(part.itemName);
+        }
+        if (missingParts.length > 0) {
+          window.alert(
+            `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
+              missingParts.length > 1 ? "them" : "it"
+            }.`
+          );
+        }
+      }
+
+      // Auto-list sa Sales sa sandaling naging "Paid" ang ticket.
+      // salesRecorded guard = kahit ilang beses ma-trigger ito, minsan lang
+      // talaga siya makakapasok sa sales collection.
+      const shouldRecordSale = newStatus === "Paid" && !ticket.salesRecorded;
+      if (shouldRecordSale) {
+        await recordTicketAsSale(uid, ticket);
+      }
+
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", ticket.id), {
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+        ...(shouldRecordSale ? { salesRecorded: true } : {}),
+      });
+    } catch (err) {
+      console.error("Failed to change ticket status:", err);
+      window.alert("May problema sa pag-update ng ticket. Subukan ulit.");
+    } finally {
+      setChangingStatus(false);
+    }
+  };
+
+  const handleAddPart = async (item: InventoryItem) => {
+    if (!uid || !detail) return;
+    if (item.stock <= 0) return;
+
+    const existing = detail.partsUsed.find((p) => p.itemId === item.id);
+    const updatedParts = existing
+      ? detail.partsUsed.map((p) =>
+          p.itemId === item.id ? { ...p, quantity: p.quantity + 1 } : p
+        )
+      : [...detail.partsUsed, { itemId: item.id, itemName: item.name, quantity: 1, unitCost: item.unitCost || 0 }];
+
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        partsUsed: updatedParts,
+        updatedAt: new Date().toISOString(),
+      });
+      const ok = await safeAdjustStock(uid, item.id, -1);
+      if (!ok) {
+        window.alert(
+          `"${item.name}" was removed from inventory just now, so stock could not be reduced. Please refresh.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to add part:", err);
+      window.alert("May problema sa pagdagdag ng part. Subukan ulit.");
+    }
+  };
+
+  const handleRemovePart = async (part: PartUsed) => {
+    if (!uid || !detail) return;
+
+    const updatedParts =
+      part.quantity <= 1
+        ? detail.partsUsed.filter((p) => p.itemId !== part.itemId)
+        : detail.partsUsed.map((p) =>
+            p.itemId === part.itemId ? { ...p, quantity: p.quantity - 1 } : p
+          );
+
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        partsUsed: updatedParts,
+        updatedAt: new Date().toISOString(),
+      });
+      const ok = await safeAdjustStock(uid, part.itemId, 1);
+      if (!ok) {
+        window.alert(
+          `"${part.itemName}" no longer exists in inventory, so stock was not restored.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to remove part:", err);
+      window.alert("May problema sa pagtanggal ng part. Subukan ulit.");
+    }
+  };
+
+  const handleSaveLabor = async () => {
+    if (!uid || !detail) return;
+    setSavingLabor(true);
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        laborPayment: Number(laborInput) || 0,
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      setSavingLabor(false);
+    }
+  };
+
+  const handleDeleteTicket = async (ticket: RepairTicket) => {
+    if (!uid) return;
+    const confirmed = window.confirm(
+      `Delete the repair ticket for "${ticket.customerName}"? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const missingParts: string[] = [];
+      for (const part of ticket.partsUsed) {
+        const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
+        if (!ok) missingParts.push(part.itemName);
+      }
+
+      await deleteDoc(doc(db, "tenants", uid, "repairTickets", ticket.id));
+      setDetail(null);
+
+      if (missingParts.length > 0) {
+        window.alert(
+          `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
+            missingParts.length > 1 ? "them" : "it"
+          }.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to delete ticket:", err);
+      window.alert("May problema sa pagbura ng ticket. Subukan ulit.");
+    }
+  };
+
+  const isLocked = (status: Status) => status === "Cancelled" || status === "Paid";
+
+  return (
+    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+      <Sidebar />
+      <main className="flex-1 p-6">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
+          <div>
+            <h1
+              className="text-xl font-bold"
+              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+            >
+              Repair Tickets
+            </h1>
+            <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+              Track customer repairs from drop-off to pickup
+            </p>
+          </div>
+          <button
+            onClick={() => setShowNewForm(true)}
+            className="font-semibold px-4 py-2 text-sm hover:opacity-90"
+            style={{
+              background: "var(--gradient-accent)",
+              color: "#fff",
+              borderRadius: "var(--radius-button)",
+              boxShadow: "var(--glow-shadow)",
+            }}
+          >
+            + New Ticket
+          </button>
+        </div>
+
+        <div className="mb-4">
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Search by customer name, phone, or device..."
+            className="w-full px-4 py-2"
+            style={inputStyle}
+          />
+        </div>
+
+        {/* Status filter chips */}
+        <div className="flex flex-wrap gap-2 mb-6">
+          {(["All", ...STATUS_FLOW, "Cancelled"] as const).map((s) => {
+            const isActive = statusFilter === s;
+            return (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s as "All" | Status)}
+                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                style={{
+                  background: isActive ? "var(--color-primary)" : "var(--color-surface)",
+                  color: isActive ? "#fff" : "var(--color-text-secondary)",
+                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
+                  borderWidth: isActive ? 0 : "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Ticket list */}
+        {filteredTickets.length === 0 ? (
+          <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
+            No repair tickets found. Click "+ New Ticket" to log a customer's device.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredTickets.map((ticket) => {
+              const colors = getStatusColors(ticket.status);
+              return (
+                <button
+                  key={ticket.id}
+                  onClick={() => openDetail(ticket)}
+                  className="text-left p-4 transition hover:opacity-90"
+                  style={cardStyle}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <p className="font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                      {ticket.customerName}
+                    </p>
+                    <span
+                      className="text-xs font-medium px-2 py-1 rounded-full"
+                      style={{ background: colors.bg, color: colors.text }}
+                    >
+                      {ticket.status || "Unknown"}
+                    </span>
+                  </div>
+                  <p className="text-sm mb-1" style={{ color: "var(--color-text-secondary)" }}>
+                    {ticket.deviceInfo}
+                  </p>
+                  <p className="text-xs mb-3 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>
+                    {ticket.issueDescription}
+                  </p>
+                  <div className="flex justify-between items-center text-xs">
+                    <span style={{ color: "var(--color-text-secondary)" }}>
+                      {ticket.partsUsed?.length || 0} part(s)
+                    </span>
+                    <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>
+                      ₱{totalCostOf(ticket).toLocaleString()}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ---- NEW TICKET MODAL ---- */}
+        {showNewForm && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <form
+              onSubmit={handleCreateTicket}
+              className="w-full max-w-md p-6 space-y-4"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <div className="flex justify-between items-center">
+                <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>
+                  New Repair Ticket
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowNewForm(false)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Customer Name</label>
+                <input
+                  required
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. Juan Dela Cruz"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Contact Number</label>
+                <input
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. 09171234567"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Device</label>
+                <input
+                  required
+                  value={deviceInfo}
+                  onChange={(e) => setDeviceInfo(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. HP Pavilion 14 Laptop"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Reported Issue</label>
+                <textarea
+                  required
+                  value={issueDescription}
+                  onChange={(e) => setIssueDescription(e.target.value)}
+                  rows={3}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. Won't turn on, no display"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={savingTicket}
+                className="w-full font-semibold py-2.5 disabled:opacity-50 hover:opacity-90"
+                style={{
+                  background: "var(--gradient-accent)",
+                  color: "#fff",
+                  borderRadius: "var(--radius-button)",
+                  boxShadow: "var(--glow-shadow)",
+                }}
+              >
+                {savingTicket ? "Saving..." : "Create Ticket"}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* ---- TICKET DETAIL MODAL ---- */}
+        {detail && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <div
+              className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3
+                    className="text-lg font-bold"
+                    style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+                  >
+                    {detail.customerName}
+                  </h3>
+                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                    {detail.customerPhone || "No contact number"}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDetail(null)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                  {detail.deviceInfo}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                  {detail.issueDescription}
+                </p>
+              </div>
+
+              {/* Status flow */}
+              <div className="mb-6">
+                <p className="text-sm font-medium mb-2" style={labelStyle}>Status</p>
+                {detail.status === "Paid" && detail.salesRecorded && (
+                <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
+                 ✓ Recorded in Sales
+                </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {STATUS_FLOW.map((s) => {
+                    const isActive = detail.status === s;
+                    const colors = STATUS_COLORS[s];
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => handleChangeStatus(detail, s)}
+                        disabled={isLocked(detail.status) || changingStatus}
+                        className="px-3 py-1.5 rounded-full text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{
+                          background: isActive ? colors.bg : "var(--color-bg-secondary)",
+                          color: isActive ? colors.text : "var(--color-text-secondary)",
+                          boxShadow: isActive ? `0 0 12px ${colors.bg}` : "none",
+                        }}
+                      >
+                        {s === "Paid" ? "Mark as Paid" : s}
+                      </button>
+                    );
+                  })}
+                  {!isLocked(detail.status) && (
+                    <button
+                      onClick={() => handleChangeStatus(detail, "Cancelled")}
+                      disabled={changingStatus}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80 disabled:opacity-40"
+                      style={{ background: STATUS_COLORS.Cancelled.bg, color: STATUS_COLORS.Cancelled.text }}
+                    >
+                      Cancel Ticket
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Parts used */}
+              <div className="mb-6">
+                <p className="text-sm font-medium mb-2" style={labelStyle}>Parts Used</p>
+
+                {detail.partsUsed.length > 0 && (
+                  <div className="space-y-2 mb-3">
+                    {detail.partsUsed.map((p) => (
+                      <div
+                        key={p.itemId}
+                        className="flex justify-between items-center px-3 py-2 rounded-lg text-sm"
+                        style={{ background: "var(--color-bg-secondary)" }}
+                      >
+                        <span style={{ color: "var(--color-text-primary)" }}>{p.itemName}</span>
+                        <div className="flex items-center gap-3">
+                          <span style={{ color: "var(--color-text-secondary)" }}>
+                            {p.quantity} × ₱{p.unitCost.toLocaleString()}
+                          </span>
+                          <button
+                            onClick={() => handleRemovePart(p)}
+                            disabled={isLocked(detail.status)}
+                            className="w-6 h-6 rounded-full font-bold disabled:opacity-30"
+                            style={{ background: "var(--color-surface)", color: "#f87171" }}
+                          >
+                            −
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!isLocked(detail.status) && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
+                    {items.length === 0 ? (
+                      <p className="col-span-full text-sm py-3 text-center" style={{ color: "var(--color-text-secondary)" }}>
+                        No inventory items available.
+                      </p>
+                    ) : (
+                      items.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => handleAddPart(item)}
+                          disabled={item.stock <= 0}
+                          className="p-2 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
+                          style={{
+                            background: "var(--color-bg-secondary)",
+                            borderRadius: "var(--radius-button)",
+                            borderWidth: "var(--border-width)",
+                            borderColor: "var(--color-border)",
+                          }}
+                        >
+                          <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>
+                            {item.name}
+                          </p>
+                          <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>
+                            Stock: {item.stock}
+                          </p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Labor payment */}
+              <div className="mb-6">
+                <label className="text-sm font-medium" style={labelStyle}>Labor Payment (₱)</label>
+                <div className="flex gap-2 mt-1">
+                  <input
+                    type="number"
+                    value={laborInput}
+                    onChange={(e) => setLaborInput(e.target.value)}
+                    disabled={isLocked(detail.status)}
+                    className="flex-1 px-3 py-2 disabled:opacity-50"
+                    style={inputStyle}
+                  />
+                  <button
+                    onClick={handleSaveLabor}
+                    disabled={savingLabor || isLocked(detail.status)}
+                    className="px-4 py-2 text-sm font-semibold disabled:opacity-50 hover:opacity-90"
+                    style={{
+                      background: "var(--color-primary)",
+                      color: "#fff",
+                      borderRadius: "var(--radius-button)",
+                    }}
+                  >
+                    {savingLabor ? "..." : "Save"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Total cost summary */}
+              <div
+                className="flex justify-between items-center p-4 mb-4"
+                style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)", boxShadow: "var(--glow-shadow)" }}
+              >
+                <div>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Parts + Labor</p>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                    ₱{partsCostOf(detail).toLocaleString()} + ₱{(detail.laborPayment || 0).toLocaleString()}
+                  </p>
+                </div>
+                <p
+                  className="text-xl font-bold"
+                  style={{ color: "var(--color-primary-light)", fontFamily: "var(--font-heading)" }}
+                >
+                  ₱{totalCostOf(detail).toLocaleString()}
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  const partsLines = detail.partsUsed.map((p) => ({
+                    label: `${p.itemName} × ${p.quantity}`,
+                    amount: p.unitCost * p.quantity,
+                  }));
+                  const linesWithLabor = [
+                    ...partsLines,
+                    { label: "Labor", amount: detail.laborPayment || 0 },
+                  ];
+                  printReceipt({
+                    businessName,
+                    receiptTitle: "Repair Receipt",
+                    receiptNumber: detail.id.slice(0, 8).toUpperCase(),
+                    date: new Date(),
+                    customerName: detail.customerName,
+                    lines: linesWithLabor,
+                    total: totalCostOf(detail),
+                  });
+                }}
+                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                🖨️ Print Receipt
+              </button>
+
+              <button
+                onClick={() => handleDeleteTicket(detail)}
+                className="w-full text-sm font-medium py-2 hover:opacity-80"
+                style={{ color: "#f87171" }}
+              >
+                Delete Ticket
+              </button>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+</file>
+
+<file path="app/settings/page.jsx">
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { auth } from "../lib/firebase";
+import Sidebar from "../components/Sidebar";
+import ThemeSwitcher from "../components/ThemeSwitcher";
+import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
+import ReorderSummary from "../components/ReorderSummary";
+import { useTheme } from "../context/ThemeContext";
+import { getTheme } from "../lib/themes";
+
+export default function SettingsPage() {
+  const [checking, setChecking] = useState(true);
+  const router = useRouter();
+  const { themeId } = useTheme();
+  const theme = getTheme(themeId);
+
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+      setChecking(false);
+    });
+    return () => unsubscribe();
+  }, [router]);
+
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500 text-sm">Loading settings...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex min-h-screen"
+      style={{ background: theme.colors.bgPrimary }}
+    >
+      <Sidebar />
+      <div className="flex-1">
+        <header
+          className="px-6 py-4 flex justify-between items-center border-b"
+          style={{
+            background: theme.colors.bgSecondary,
+            borderColor: theme.colors.border,
+          }}
+        >
+          <div>
+            <h1
+              className="text-lg font-bold"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Settings
+            </h1>
+            <p className="text-xs" style={{ color: theme.colors.textSecondary }}>
+              Personalize how your dashboard looks
+            </p>
+          </div>
+        </header>
+
+        <main className="p-6 space-y-10 max-w-2xl">
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Choose Your Theme
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Pick the look that fits your shop's vibe. Changes apply instantly across
+              the whole app.
+            </p>
+            <ThemeSwitcher />
+          </section>
+
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Graph Style
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Choose how your Dashboard trend chart is drawn.
+            </p>
+            <GraphStyleSwitcher />
+          </section>
+
+                    <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Reorder Summary
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              UBA automatically identifies items that need restocking, organized by supplier.
+            </p>
+            <ReorderSummary />
+          </section>
+        </main>
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -6590,7 +7668,8 @@ export default function InventoryPage() {
                 boxShadow: "var(--glow-shadow)",
               }}
             >
-              🔍 Universal Scanner
+              <span className="sm:hidden">🔍 Scanner</span>
+              <span className="hidden sm:inline">🔍 Universal Scanner</span>
             </button>
             <button
               onClick={openAddItemForm}
@@ -6602,7 +7681,8 @@ export default function InventoryPage() {
                 boxShadow: "var(--glow-shadow)",
               }}
             >
-              + Add Item
+              <span className="sm:hidden">+ Add</span>
+              <span className="hidden sm:inline">+ Add Item</span>
             </button>
             <button
               onClick={openAddBundleForm}
@@ -6617,7 +7697,8 @@ export default function InventoryPage() {
                 borderColor: "var(--color-border)",
               }}
             >
-              🧩 New Bundle
+              <span className="sm:hidden">🧩 Bundle</span>
+              <span className="hidden sm:inline">🧩 New Bundle</span>
             </button>
           </div>
         </div>
@@ -6693,15 +7774,16 @@ export default function InventoryPage() {
           </div>
         ) : (
           <div
-            className="overflow-hidden"
             style={{
               background: "var(--color-surface)",
               borderRadius: "var(--radius-card)",
               borderWidth: "var(--border-width)",
               borderColor: "var(--color-border)",
+              overflow: "hidden",
             }}
           >
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ minWidth: "640px" }}>
               <thead
                 className="text-left"
                 style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
@@ -6878,6 +7960,7 @@ export default function InventoryPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
@@ -7999,962 +9082,6 @@ export default function InventoryPage() {
 
 
       </main>
-    </div>
-  );
-}
-</file>
-
-<file path="app/repair-tickets/page.tsx">
-"use client";
-
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  doc,
-  getDoc,
-  updateDoc,
-  deleteDoc,
-  increment,
-} from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import Sidebar from "../components/Sidebar";
-import { printReceipt } from "../lib/receipt";
-
-type InventoryItem = {
-  id: string;
-  name: string;
-  stock: number;
-  unitCost: number;
-  sellingPrice: number;
-};
-
-type PartUsed = {
-  itemId: string;
-  itemName: string;
-  quantity: number;
-  unitCost: number;
-};
-
-type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
-
-type RepairTicket = {
-  id: string;
-  customerName: string;
-  customerPhone: string;
-  deviceInfo: string;
-  issueDescription: string;
-  status: Status;
-  partsUsed: PartUsed[];
-  laborPayment: number;
-  createdAt: string;
-  updatedAt: string;
-  salesRecorded?: boolean;
-};
-
-const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Paid"];
-
-const STATUS_COLORS: Record<Status, { bg: string; text: string }> = {
-  Pending: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
-  "In Progress": { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa" },
-  "Ready for Pickup": { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc" },
-  Paid: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
-  Cancelled: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
-};
-
-// Fallback color so an unexpected/missing status value never crashes the UI
-const DEFAULT_STATUS_COLOR = { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" };
-
-const getStatusColors = (status: Status | undefined) =>
-  (status && STATUS_COLORS[status]) || DEFAULT_STATUS_COLOR;
-
-const inputStyle: React.CSSProperties = {
-  background: "var(--color-bg-secondary)",
-  color: "var(--color-text-primary)",
-  borderColor: "var(--color-border)",
-  borderRadius: "var(--radius-button)",
-  borderWidth: "var(--border-width)",
-};
-
-const labelStyle: React.CSSProperties = { color: "var(--color-text-secondary)" };
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--color-surface)",
-  borderRadius: "var(--radius-card)",
-  borderWidth: "var(--border-width)",
-  borderColor: "var(--color-border)",
-};
-
-export default function RepairTicketsPage() {
-  const [tickets, setTickets] = useState<RepairTicket[]>([]);
-  const [items, setItems] = useState<InventoryItem[]>([]);
-  const [uid, setUid] = useState<string | null>(null);
-  const router = useRouter();
-
-  const [statusFilter, setStatusFilter] = useState<"All" | Status>("All");
-  const [searchText, setSearchText] = useState("");
-
-  const [showNewForm, setShowNewForm] = useState(false);
-  const [customerName, setCustomerName] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [deviceInfo, setDeviceInfo] = useState("");
-  const [issueDescription, setIssueDescription] = useState("");
-  const [savingTicket, setSavingTicket] = useState(false);
-
-  const [detail, setDetail] = useState<RepairTicket | null>(null);
-  const [laborInput, setLaborInput] = useState("");
-  const [savingLabor, setSavingLabor] = useState(false);
-  const [changingStatus, setChangingStatus] = useState(false);
-  const [businessName, setBusinessName] = useState('');
-
-  useEffect(() => {
-    let unsubTickets = () => {};
-    let unsubInv = () => {};
-
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-      unsubTickets();
-      unsubInv();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-      setUid(user.uid);
-
-      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
-        if (snap.exists()) setBusinessName(snap.data().businessName || "");
-      });
-
-      const ticketQuery = query(
-        collection(db, "tenants", user.uid, "repairTickets"),
-        orderBy("createdAt", "desc")
-      );
-      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
-        setTickets(
-          snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicket[]
-        );
-      });
-
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(invQuery, (snapshot) => {
-        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
-      });
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubTickets();
-      unsubInv();
-    };
-  }, [router]);
-
-  useEffect(() => {
-    if (!detail) return;
-    const fresh = tickets.find((t) => t.id === detail.id);
-    if (fresh) setDetail(fresh);
-  }, [tickets]);
-
-  const filteredTickets = useMemo(() => {
-    const searchLower = searchText.toLowerCase().trim();
-    return tickets.filter((t) => {
-      const matchesStatus = statusFilter === "All" || t.status === statusFilter;
-      if (!matchesStatus) return false;
-      if (!searchLower) return true;
-      return (
-        t.customerName.toLowerCase().includes(searchLower) ||
-        t.deviceInfo.toLowerCase().includes(searchLower) ||
-        t.customerPhone.toLowerCase().includes(searchLower)
-      );
-    });
-  }, [tickets, statusFilter, searchText]);
-
-  const resetNewForm = () => {
-    setCustomerName("");
-    setCustomerPhone("");
-    setDeviceInfo("");
-    setIssueDescription("");
-  };
-
-  const handleCreateTicket = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uid) return;
-    setSavingTicket(true);
-    try {
-      const now = new Date().toISOString();
-      await addDoc(collection(db, "tenants", uid, "repairTickets"), {
-        customerName,
-        customerPhone,
-        deviceInfo,
-        issueDescription,
-        status: "Pending" as Status,
-        partsUsed: [],
-        laborPayment: 0,
-        createdAt: now,
-        updatedAt: now,
-        salesRecorded: false,
-      });
-      resetNewForm();
-      setShowNewForm(false);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setSavingTicket(false);
-    }
-  };
-
-  // Safely adjust an inventory item's stock. Checks that the document still
-  // exists before calling updateDoc, since parts referenced by older repair
-  // tickets can point to inventory items that were later deleted. Returns
-  // true if the stock was actually adjusted, false if the item no longer
-  // exists (so callers can warn the user instead of crashing).
-  const safeAdjustStock = async (
-    uidParam: string,
-    itemId: string,
-    delta: number
-  ): Promise<boolean> => {
-    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      console.warn(`Inventory item ${itemId} no longer exists — skipping stock update.`);
-      return false;
-    }
-    await updateDoc(ref, { stock: increment(delta) });
-    return true;
-  };
-
-  const openDetail = (ticket: RepairTicket) => {
-    setDetail(ticket);
-    setLaborInput(String(ticket.laborPayment || 0));
-  };
-
-  const partsCostOf = (ticket: RepairTicket) =>
-    ticket.partsUsed.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
-
-  const totalCostOf = (ticket: RepairTicket) => partsCostOf(ticket) + (ticket.laborPayment || 0);
-
-  // Records the ticket as a sale. Called automatically the moment a ticket is
-  // marked "Paid". Guarded by salesRecorded so it can never double-post,
-  // even if the button is clicked more than once or the write is retried.
-  const recordTicketAsSale = async (uidParam: string, ticket: RepairTicket) => {
-    const partsCost = partsCostOf(ticket);
-    const totalCharge = partsCost + (ticket.laborPayment || 0);
-
-    await addDoc(collection(db, "tenants", uidParam, "sales"), {
-      itemName: `Repair: ${ticket.deviceInfo} (${ticket.customerName})`,
-      quantity: 1,
-      price: totalCharge,
-      total: totalCharge,
-      profit: ticket.laborPayment || 0,
-      serialNumberUsed: null,
-      date: new Date().toISOString(),
-      source: "repairTicket",
-      repairTicketId: ticket.id,
-    });
-  };
-
-  const handleChangeStatus = async (ticket: RepairTicket, newStatus: Status) => {
-    if (!uid || changingStatus) return;
-    setChangingStatus(true);
-
-    try {
-      // Returning parts to stock when a ticket is cancelled
-      if (newStatus === "Cancelled" && ticket.partsUsed.length > 0) {
-        const confirmed = window.confirm(
-          "Cancelling this ticket will return all assigned parts back to inventory stock. Continue?"
-        );
-        if (!confirmed) {
-          setChangingStatus(false);
-          return;
-        }
-        const missingParts: string[] = [];
-        for (const part of ticket.partsUsed) {
-          const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
-          if (!ok) missingParts.push(part.itemName);
-        }
-        if (missingParts.length > 0) {
-          window.alert(
-            `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
-              missingParts.length > 1 ? "them" : "it"
-            }.`
-          );
-        }
-      }
-
-      // Auto-list sa Sales sa sandaling naging "Paid" ang ticket.
-      // salesRecorded guard = kahit ilang beses ma-trigger ito, minsan lang
-      // talaga siya makakapasok sa sales collection.
-      const shouldRecordSale = newStatus === "Paid" && !ticket.salesRecorded;
-      if (shouldRecordSale) {
-        await recordTicketAsSale(uid, ticket);
-      }
-
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", ticket.id), {
-        status: newStatus,
-        updatedAt: new Date().toISOString(),
-        ...(shouldRecordSale ? { salesRecorded: true } : {}),
-      });
-    } catch (err) {
-      console.error("Failed to change ticket status:", err);
-      window.alert("May problema sa pag-update ng ticket. Subukan ulit.");
-    } finally {
-      setChangingStatus(false);
-    }
-  };
-
-  const handleAddPart = async (item: InventoryItem) => {
-    if (!uid || !detail) return;
-    if (item.stock <= 0) return;
-
-    const existing = detail.partsUsed.find((p) => p.itemId === item.id);
-    const updatedParts = existing
-      ? detail.partsUsed.map((p) =>
-          p.itemId === item.id ? { ...p, quantity: p.quantity + 1 } : p
-        )
-      : [...detail.partsUsed, { itemId: item.id, itemName: item.name, quantity: 1, unitCost: item.unitCost || 0 }];
-
-    try {
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-        partsUsed: updatedParts,
-        updatedAt: new Date().toISOString(),
-      });
-      const ok = await safeAdjustStock(uid, item.id, -1);
-      if (!ok) {
-        window.alert(
-          `"${item.name}" was removed from inventory just now, so stock could not be reduced. Please refresh.`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to add part:", err);
-      window.alert("May problema sa pagdagdag ng part. Subukan ulit.");
-    }
-  };
-
-  const handleRemovePart = async (part: PartUsed) => {
-    if (!uid || !detail) return;
-
-    const updatedParts =
-      part.quantity <= 1
-        ? detail.partsUsed.filter((p) => p.itemId !== part.itemId)
-        : detail.partsUsed.map((p) =>
-            p.itemId === part.itemId ? { ...p, quantity: p.quantity - 1 } : p
-          );
-
-    try {
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-        partsUsed: updatedParts,
-        updatedAt: new Date().toISOString(),
-      });
-      const ok = await safeAdjustStock(uid, part.itemId, 1);
-      if (!ok) {
-        window.alert(
-          `"${part.itemName}" no longer exists in inventory, so stock was not restored.`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to remove part:", err);
-      window.alert("May problema sa pagtanggal ng part. Subukan ulit.");
-    }
-  };
-
-  const handleSaveLabor = async () => {
-    if (!uid || !detail) return;
-    setSavingLabor(true);
-    try {
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-        laborPayment: Number(laborInput) || 0,
-        updatedAt: new Date().toISOString(),
-      });
-    } finally {
-      setSavingLabor(false);
-    }
-  };
-
-  const handleDeleteTicket = async (ticket: RepairTicket) => {
-    if (!uid) return;
-    const confirmed = window.confirm(
-      `Delete the repair ticket for "${ticket.customerName}"? This cannot be undone.`
-    );
-    if (!confirmed) return;
-
-    try {
-      const missingParts: string[] = [];
-      for (const part of ticket.partsUsed) {
-        const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
-        if (!ok) missingParts.push(part.itemName);
-      }
-
-      await deleteDoc(doc(db, "tenants", uid, "repairTickets", ticket.id));
-      setDetail(null);
-
-      if (missingParts.length > 0) {
-        window.alert(
-          `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
-            missingParts.length > 1 ? "them" : "it"
-          }.`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to delete ticket:", err);
-      window.alert("May problema sa pagbura ng ticket. Subukan ulit.");
-    }
-  };
-
-  const isLocked = (status: Status) => status === "Cancelled" || status === "Paid";
-
-  return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
-      <Sidebar />
-      <main className="flex-1 p-6">
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
-          <div>
-            <h1
-              className="text-xl font-bold"
-              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-            >
-              Repair Tickets
-            </h1>
-            <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-              Track customer repairs from drop-off to pickup
-            </p>
-          </div>
-          <button
-            onClick={() => setShowNewForm(true)}
-            className="font-semibold px-4 py-2 text-sm hover:opacity-90"
-            style={{
-              background: "var(--gradient-accent)",
-              color: "#fff",
-              borderRadius: "var(--radius-button)",
-              boxShadow: "var(--glow-shadow)",
-            }}
-          >
-            + New Ticket
-          </button>
-        </div>
-
-        <div className="mb-4">
-          <input
-            type="text"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            placeholder="Search by customer name, phone, or device..."
-            className="w-full px-4 py-2"
-            style={inputStyle}
-          />
-        </div>
-
-        {/* Status filter chips */}
-        <div className="flex flex-wrap gap-2 mb-6">
-          {(["All", ...STATUS_FLOW, "Cancelled"] as const).map((s) => {
-            const isActive = statusFilter === s;
-            return (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s as "All" | Status)}
-                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
-                style={{
-                  background: isActive ? "var(--color-primary)" : "var(--color-surface)",
-                  color: isActive ? "#fff" : "var(--color-text-secondary)",
-                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
-                  borderWidth: isActive ? 0 : "var(--border-width)",
-                  borderColor: "var(--color-border)",
-                }}
-              >
-                {s}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Ticket list */}
-        {filteredTickets.length === 0 ? (
-          <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-            No repair tickets found. Click "+ New Ticket" to log a customer's device.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredTickets.map((ticket) => {
-              const colors = getStatusColors(ticket.status);
-              return (
-                <button
-                  key={ticket.id}
-                  onClick={() => openDetail(ticket)}
-                  className="text-left p-4 transition hover:opacity-90"
-                  style={cardStyle}
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <p className="font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                      {ticket.customerName}
-                    </p>
-                    <span
-                      className="text-xs font-medium px-2 py-1 rounded-full"
-                      style={{ background: colors.bg, color: colors.text }}
-                    >
-                      {ticket.status || "Unknown"}
-                    </span>
-                  </div>
-                  <p className="text-sm mb-1" style={{ color: "var(--color-text-secondary)" }}>
-                    {ticket.deviceInfo}
-                  </p>
-                  <p className="text-xs mb-3 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>
-                    {ticket.issueDescription}
-                  </p>
-                  <div className="flex justify-between items-center text-xs">
-                    <span style={{ color: "var(--color-text-secondary)" }}>
-                      {ticket.partsUsed?.length || 0} part(s)
-                    </span>
-                    <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>
-                      ₱{totalCostOf(ticket).toLocaleString()}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* ---- NEW TICKET MODAL ---- */}
-        {showNewForm && (
-          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <form
-              onSubmit={handleCreateTicket}
-              className="w-full max-w-md p-6 space-y-4"
-              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
-            >
-              <div className="flex justify-between items-center">
-                <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>
-                  New Repair Ticket
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setShowNewForm(false)}
-                  className="text-xl leading-none hover:opacity-70"
-                  style={{ color: "var(--color-text-secondary)" }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Customer Name</label>
-                <input
-                  required
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. Juan Dela Cruz"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Contact Number</label>
-                <input
-                  value={customerPhone}
-                  onChange={(e) => setCustomerPhone(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. 09171234567"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Device</label>
-                <input
-                  required
-                  value={deviceInfo}
-                  onChange={(e) => setDeviceInfo(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. HP Pavilion 14 Laptop"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Reported Issue</label>
-                <textarea
-                  required
-                  value={issueDescription}
-                  onChange={(e) => setIssueDescription(e.target.value)}
-                  rows={3}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. Won't turn on, no display"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={savingTicket}
-                className="w-full font-semibold py-2.5 disabled:opacity-50 hover:opacity-90"
-                style={{
-                  background: "var(--gradient-accent)",
-                  color: "#fff",
-                  borderRadius: "var(--radius-button)",
-                  boxShadow: "var(--glow-shadow)",
-                }}
-              >
-                {savingTicket ? "Saving..." : "Create Ticket"}
-              </button>
-            </form>
-          </div>
-        )}
-
-        {/* ---- TICKET DETAIL MODAL ---- */}
-        {detail && (
-          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <div
-              className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
-              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
-            >
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3
-                    className="text-lg font-bold"
-                    style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-                  >
-                    {detail.customerName}
-                  </h3>
-                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-                    {detail.customerPhone || "No contact number"}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setDetail(null)}
-                  className="text-xl leading-none hover:opacity-70"
-                  style={{ color: "var(--color-text-secondary)" }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
-                <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
-                  {detail.deviceInfo}
-                </p>
-                <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                  {detail.issueDescription}
-                </p>
-              </div>
-
-              {/* Status flow */}
-              <div className="mb-6">
-                <p className="text-sm font-medium mb-2" style={labelStyle}>Status</p>
-                {detail.status === "Paid" && detail.salesRecorded && (
-                <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
-                 ✓ Recorded in Sales
-                </p>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  {STATUS_FLOW.map((s) => {
-                    const isActive = detail.status === s;
-                    const colors = STATUS_COLORS[s];
-                    return (
-                      <button
-                        key={s}
-                        onClick={() => handleChangeStatus(detail, s)}
-                        disabled={isLocked(detail.status) || changingStatus}
-                        className="px-3 py-1.5 rounded-full text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed"
-                        style={{
-                          background: isActive ? colors.bg : "var(--color-bg-secondary)",
-                          color: isActive ? colors.text : "var(--color-text-secondary)",
-                          boxShadow: isActive ? `0 0 12px ${colors.bg}` : "none",
-                        }}
-                      >
-                        {s === "Paid" ? "Mark as Paid" : s}
-                      </button>
-                    );
-                  })}
-                  {!isLocked(detail.status) && (
-                    <button
-                      onClick={() => handleChangeStatus(detail, "Cancelled")}
-                      disabled={changingStatus}
-                      className="px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80 disabled:opacity-40"
-                      style={{ background: STATUS_COLORS.Cancelled.bg, color: STATUS_COLORS.Cancelled.text }}
-                    >
-                      Cancel Ticket
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Parts used */}
-              <div className="mb-6">
-                <p className="text-sm font-medium mb-2" style={labelStyle}>Parts Used</p>
-
-                {detail.partsUsed.length > 0 && (
-                  <div className="space-y-2 mb-3">
-                    {detail.partsUsed.map((p) => (
-                      <div
-                        key={p.itemId}
-                        className="flex justify-between items-center px-3 py-2 rounded-lg text-sm"
-                        style={{ background: "var(--color-bg-secondary)" }}
-                      >
-                        <span style={{ color: "var(--color-text-primary)" }}>{p.itemName}</span>
-                        <div className="flex items-center gap-3">
-                          <span style={{ color: "var(--color-text-secondary)" }}>
-                            {p.quantity} × ₱{p.unitCost.toLocaleString()}
-                          </span>
-                          <button
-                            onClick={() => handleRemovePart(p)}
-                            disabled={isLocked(detail.status)}
-                            className="w-6 h-6 rounded-full font-bold disabled:opacity-30"
-                            style={{ background: "var(--color-surface)", color: "#f87171" }}
-                          >
-                            −
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {!isLocked(detail.status) && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
-                    {items.length === 0 ? (
-                      <p className="col-span-full text-sm py-3 text-center" style={{ color: "var(--color-text-secondary)" }}>
-                        No inventory items available.
-                      </p>
-                    ) : (
-                      items.map((item) => (
-                        <button
-                          key={item.id}
-                          onClick={() => handleAddPart(item)}
-                          disabled={item.stock <= 0}
-                          className="p-2 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
-                          style={{
-                            background: "var(--color-bg-secondary)",
-                            borderRadius: "var(--radius-button)",
-                            borderWidth: "var(--border-width)",
-                            borderColor: "var(--color-border)",
-                          }}
-                        >
-                          <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>
-                            {item.name}
-                          </p>
-                          <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>
-                            Stock: {item.stock}
-                          </p>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Labor payment */}
-              <div className="mb-6">
-                <label className="text-sm font-medium" style={labelStyle}>Labor Payment (₱)</label>
-                <div className="flex gap-2 mt-1">
-                  <input
-                    type="number"
-                    value={laborInput}
-                    onChange={(e) => setLaborInput(e.target.value)}
-                    disabled={isLocked(detail.status)}
-                    className="flex-1 px-3 py-2 disabled:opacity-50"
-                    style={inputStyle}
-                  />
-                  <button
-                    onClick={handleSaveLabor}
-                    disabled={savingLabor || isLocked(detail.status)}
-                    className="px-4 py-2 text-sm font-semibold disabled:opacity-50 hover:opacity-90"
-                    style={{
-                      background: "var(--color-primary)",
-                      color: "#fff",
-                      borderRadius: "var(--radius-button)",
-                    }}
-                  >
-                    {savingLabor ? "..." : "Save"}
-                  </button>
-                </div>
-              </div>
-
-              {/* Total cost summary */}
-              <div
-                className="flex justify-between items-center p-4 mb-4"
-                style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)", boxShadow: "var(--glow-shadow)" }}
-              >
-                <div>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Parts + Labor</p>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                    ₱{partsCostOf(detail).toLocaleString()} + ₱{(detail.laborPayment || 0).toLocaleString()}
-                  </p>
-                </div>
-                <p
-                  className="text-xl font-bold"
-                  style={{ color: "var(--color-primary-light)", fontFamily: "var(--font-heading)" }}
-                >
-                  ₱{totalCostOf(detail).toLocaleString()}
-                </p>
-              </div>
-
-              <button
-                onClick={() => {
-                  const partsLines = detail.partsUsed.map((p) => ({
-                    label: `${p.itemName} × ${p.quantity}`,
-                    amount: p.unitCost * p.quantity,
-                  }));
-                  const linesWithLabor = [
-                    ...partsLines,
-                    { label: "Labor", amount: detail.laborPayment || 0 },
-                  ];
-                  printReceipt({
-                    businessName,
-                    receiptTitle: "Repair Receipt",
-                    receiptNumber: detail.id.slice(0, 8).toUpperCase(),
-                    date: new Date(),
-                    customerName: detail.customerName,
-                    lines: linesWithLabor,
-                    total: totalCostOf(detail),
-                  });
-                }}
-                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
-                style={{
-                  background: "var(--color-bg-secondary)",
-                  color: "var(--color-text-primary)",
-                  borderRadius: "var(--radius-button)",
-                  borderWidth: "var(--border-width)",
-                  borderColor: "var(--color-border)",
-                }}
-              >
-                🖨️ Print Receipt
-              </button>
-
-              <button
-                onClick={() => handleDeleteTicket(detail)}
-                className="w-full text-sm font-medium py-2 hover:opacity-80"
-                style={{ color: "#f87171" }}
-              >
-                Delete Ticket
-              </button>
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}
-</file>
-
-<file path="app/settings/page.jsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { auth } from "../lib/firebase";
-import Sidebar from "../components/Sidebar";
-import ThemeSwitcher from "../components/ThemeSwitcher";
-import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
-import ReorderSummary from "../components/ReorderSummary";
-import { useTheme } from "../context/ThemeContext";
-import { getTheme } from "../lib/themes";
-
-export default function SettingsPage() {
-  const [checking, setChecking] = useState(true);
-  const router = useRouter();
-  const { themeId } = useTheme();
-  const theme = getTheme(themeId);
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-      setChecking(false);
-    });
-    return () => unsubscribe();
-  }, [router]);
-
-  if (checking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <p className="text-gray-500 text-sm">Loading settings...</p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="flex min-h-screen"
-      style={{ background: theme.colors.bgPrimary }}
-    >
-      <Sidebar />
-      <div className="flex-1">
-        <header
-          className="px-6 py-4 flex justify-between items-center border-b"
-          style={{
-            background: theme.colors.bgSecondary,
-            borderColor: theme.colors.border,
-          }}
-        >
-          <div>
-            <h1
-              className="text-lg font-bold"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Settings
-            </h1>
-            <p className="text-xs" style={{ color: theme.colors.textSecondary }}>
-              Personalize how your dashboard looks
-            </p>
-          </div>
-        </header>
-
-        <main className="p-6 space-y-10 max-w-2xl">
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Choose Your Theme
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              Pick the look that fits your shop's vibe. Changes apply instantly across
-              the whole app.
-            </p>
-            <ThemeSwitcher />
-          </section>
-
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Graph Style
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              Choose how your Dashboard trend chart is drawn.
-            </p>
-            <GraphStyleSwitcher />
-          </section>
-
-                    <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Reorder Summary
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              UBA automatically identifies items that need restocking, organized by supplier.
-            </p>
-            <ReorderSummary />
-          </section>
-        </main>
-      </div>
     </div>
   );
 }
