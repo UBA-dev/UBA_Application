@@ -1041,7 +1041,8 @@ export default function InventoryPage() {
                 boxShadow: "var(--glow-shadow)",
               }}
             >
-              🔍 Universal Scanner
+              <span className="sm:hidden">🔍 Scanner</span>
+              <span className="hidden sm:inline">🔍 Universal Scanner</span>
             </button>
             <button
               onClick={openAddItemForm}
@@ -1053,7 +1054,8 @@ export default function InventoryPage() {
                 boxShadow: "var(--glow-shadow)",
               }}
             >
-              + Add Item
+              <span className="sm:hidden">+ Add</span>
+              <span className="hidden sm:inline">+ Add Item</span>
             </button>
             <button
               onClick={openAddBundleForm}
@@ -1068,7 +1070,8 @@ export default function InventoryPage() {
                 borderColor: "var(--color-border)",
               }}
             >
-              🧩 New Bundle
+              <span className="sm:hidden">🧩 Bundle</span>
+              <span className="hidden sm:inline">🧩 New Bundle</span>
             </button>
           </div>
         </div>
@@ -1144,15 +1147,16 @@ export default function InventoryPage() {
           </div>
         ) : (
           <div
-            className="overflow-hidden"
             style={{
               background: "var(--color-surface)",
               borderRadius: "var(--radius-card)",
               borderWidth: "var(--border-width)",
               borderColor: "var(--color-border)",
+              overflow: "hidden",
             }}
           >
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ minWidth: "640px" }}>
               <thead
                 className="text-left"
                 style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
@@ -1329,6 +1333,7 @@ export default function InventoryPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
