@@ -16,6 +16,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
 
 type InventoryItem = {
   id: string;
@@ -782,6 +783,38 @@ export default function RepairTicketsPage() {
                   ₱{totalCostOf(detail).toLocaleString()}
                 </p>
               </div>
+
+              <button
+                onClick={() => {
+                  const partsLines = detail.partsUsed.map((p) => ({
+                    label: `${p.itemName} × ${p.quantity}`,
+                    amount: p.unitCost * p.quantity,
+                  }));
+                  const linesWithLabor = [
+                    ...partsLines,
+                    { label: "Labor", amount: detail.laborPayment || 0 },
+                  ];
+                  printReceipt({
+                    businessName,
+                    receiptTitle: "Repair Receipt",
+                    receiptNumber: detail.id.slice(0, 8).toUpperCase(),
+                    date: new Date(),
+                    customerName: detail.customerName,
+                    lines: linesWithLabor,
+                    total: totalCostOf(detail),
+                  });
+                }}
+                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                🖨️ Print Receipt
+              </button>
 
               <button
                 onClick={() => handleDeleteTicket(detail)}

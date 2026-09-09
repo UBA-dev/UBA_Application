@@ -9,11 +9,13 @@ import {
   query,
   orderBy,
   doc,
+  getDoc,
   updateDoc,
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
 
 type InventoryItem = {
   id: string;
@@ -67,7 +69,8 @@ export default function PosPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [receiptLines, setReceiptLines] = useState<CartLine[] | null>(null);
   const [receiptChange, setReceiptChange] = useState(0);
-
+  const [businessName, setBusinessName] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
   useEffect(() => {
     let unsubInv = () => {};
     let unsubBundles = () => {};
@@ -81,6 +84,14 @@ export default function PosPage() {
         return;
       }
       setUid(user.uid);
+
+      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          setLogoUrl(data.logoUrl || null);
+        }
+      });
 
       const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(invQuery, (snapshot) => {
@@ -548,6 +559,35 @@ export default function PosPage() {
               </div>
 
                 <button
+                onClick={() => {
+                  const total = receiptLines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+                  printReceipt({
+                    businessName,
+                    logoUrl,
+                    receiptTitle: "Sales Receipt",
+                    date: new Date(),
+                    lines: receiptLines.map((l) => ({
+                      label: `${l.name} × ${l.quantity}`,
+                      amount: l.unitPrice * l.quantity,
+                    })),
+                    total,
+                    cashReceived: total + receiptChange,
+                    change: receiptChange,
+                  });
+                }}
+                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                🖨️ Print Receipt
+              </button>
+
+              <button
                 onClick={() => setReceiptLines(null)}
                 className="w-full font-semibold py-2.5 hover:opacity-90"
                 style={{
