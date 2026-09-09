@@ -119,7 +119,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const { graphStyle } = useTheme();
 
-    useEffect(() => {
+  useEffect(() => {
     let unsubSales = () => {};
     let unsubExpenses = () => {};
     let unsubInv = () => {};
@@ -201,7 +201,6 @@ export default function DashboardPage() {
     [repairTickets, start, end]
   );
 
-  // Top-selling items — aggregated by name, sorted by revenue
   const topSellingItems = useMemo(() => {
     const map = new Map<string, { name: string; revenue: number; profit: number; quantity: number }>();
     salesInRange.forEach((s) => {
@@ -242,7 +241,6 @@ export default function DashboardPage() {
       .slice(0, 3);
   }, [salesInRange, items]);
 
-  // Repair ticket metrics — labor revenue, overdue tickets, common devices
   const repairMetrics = useMemo(() => {
     const statusCounts: Record<string, number> = {};
     ticketsInRange.forEach((t) => {
@@ -257,7 +255,7 @@ export default function DashboardPage() {
     const overdue = repairTickets.filter((t) => {
       if (t.status !== "Pending" && t.status !== "In Progress") return false;
       const ageMs = now.getTime() - new Date(t.createdAt).getTime();
-      return ageMs > 5 * 24 * 60 * 60 * 1000; // older than 5 days and still unresolved
+      return ageMs > 5 * 24 * 60 * 60 * 1000;
     });
 
     const deviceFreq = new Map<string, number>();
@@ -282,7 +280,6 @@ export default function DashboardPage() {
     };
   }, [ticketsInRange, repairTickets]);
 
-    // Items with a thin profit margin — a real analyst would flag these for a price review
   const marginAnalysis = useMemo(() => {
     return items
       .filter((i) => i.sellingPrice > 0 && i.unitCost > 0)
@@ -295,7 +292,6 @@ export default function DashboardPage() {
       .slice(0, 5);
   }, [items]);
 
-  // Repair issues reported more than once — a signal to pre-stock the relevant parts
   const commonIssues = useMemo(() => {
     const map = new Map<string, number>();
     ticketsInRange.forEach((t) => {
@@ -313,7 +309,6 @@ export default function DashboardPage() {
   const hasEnoughData = sales.length > 0 || expenses.length > 0 || repairTickets.length > 0;
   const aiAccess = useMemo(() => getAiAccess(tenant), [tenant]);
 
-    // Load the cached insight (if any) when the tenant doc arrives — no API call here
   useEffect(() => {
     if (tenant?.lastInsight) {
       setInsight(tenant.lastInsight);
@@ -332,7 +327,7 @@ export default function DashboardPage() {
     setLoadingInsight(true);
     setInsightError("");
     try {
-        const res = await fetch("/api/analyze-business", {
+      const res = await fetch("/api/analyze-business", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -356,15 +351,12 @@ export default function DashboardPage() {
       }
       setInsight(data);
 
-      // Cache the result on the tenant doc so we don't need to re-call the API
-      // just to display the same insight again later.
       await updateDoc(doc(db, "tenants", uid), {
         lastInsight: data,
         lastInsightAt: new Date().toISOString(),
         lastInsightRange: range,
       });
 
-      // Persist new tasks — skip ones that already exist (by text match)
       if (Array.isArray(data.tasks)) {
         const existingTexts = new Set(aiTasksRef.current.map((t) => t.text.trim().toLowerCase()));
         for (const t of data.tasks) {
@@ -435,12 +427,12 @@ export default function DashboardPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <div className="flex-1">
+      <div className="flex-1 pt-14 sm:pt-0 min-w-0">
         <header
-          className="px-6 py-4 border-b"
+          className="px-4 sm:px-6 py-3 sm:py-4 border-b"
           style={{ background: "var(--color-bg-secondary)", borderColor: "var(--color-border)" }}
         >
-          <h1 className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
+          <h1 className="text-base sm:text-lg font-bold truncate" style={{ color: "var(--color-text-primary)" }}>
             Welcome back, {tenant.businessName}!
           </h1>
           <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
@@ -448,22 +440,22 @@ export default function DashboardPage() {
           </p>
         </header>
 
-        <main className="p-6">
+        <main className="p-4 sm:p-6">
           {!hasEnoughData ? (
-            <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
+            <div className="p-6 sm:p-8 text-center text-sm" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
               No sales, expense, or repair data yet. Once you start recording activity, your analytics will show up here.
             </div>
           ) : (
             <>
               {/* Range selector */}
-              <div className="flex flex-wrap gap-2 mb-6">
+              <div className="flex flex-wrap gap-1.5 sm:gap-2 mb-4 sm:mb-6">
                 {RANGE_OPTIONS.map((r) => {
                   const isActive = range === r;
                   return (
                     <button
                       key={r}
                       onClick={() => setRange(r)}
-                      className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                      className="px-3 sm:px-4 py-1 sm:py-1.5 rounded-full text-xs sm:text-sm font-medium transition"
                       style={{
                         background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                         color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -479,32 +471,32 @@ export default function DashboardPage() {
               </div>
 
               {/* Summary cards with trend arrows */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-                <div className="p-4" style={cardStyle}>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-6">
+                <div className="p-3 sm:p-4" style={cardStyle}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Revenue</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+                  <p className="text-base sm:text-lg font-bold mt-1 break-words" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
                     ₱{comparison.currentRevenue.toLocaleString()}
                   </p>
                   <TrendArrow pct={comparison.revenueChangePct} />
                 </div>
-                <div className="p-4" style={cardStyle}>
+                <div className="p-3 sm:p-4" style={cardStyle}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Profit</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+                  <p className="text-base sm:text-lg font-bold mt-1 break-words" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
                     ₱{comparison.currentProfit.toLocaleString()}
                   </p>
                   <TrendArrow pct={comparison.profitChangePct} />
                 </div>
-                <div className="p-4" style={cardStyle}>
+                <div className="p-3 sm:p-4" style={cardStyle}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Expenses</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "#f87171", fontFamily: "var(--font-heading)" }}>
+                  <p className="text-base sm:text-lg font-bold mt-1 break-words" style={{ color: "#f87171", fontFamily: "var(--font-heading)" }}>
                     ₱{comparison.currentExpenses.toLocaleString()}
                   </p>
                   <TrendArrow pct={-comparison.expensesChangePct} />
                 </div>
-                <div className="p-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+                <div className="p-3 sm:p-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Net Profit</p>
                   <p
-                    className="text-lg font-bold mt-1"
+                    className="text-base sm:text-lg font-bold mt-1 break-words"
                     style={{
                       color: comparison.currentNetProfit >= 0 ? "#4ade80" : "#f87171",
                       fontFamily: "var(--font-heading)",
@@ -517,81 +509,83 @@ export default function DashboardPage() {
               </div>
 
               {/* Trend chart */}
-              <div className="p-4 mb-6" style={cardStyle}>
+              <div className="p-3 sm:p-4 mb-4 sm:mb-6" style={cardStyle}>
                 <p className="text-sm font-semibold mb-3" style={{ color: "var(--color-text-primary)" }}>
                   {(RANGE_LABELS as Record<string, string>)[range]}
                 </p>
-                <ResponsiveContainer width="100%" height={280}>
-  {graphStyle === "bar" ? (
-    <BarChart data={series}>
-      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
-      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
-      <Tooltip
-        contentStyle={{
-          background: "var(--color-bg-secondary)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "8px",
-          color: "var(--color-text-primary)",
-        }}
-        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
-      />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
-      <Bar dataKey="revenue" name="Revenue" fill="var(--color-primary-light)" radius={[4, 4, 0, 0]} />
-      <Bar dataKey="netProfit" name="Net Profit" fill="#4ade80" radius={[4, 4, 0, 0]} />
-      <Bar dataKey="expenses" name="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} />
-    </BarChart>
-  ) : graphStyle === "area" ? (
-    <AreaChart data={series}>
-      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
-      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
-      <Tooltip
-        contentStyle={{
-          background: "var(--color-bg-secondary)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "8px",
-          color: "var(--color-text-primary)",
-        }}
-        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
-      />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
-      <Area type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" fill="var(--color-primary-light)" fillOpacity={0.25} strokeWidth={2} />
-      <Area type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" fill="#4ade80" fillOpacity={0.2} strokeWidth={2} />
-      <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" fill="#f87171" fillOpacity={0.2} strokeWidth={2} />
-    </AreaChart>
-  ) : (
-    <LineChart data={series}>
-      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
-      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
-      <Tooltip
-        contentStyle={{
-          background: "var(--color-bg-secondary)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "8px",
-          color: "var(--color-text-primary)",
-        }}
-        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
-      />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
-      <Line type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" strokeWidth={2} dot={false} />
-      <Line type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" strokeWidth={2} dot={false} />
-      <Line type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" strokeWidth={2} dot={false} />
-    </LineChart>
-  )}
-</ResponsiveContainer>
+                <div className="h-56 sm:h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    {graphStyle === "bar" ? (
+                      <BarChart data={series} margin={{ left: -20, right: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                        <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={10} />
+                        <YAxis stroke="var(--color-text-secondary)" fontSize={10} />
+                        <Tooltip
+                          contentStyle={{
+                            background: "var(--color-bg-secondary)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            color: "var(--color-text-primary)",
+                          }}
+                          formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Bar dataKey="revenue" name="Revenue" fill="var(--color-primary-light)" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="netProfit" name="Net Profit" fill="#4ade80" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="expenses" name="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    ) : graphStyle === "area" ? (
+                      <AreaChart data={series} margin={{ left: -20, right: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                        <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={10} />
+                        <YAxis stroke="var(--color-text-secondary)" fontSize={10} />
+                        <Tooltip
+                          contentStyle={{
+                            background: "var(--color-bg-secondary)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            color: "var(--color-text-primary)",
+                          }}
+                          formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Area type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" fill="var(--color-primary-light)" fillOpacity={0.25} strokeWidth={2} />
+                        <Area type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" fill="#4ade80" fillOpacity={0.2} strokeWidth={2} />
+                        <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" fill="#f87171" fillOpacity={0.2} strokeWidth={2} />
+                      </AreaChart>
+                    ) : (
+                      <LineChart data={series} margin={{ left: -20, right: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                        <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={10} />
+                        <YAxis stroke="var(--color-text-secondary)" fontSize={10} />
+                        <Tooltip
+                          contentStyle={{
+                            background: "var(--color-bg-secondary)",
+                            border: "1px solid var(--color-border)",
+                            borderRadius: "8px",
+                            color: "var(--color-text-primary)",
+                          }}
+                          formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Line type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" strokeWidth={2} dot={false} />
+                      </LineChart>
+                    )}
+                  </ResponsiveContainer>
+                </div>
               </div>
 
-                            {/* AI Business Analyst — toggleable, manual-trigger, cached */}
-              <div className="p-5 mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
-                <div className="flex justify-between items-center mb-3">
+              {/* AI Business Analyst */}
+              <div className="p-4 sm:p-5 mb-4 sm:mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+                <div className="flex justify-between items-center mb-3 gap-2">
                   <p className="text-sm font-semibold" style={{ color: "var(--color-primary-light)" }}>
                     🤖 Your AI Business Analyst
                   </p>
                   <button
                     onClick={handleToggleAiAnalytics}
-                    className="text-xs font-medium px-3 py-1 rounded-full transition"
+                    className="text-xs font-medium px-3 py-1 rounded-full transition flex-shrink-0"
                     style={{
                       background: tenant.aiAnalyticsEnabled ? "rgba(34, 197, 94, 0.15)" : "var(--color-bg-secondary)",
                       color: tenant.aiAnalyticsEnabled ? "#4ade80" : "var(--color-text-secondary)",
@@ -601,7 +595,6 @@ export default function DashboardPage() {
                   </button>
                 </div>
 
-                
                 {!aiAccess.allowed ? (
                   <p className="text-sm p-3 rounded-lg" style={{ color: "#facc15", background: "rgba(250, 204, 21, 0.1)" }}>
                     {AI_LOCKED_MESSAGE}
@@ -652,7 +645,7 @@ export default function DashboardPage() {
 
                     {insight.suggestedGoal && (
                       <div
-                        className="flex justify-between items-center px-4 py-3 mb-4"
+                        className="flex flex-wrap justify-between items-center gap-2 px-4 py-3 mb-4"
                         style={{ background: "var(--gradient-accent)", borderRadius: "var(--radius-button)" }}
                       >
                         <span className="text-xs font-medium" style={{ color: "#fff" }}>
@@ -666,7 +659,6 @@ export default function DashboardPage() {
                   </>
                 ) : null}
 
-                {/* Persistent, checkable task list — shown regardless of toggle, since these are already saved */}
                 {tenant.aiAnalyticsEnabled && activeTasks.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
@@ -686,7 +678,7 @@ export default function DashboardPage() {
                             style={{ borderWidth: "1.5px", borderColor: colors.text }}
                             title="Mark as done"
                           />
-                          <span className="flex-1" style={{ color: "var(--color-text-primary)" }}>
+                          <span className="flex-1 break-words" style={{ color: "var(--color-text-primary)" }}>
                             {task.text}
                           </span>
                           <span
