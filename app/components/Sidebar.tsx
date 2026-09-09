@@ -72,6 +72,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
@@ -194,6 +195,124 @@ export default function Sidebar() {
 
   return (
     <>
+      {/* Mobile top bar with hamburger — visible only below sm breakpoint */}
+      <div
+        className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
+        style={{
+          background: "var(--color-bg-secondary)",
+          borderBottom: "1px solid var(--color-border)",
+        }}
+      >
+        <button
+          onClick={() => setMobileMenuOpen(true)}
+          className="text-2xl leading-none"
+          style={{ color: "var(--color-text-primary)" }}
+          aria-label="Open menu"
+        >
+          ☰
+        </button>
+        <p
+          className="text-sm font-semibold truncate max-w-[60%]"
+          style={{ color: "var(--color-text-primary)" }}
+        >
+          {businessName || "My Shop"}
+        </p>
+        {notification && notification.count > 0 ? (
+          <button
+            onClick={() => setShowNotifModal(true)}
+            className="relative text-xl"
+            aria-label="Notifications"
+          >
+            🔔
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+              {notification.count}
+            </span>
+          </button>
+        ) : (
+          <span className="w-6" />
+        )}
+      </div>
+
+      {/* Mobile drawer overlay */}
+      {mobileMenuOpen && (
+        <div className="sm:hidden fixed inset-0 z-50 flex">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div
+            className="relative w-72 max-w-[80vw] h-full flex flex-col p-4 overflow-y-auto"
+            style={{ background: "var(--color-bg-secondary)" }}
+          >
+            <div className="flex justify-between items-center mb-6">
+              <p
+                className="text-sm font-semibold"
+                style={{ color: "var(--color-text-primary)" }}
+              >
+                {businessName || "My Shop"}
+              </p>
+              <button
+                onClick={() => setMobileMenuOpen(false)}
+                className="text-2xl leading-none"
+                style={{ color: "var(--color-text-secondary)" }}
+                aria-label="Close menu"
+              >
+                ×
+              </button>
+            </div>
+
+            <nav className="space-y-1 flex-1">
+              {navItems.map((item) => {
+                const isActive = pathname === item.href;
+                if (item.disabled) {
+                  return (
+                    <div
+                      key={item.href}
+                      className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm opacity-40"
+                      style={{ color: "var(--color-text-secondary)" }}
+                    >
+                      <span>{item.icon}</span>
+                      <span>{item.label}</span>
+                    </div>
+                  );
+                }
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium"
+                    style={{
+                      background: isActive ? "var(--color-surface)" : "transparent",
+                      color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
+                    }}
+                  >
+                    <span>{item.icon}</span>
+                    <span>{item.label}</span>
+                    {(item.href === "/settings" || item.href === "/inventory") &&
+                      notification &&
+                      notification.count > 0 && (
+                        <span className="ml-auto bg-red-500 text-white rounded-full text-[10px] font-bold px-1.5 py-0.5">
+                          {notification.count}
+                        </span>
+                      )}
+                  </Link>
+                );
+              })}
+            </nav>
+
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium mt-4"
+              style={{ color: "#f87171" }}
+            >
+              <span>🚪</span>
+              <span>Log Out</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       <aside
         className={`${
           collapsed ? "w-16" : "w-64"
@@ -472,6 +591,9 @@ export default function Sidebar() {
           </div>
         </div>
       )}
+
+      {/* Spacer so page content isn't hidden behind the fixed mobile top bar */}
+      <div className="sm:hidden h-14" />
     </>
   );
 }
