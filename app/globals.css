@@ -94,6 +94,7 @@ h1, h2, h3, h4 {
   animation: shimmer 3s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }

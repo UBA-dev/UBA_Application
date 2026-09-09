@@ -6,8 +6,6 @@ import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { getAiAccess, urgencyLevel } from "../lib/subscription";
 
-const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
-
 type Tenant = {
   id: string;
   businessName: string;
@@ -40,28 +38,51 @@ export default function AdminPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const router = useRouter();
 
+  // 🔒 PINAGANDANG AUTH CHECK: Nagtatanong sa Server API sa halip na client-side env variable
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (!user) {
         router.push("/login");
         return;
       }
-      if (user.uid !== ADMIN_UID) {
+
+      try {
+        const res = await fetch("/api/check-admin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.uid }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.isAdmin) {
+          router.push("/dashboard");
+          return;
+        }
+
+        setAuthorized(true);
+      } catch (error) {
+        console.error("Admin verification error:", error);
         router.push("/dashboard");
-        return;
+      } finally {
+        setChecking(false);
       }
-      setAuthorized(true);
-      setChecking(false);
     });
+
     return () => unsubscribe();
   }, [router]);
 
   useEffect(() => {
     if (!authorized) return;
     const loadTenants = async () => {
-      const snap = await getDocs(collection(db, "tenants"));
-      setTenants(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Tenant[]);
-      setLoadingTenants(false);
+      try {
+        const snap = await getDocs(collection(db, "tenants"));
+        setTenants(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Tenant[]);
+      } catch (error) {
+        console.error("Failed to load tenants:", error);
+      } finally {
+        setLoadingTenants(false);
+      }
     };
     loadTenants();
   }, [authorized]);
@@ -132,7 +153,7 @@ export default function AdminPage() {
   if (checking || !authorized) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: "#0a0e1a" }}>
-        <p className="text-sm" style={{ color: "#8b9bc4" }}>Loading...</p>
+        <p className="text-sm" style={{ color: "#8b9bc4" }}>Verifying Admin Access...</p>
       </div>
     );
   }
@@ -143,7 +164,7 @@ export default function AdminPage() {
         Admin — All Shops
       </h1>
       <p className="text-sm mb-6" style={{ color: "#8b9bc4" }}>
-        Sorted by most urgent first. Only visible to you.
+        Sorted by most urgent first. Only visible to verified Admin.
       </p>
 
       {loadingTenants ? (

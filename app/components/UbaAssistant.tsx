@@ -1,29 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { collection, doc, getDoc, getDocs, query, orderBy, limit } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
-import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
+import { auth } from "../lib/firebase";
 
 export default function UbaAssistant() {
-  const [uid, setUid] = useState(null);
-  const [aiAccess, setAiAccess] = useState({ allowed: true });
+  const [uid, setUid] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [contextLoaded, setContextLoaded] = useState(false);
-  const businessContextRef = useRef(null);
-  const scrollRef = useRef(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
       setUid(user ? user.uid : null);
-      if (user) {
-        const snap = await getDoc(doc(db, "tenants", user.uid));
-        if (snap.exists()) setAiAccess(getAiAccess(snap.data()));
-      }
     });
     return () => unsubscribe();
   }, []);
@@ -32,54 +22,10 @@ export default function UbaAssistant() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, open]);
 
-  const loadBusinessContext = async () => {
-    if (!uid || businessContextRef.current) return;
-
-    const [tenantSnap, invSnap, salesSnap, ticketsSnap] = await Promise.all([
-      getDoc(doc(db, "tenants", uid)),
-      getDocs(query(collection(db, "tenants", uid, "inventory"), orderBy("name"), limit(60))),
-      getDocs(query(collection(db, "tenants", uid, "sales"), orderBy("date", "desc"), limit(25))),
-      getDocs(query(collection(db, "tenants", uid, "repairTickets"), orderBy("createdAt", "desc"), limit(20))),
-    ]);
-
-    const tenant = tenantSnap.exists() ? tenantSnap.data() : {};
-
-    businessContextRef.current = {
-      businessName: tenant.businessName || "",
-      businessType: tenant.businessType || "",
-      inventory: invSnap.docs.map((d) => {
-        const i = d.data();
-        return {
-          name: i.name,
-          category: i.category,
-          stock: i.stock,
-          threshold: i.threshold,
-          unitCost: i.unitCost,
-          sellingPrice: i.sellingPrice,
-        };
-      }),
-      recentSales: salesSnap.docs.map((d) => {
-        const s = d.data();
-        return { itemName: s.itemName, quantity: s.quantity, total: s.total, date: s.date };
-      }),
-      recentRepairTickets: ticketsSnap.docs.map((d) => {
-        const t = d.data();
-        return {
-          deviceInfo: t.deviceInfo,
-          status: t.status,
-          laborPayment: t.laborPayment,
-          createdAt: t.createdAt,
-        };
-      }),
-    };
-    setContextLoaded(true);
-  };
-
-  const handleOpen = async () => {
+  const handleOpen = () => {
     setOpen(true);
-    if (!contextLoaded) await loadBusinessContext();
     if (messages.length === 0) {
-            setMessages([
+      setMessages([
         {
           role: "assistant",
           content: "Hi, I'm UBA Assistant. Ask me anything about your shop — inventory, sales, repair tickets, or where to source parts.",
@@ -90,30 +36,7 @@ export default function UbaAssistant() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || sending) return;
-
-    if (!aiAccess.allowed) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content: text },
-        { role: "assistant", content: AI_LOCKED_MESSAGE },
-      ]);
-      setInput("");
-      return;
-    }
-
-    if (uid) {
-      const usage = await checkAndIncrementUsage(uid, "chatCount");
-      if (!usage.allowed) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "user", content: text },
-          { role: "assistant", content: usageLimitMessage("chatCount", usage.limit) },
-        ]);
-        setInput("");
-        return;
-      }
-    }
+    if (!text || sending || !uid) return;
 
     const newMessages = [...messages, { role: "user", content: text }];
     setMessages(newMessages);
@@ -121,21 +44,23 @@ export default function UbaAssistant() {
     setSending(true);
 
     try {
+      // Magpapadala ng request sa ating Server Route kasama ang User ID
       const res = await fetch("/api/uba-assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          userId: uid,
           message: text,
           history: newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
-          businessContext: businessContextRef.current || {},
         }),
       });
+
       const data = await res.json();
 
       if (!res.ok) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: data.error || "May problema, subukan ulit." },
+          { role: "assistant", content: data.error || "May problema sa pag-process, subukan ulit." },
         ]);
         return;
       }
@@ -152,7 +77,7 @@ export default function UbaAssistant() {
     }
   };
 
-  const handleKeyDown = (e) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -230,7 +155,7 @@ export default function UbaAssistant() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-                            placeholder={aiAccess.allowed ? "Ask about your shop..." : "AI trial ended — still readable"}
+              placeholder="Ask about your shop..."
               className="flex-1 px-3 py-2 text-sm"
               style={{
                 background: "var(--color-bg-secondary)",
