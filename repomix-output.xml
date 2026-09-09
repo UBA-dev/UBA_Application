@@ -70,6 +70,7 @@ app/
     analytics.js
     fileParsers.js
     firebase.js
+    receipt.ts
     subscription.js
     themes.js
   login/
@@ -1112,6 +1113,128 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+</file>
+
+<file path="app/lib/receipt.ts">
+interface ReceiptLine {
+  label: string;
+  amount: number;
+}
+
+interface PrintReceiptOptions {
+  businessName?: string;
+  logoUrl?: string | null;
+  receiptTitle?: string;
+  receiptNumber?: string;
+  date?: Date | string;
+  customerName?: string;
+  lines: ReceiptLine[];
+  total: number;
+  cashReceived?: number;
+  change?: number;
+  footerNote?: string;
+}
+
+function escapeHtml(str: unknown): string {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export function printReceipt({
+  businessName,
+  logoUrl,
+  receiptTitle = "Sales Receipt",
+  receiptNumber,
+  date,
+  customerName,
+  lines,
+  total,
+  cashReceived,
+  change,
+  footerNote = "Thank you for your business!",
+}: PrintReceiptOptions) {
+  const dateStr = new Date(date || Date.now()).toLocaleString();
+
+  const linesHtml = lines
+    .map(
+      (l) => `
+      <div class="line">
+        <span class="line-label">${escapeHtml(l.label)}</span>
+        <span class="line-amount">₱${Number(l.amount).toLocaleString()}</span>
+      </div>`
+    )
+    .join("");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(receiptTitle)}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Courier New', monospace;
+    color: #000;
+    background: #fff;
+    padding: 16px;
+    width: 320px;
+    margin: 0 auto;
+  }
+  .center { text-align: center; }
+  .logo { max-width: 64px; max-height: 64px; margin: 0 auto 8px; display: block; }
+  .business-name { font-size: 16px; font-weight: bold; margin-bottom: 2px; }
+  .receipt-title { font-size: 12px; margin-bottom: 8px; }
+  .divider { border-top: 1px dashed #000; margin: 8px 0; }
+  .meta { font-size: 11px; margin-bottom: 2px; }
+  .line { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
+  .totals-line { display: flex; justify-content: space-between; font-size: 13px; font-weight: bold; margin-top: 6px; }
+  .footer { text-align: center; font-size: 11px; margin-top: 12px; }
+  @media print {
+    @page { margin: 0.25in; }
+    body { width: 100%; }
+  }
+</style>
+</head>
+<body>
+  <div class="center">
+    ${logoUrl ? `<img src="${logoUrl}" class="logo" />` : ""}
+    <div class="business-name">${escapeHtml(businessName || "")}</div>
+    <div class="receipt-title">${escapeHtml(receiptTitle)}</div>
+  </div>
+  <div class="divider"></div>
+  <div class="meta">Date: ${escapeHtml(dateStr)}</div>
+  ${receiptNumber ? `<div class="meta">Receipt #: ${escapeHtml(receiptNumber)}</div>` : ""}
+  ${customerName ? `<div class="meta">Customer: ${escapeHtml(customerName)}</div>` : ""}
+  <div class="divider"></div>
+  ${linesHtml}
+  <div class="divider"></div>
+  <div class="totals-line">
+    <span>TOTAL</span>
+    <span>₱${Number(total).toLocaleString()}</span>
+  </div>
+  ${cashReceived != null ? `<div class="line"><span>Cash Received</span><span>₱${Number(cashReceived).toLocaleString()}</span></div>` : ""}
+  ${change != null ? `<div class="line"><span>Change</span><span>₱${Number(change).toLocaleString()}</span></div>` : ""}
+  <div class="footer">${escapeHtml(footerNote)}</div>
+</body>
+</html>`;
+
+  const printWindow = window.open("", "_blank", "width=380,height=640");
+  if (!printWindow) {
+    alert("Please allow pop-ups to print the receipt.");
+    return;
+  }
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+
+  printWindow.onload = () => {
+    printWindow.focus();
+    printWindow.print();
+  };
+}
 </file>
 
 <file path="app/lib/subscription.js">
@@ -2674,576 +2797,6 @@ export default function OnboardingPage() {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-</file>
-
-<file path="app/pos/page.tsx">
-"use client";
-
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  doc,
-  updateDoc,
-  increment,
-} from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import Sidebar from "../components/Sidebar";
-
-type InventoryItem = {
-  id: string;
-  name: string;
-  category: string;
-  stock: number;
-  unitCost: number;
-  sellingPrice: number;
-};
-
-type BundleComponent = { itemId: string; itemName: string; quantity: number };
-type Bundle = {
-  id: string;
-  name: string;
-  category: string;
-  components: BundleComponent[];
-  price: number;
-};
-
-type CartLine =
-  | { lineId: string; kind: "item"; refId: string; name: string; unitPrice: number; unitCost: number; quantity: number; maxStock: number }
-  | { lineId: string; kind: "bundle"; refId: string; name: string; unitPrice: number; quantity: number; components: BundleComponent[]; maxBundleStock: number };
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--color-surface)",
-  borderRadius: "var(--radius-card)",
-  borderWidth: "var(--border-width)",
-  borderColor: "var(--color-border)",
-};
-
-const inputStyle: React.CSSProperties = {
-  background: "var(--color-bg-secondary)",
-  color: "var(--color-text-primary)",
-  borderColor: "var(--color-border)",
-  borderRadius: "var(--radius-button)",
-  borderWidth: "var(--border-width)",
-};
-
-export default function PosPage() {
-  const [uid, setUid] = useState<string | null>(null);
-  const [items, setItems] = useState<InventoryItem[]>([]);
-  const [bundles, setBundles] = useState<Bundle[]>([]);
-  const router = useRouter();
-
-  const [searchText, setSearchText] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState("All");
-
-  const [cart, setCart] = useState<CartLine[]>([]);
-  const [cashReceived, setCashReceived] = useState("");
-  const [processing, setProcessing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [receiptLines, setReceiptLines] = useState<CartLine[] | null>(null);
-  const [receiptChange, setReceiptChange] = useState(0);
-
-  useEffect(() => {
-    let unsubInv = () => {};
-    let unsubBundles = () => {};
-
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-      unsubInv();
-      unsubBundles();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-      setUid(user.uid);
-
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(invQuery, (snapshot) => {
-        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
-      });
-
-      const bundleQuery = query(collection(db, "tenants", user.uid, "bundles"), orderBy("name"));
-      unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
-        setBundles(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]);
-      });
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubInv();
-      unsubBundles();
-    };
-  }, [router]);
-
-  const categories = useMemo(() => {
-    const all = [...items.map((i) => i.category), ...bundles.map((b) => b.category)];
-    return ["All", ...Array.from(new Set(all.filter(Boolean))).sort()];
-  }, [items, bundles]);
-
-  const filteredProducts = useMemo(() => {
-    const searchLower = searchText.toLowerCase().trim();
-    const itemCards = items
-      .filter((i) => selectedCategory === "All" || i.category === selectedCategory)
-      .filter((i) => !searchLower || i.name.toLowerCase().includes(searchLower))
-      .map((i) => ({ kind: "item" as const, data: i }));
-    const bundleCards = bundles
-      .filter((b) => selectedCategory === "All" || b.category === selectedCategory)
-      .filter((b) => !searchLower || b.name.toLowerCase().includes(searchLower))
-      .map((b) => ({ kind: "bundle" as const, data: b }));
-    return [...itemCards, ...bundleCards];
-  }, [items, bundles, selectedCategory, searchText]);
-
-  // Cash-in-hand quantity available per underlying inventory item, accounting for
-  // both direct item lines AND bundle component consumption already in the cart.
-  const stockRemaining = useMemo(() => {
-    const remaining = new Map(items.map((i) => [i.id, i.stock]));
-    cart.forEach((line) => {
-      if (line.kind === "item") {
-        remaining.set(line.refId, (remaining.get(line.refId) || 0) - line.quantity);
-      } else {
-        line.components.forEach((c) => {
-          remaining.set(c.itemId, (remaining.get(c.itemId) || 0) - c.quantity * line.quantity);
-        });
-      }
-    });
-    return remaining;
-  }, [items, cart]);
-
-  const addItemToCart = (item: InventoryItem) => {
-    setErrorMessage("");
-    const existing = cart.find((l) => l.kind === "item" && l.refId === item.id);
-    const currentRemaining = stockRemaining.get(item.id) ?? item.stock;
-    if (currentRemaining <= 0) {
-      setErrorMessage(`No more stock available for "${item.name}".`);
-      return;
-    }
-    if (existing) {
-      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
-    } else {
-      setCart([
-        ...cart,
-        {
-          lineId: `item-${item.id}`,
-          kind: "item",
-          refId: item.id,
-          name: item.name,
-          unitPrice: item.sellingPrice,
-          unitCost: item.unitCost || 0,
-          quantity: 1,
-          maxStock: item.stock,
-        },
-      ]);
-    }
-  };
-
-  const addBundleToCart = (bundle: Bundle) => {
-    setErrorMessage("");
-    // Check every component has enough remaining stock for one more bundle unit
-    const insufficient = bundle.components.find((c) => (stockRemaining.get(c.itemId) ?? 0) < c.quantity);
-    if (insufficient) {
-      setErrorMessage(`Not enough stock of "${insufficient.itemName}" for this bundle.`);
-      return;
-    }
-    const existing = cart.find((l) => l.kind === "bundle" && l.refId === bundle.id);
-    if (existing) {
-      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
-    } else {
-      setCart([
-        ...cart,
-        {
-          lineId: `bundle-${bundle.id}`,
-          kind: "bundle",
-          refId: bundle.id,
-          name: bundle.name,
-          unitPrice: bundle.price,
-          quantity: 1,
-          components: bundle.components,
-          maxBundleStock: 0,
-        },
-      ]);
-    }
-  };
-
-  const updateQuantity = (lineId: string, delta: number) => {
-    setErrorMessage("");
-    setCart((prev) => {
-      const line = prev.find((l) => l.lineId === lineId);
-      if (!line) return prev;
-      const newQty = line.quantity + delta;
-      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
-      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
-    });
-  };
-
-  const removeLine = (lineId: string) => {
-    setCart(cart.filter((l) => l.lineId !== lineId));
-  };
-
-  const cartTotal = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0), [cart]);
-  const change = Number(cashReceived || 0) - cartTotal;
-
-  const handleCompleteSale = async () => {
-    if (!uid || cart.length === 0) return;
-    if (Number(cashReceived) < cartTotal) {
-      setErrorMessage("Cash received is less than the total amount due.");
-      return;
-    }
-
-    setProcessing(true);
-    setErrorMessage("");
-
-    try {
-      for (const line of cart) {
-        if (line.kind === "item") {
-          const total = line.unitPrice * line.quantity;
-          const profit = total - line.unitCost * line.quantity;
-          await addDoc(collection(db, "tenants", uid, "sales"), {
-            itemName: line.name,
-            quantity: line.quantity,
-            price: line.unitPrice,
-            total,
-            profit,
-            serialNumberUsed: null,
-            date: new Date().toISOString(),
-          });
-          await updateDoc(doc(db, "tenants", uid, "inventory", line.refId), {
-            stock: increment(-line.quantity),
-          });
-        } else {
-          let totalCost = 0;
-          for (const comp of line.components) {
-            const invItem = items.find((i) => i.id === comp.itemId);
-            totalCost += (invItem?.unitCost || 0) * comp.quantity * line.quantity;
-          }
-          const total = line.unitPrice * line.quantity;
-          const profit = total - totalCost;
-
-          await addDoc(collection(db, "tenants", uid, "sales"), {
-            itemName: `${line.name} (Bundle)`,
-            quantity: line.quantity,
-            price: line.unitPrice,
-            total,
-            profit,
-            serialNumberUsed: null,
-            date: new Date().toISOString(),
-          });
-
-          for (const comp of line.components) {
-            await updateDoc(doc(db, "tenants", uid, "inventory", comp.itemId), {
-              stock: increment(-comp.quantity * line.quantity),
-            });
-          }
-        }
-      }
-
-      setReceiptLines(cart);
-      setReceiptChange(change);
-      setCart([]);
-      setCashReceived("");
-    } catch (err) {
-      console.error(err);
-      setErrorMessage("Something went wrong while completing the sale. Please try again.");
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
-      <Sidebar />
-      <main className="flex-1 p-6 flex flex-col lg:flex-row gap-6">
-        {/* Product picker */}
-        <div className="flex-1">
-          <h1
-            className="text-xl font-bold mb-1"
-            style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-          >
-            Point of Sale
-          </h1>
-          <p className="text-sm mb-4" style={{ color: "var(--color-text-secondary)" }}>
-            Tap items to add them to the cart
-          </p>
-
-          <input
-            type="text"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            placeholder="Search products..."
-            className="w-full px-4 py-2 mb-3"
-            style={inputStyle}
-          />
-
-          <div className="flex flex-wrap gap-2 mb-4">
-            {categories.map((cat) => {
-              const isActive = selectedCategory === cat;
-              return (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className="px-3 py-1 rounded-full text-xs font-medium transition"
-                  style={{
-                    background: isActive ? "var(--color-primary)" : "var(--color-surface)",
-                    color: isActive ? "#fff" : "var(--color-text-secondary)",
-                    borderWidth: isActive ? 0 : "var(--border-width)",
-                    borderColor: "var(--color-border)",
-                  }}
-                >
-                  {cat}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {filteredProducts.map((p) => {
-              if (p.kind === "item") {
-                const remaining = stockRemaining.get(p.data.id) ?? p.data.stock;
-                const outOfStock = remaining <= 0;
-                return (
-                  <button
-                    key={`item-${p.data.id}`}
-                    onClick={() => addItemToCart(p.data)}
-                    disabled={outOfStock}
-                    className="p-3 text-left transition hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
-                    style={cardStyle}
-                  >
-                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
-                      {p.data.name}
-                    </p>
-                    <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                      Stock: {remaining}
-                    </p>
-                    <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
-                      ₱{p.data.sellingPrice.toLocaleString()}
-                    </p>
-                  </button>
-                );
-              }
-              return (
-                <button
-                  key={`bundle-${p.data.id}`}
-                  onClick={() => addBundleToCart(p.data)}
-                  className="p-3 text-left transition hover:opacity-90"
-                  style={{ ...cardStyle, background: "var(--color-surface-glass)" }}
-                >
-                  <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
-                    {p.data.name}{" "}
-                    <span
-                      className="text-[10px] px-1.5 py-0.5 rounded-full"
-                      style={{ background: "var(--color-secondary)", color: "#fff" }}
-                    >
-                      Bundle
-                    </span>
-                  </p>
-                  <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                    {p.data.components.length} parts
-                  </p>
-                  <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
-                    ₱{p.data.price.toLocaleString()}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Cart / Checkout panel */}
-        <div className="w-full lg:w-96 flex-shrink-0">
-          <div className="p-4 sticky top-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
-            <p
-              className="text-sm font-semibold mb-3"
-              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-            >
-              🛒 Cart
-            </p>
-
-            {cart.length === 0 ? (
-                <p className="text-sm py-6 text-center" style={{ color: "var(--color-text-secondary)" }}>
-                No items in cart yet
-              </p>
-            ) : (
-              <div className="space-y-2 mb-4 max-h-72 overflow-y-auto">
-                {cart.map((line) => (
-                  <div
-                    key={line.lineId}
-                    className="flex justify-between items-center px-2 py-2 rounded-lg text-sm"
-                    style={{ background: "var(--color-bg-secondary)" }}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="truncate" style={{ color: "var(--color-text-primary)" }}>
-                        {line.name}
-                      </p>
-                      <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                        ₱{line.unitPrice.toLocaleString()} × {line.quantity}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        onClick={() => updateQuantity(line.lineId, -1)}
-                        className="w-6 h-6 rounded-full font-bold"
-                        style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
-                      >
-                        −
-                      </button>
-                      <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
-                        {line.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateQuantity(line.lineId, 1)}
-                        className="w-6 h-6 rounded-full font-bold"
-                        style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
-                      >
-                        +
-                      </button>
-                      <button
-                        onClick={() => removeLine(line.lineId)}
-                        className="ml-1 text-xs"
-                        style={{ color: "#f87171" }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div
-              className="flex justify-between items-center py-3 mb-3"
-              style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
-            >
-              <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                Total
-              </span>
-              <span
-                className="text-xl font-bold"
-                style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-              >
-                ₱{cartTotal.toLocaleString()}
-              </span>
-            </div>
-
-            <label className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-              Cash Received (₱)
-            </label>
-            <input
-              type="number"
-              value={cashReceived}
-              onChange={(e) => setCashReceived(e.target.value)}
-              className="w-full mt-1 mb-3 px-3 py-2"
-              style={inputStyle}
-              placeholder="0"
-            />
-
-            <div
-              className="flex justify-between items-center px-4 py-3 mb-4"
-              style={{
-                background: change >= 0 ? "var(--gradient-accent)" : "rgba(239, 68, 68, 0.15)",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-                <span
-                className="text-sm font-medium"
-                style={{ color: change >= 0 ? "#fff" : "#f87171" }}
-              >
-                {change >= 0 ? "Change" : "Insufficient"}
-              </span>
-              <span
-                className="text-lg font-bold"
-                style={{ color: change >= 0 ? "#fff" : "#f87171", fontFamily: "var(--font-heading)" }}
-              >
-                ₱{Math.abs(change).toLocaleString()}
-              </span>
-            </div>
-
-            {errorMessage && (
-              <p
-                className="text-sm p-2 rounded-lg mb-3"
-                style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}
-              >
-                {errorMessage}
-              </p>
-            )}
-
-            <button
-              onClick={handleCompleteSale}
-              disabled={cart.length === 0 || processing}
-              className="w-full font-semibold py-3 disabled:opacity-50 hover:opacity-90"
-              style={{
-                background: "linear-gradient(135deg, #22c55e, #16a34a)",
-                color: "#fff",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-              {processing ? "Processing..." : "✓ Complete Sale"}
-            </button>
-          </div>
-        </div>
-
-        {/* Receipt confirmation */}
-        {receiptLines && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-            <div
-              className="w-full max-w-sm p-6"
-              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
-            >
-              <p
-                className="text-lg font-bold mb-1 text-center"
-                style={{ color: "#4ade80", fontFamily: "var(--font-heading)" }}
-              >
-                ✓ Sale Complete
-              </p>
-              <p className="text-xs text-center mb-4" style={{ color: "var(--color-text-secondary)" }}>
-                {new Date().toLocaleString()}
-              </p>
-
-              <div className="space-y-1 mb-4">
-                {receiptLines.map((line) => (
-                  <div key={line.lineId} className="flex justify-between text-sm">
-                    <span style={{ color: "var(--color-text-primary)" }}>
-                      {line.name} × {line.quantity}
-                    </span>
-                    <span style={{ color: "var(--color-text-secondary)" }}>
-                      ₱{(line.unitPrice * line.quantity).toLocaleString()}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div
-                className="flex justify-between items-center py-2 mb-4"
-                style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
-              >
-                <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                  Change
-                </span>
-                <span className="text-lg font-bold" style={{ color: "var(--color-primary-light)" }}>
-                  ₱{receiptChange.toLocaleString()}
-                </span>
-              </div>
-
-                <button
-                onClick={() => setReceiptLines(null)}
-                className="w-full font-semibold py-2.5 hover:opacity-90"
-                style={{
-                  background: "var(--gradient-accent)",
-                  color: "#fff",
-                  borderRadius: "var(--radius-button)",
-                }}
-              >
-                New Transaction
-              </button>
-            </div>
-          </div>
-        )}
-      </main>
     </div>
   );
 }
@@ -4954,7 +4507,7 @@ export default function UbaAssistant() {
 }
 </file>
 
-<file path="app/repair-tickets/page.tsx">
+<file path="app/pos/page.tsx">
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
@@ -4968,58 +4521,40 @@ import {
   doc,
   getDoc,
   updateDoc,
-  deleteDoc,
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
 
 type InventoryItem = {
   id: string;
   name: string;
+  category: string;
   stock: number;
   unitCost: number;
   sellingPrice: number;
 };
 
-type PartUsed = {
-  itemId: string;
-  itemName: string;
-  quantity: number;
-  unitCost: number;
-};
-
-type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
-
-type RepairTicket = {
+type BundleComponent = { itemId: string; itemName: string; quantity: number };
+type Bundle = {
   id: string;
-  customerName: string;
-  customerPhone: string;
-  deviceInfo: string;
-  issueDescription: string;
-  status: Status;
-  partsUsed: PartUsed[];
-  laborPayment: number;
-  createdAt: string;
-  updatedAt: string;
-  salesRecorded?: boolean;
+  name: string;
+  category: string;
+  components: BundleComponent[];
+  price: number;
 };
 
-const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Paid"];
+type CartLine =
+  | { lineId: string; kind: "item"; refId: string; name: string; unitPrice: number; unitCost: number; quantity: number; maxStock: number }
+  | { lineId: string; kind: "bundle"; refId: string; name: string; unitPrice: number; quantity: number; components: BundleComponent[]; maxBundleStock: number };
 
-const STATUS_COLORS: Record<Status, { bg: string; text: string }> = {
-  Pending: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
-  "In Progress": { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa" },
-  "Ready for Pickup": { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc" },
-  Paid: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
-  Cancelled: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
+const cardStyle: React.CSSProperties = {
+  background: "var(--color-surface)",
+  borderRadius: "var(--radius-card)",
+  borderWidth: "var(--border-width)",
+  borderColor: "var(--color-border)",
 };
-
-// Fallback color so an unexpected/missing status value never crashes the UI
-const DEFAULT_STATUS_COLOR = { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" };
-
-const getStatusColors = (status: Status | undefined) =>
-  (status && STATUS_COLORS[status]) || DEFAULT_STATUS_COLOR;
 
 const inputStyle: React.CSSProperties = {
   background: "var(--color-bg-secondary)",
@@ -5029,44 +4564,30 @@ const inputStyle: React.CSSProperties = {
   borderWidth: "var(--border-width)",
 };
 
-const labelStyle: React.CSSProperties = { color: "var(--color-text-secondary)" };
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--color-surface)",
-  borderRadius: "var(--radius-card)",
-  borderWidth: "var(--border-width)",
-  borderColor: "var(--color-border)",
-};
-
-export default function RepairTicketsPage() {
-  const [tickets, setTickets] = useState<RepairTicket[]>([]);
-  const [items, setItems] = useState<InventoryItem[]>([]);
+export default function PosPage() {
   const [uid, setUid] = useState<string | null>(null);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [bundles, setBundles] = useState<Bundle[]>([]);
   const router = useRouter();
 
-  const [statusFilter, setStatusFilter] = useState<"All" | Status>("All");
   const [searchText, setSearchText] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
 
-  const [showNewForm, setShowNewForm] = useState(false);
-  const [customerName, setCustomerName] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [deviceInfo, setDeviceInfo] = useState("");
-  const [issueDescription, setIssueDescription] = useState("");
-  const [savingTicket, setSavingTicket] = useState(false);
-
-  const [detail, setDetail] = useState<RepairTicket | null>(null);
-  const [laborInput, setLaborInput] = useState("");
-  const [savingLabor, setSavingLabor] = useState(false);
-  const [changingStatus, setChangingStatus] = useState(false);
-  const [businessName, setBusinessName] = useState('');
-
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cashReceived, setCashReceived] = useState("");
+  const [processing, setProcessing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [receiptLines, setReceiptLines] = useState<CartLine[] | null>(null);
+  const [receiptChange, setReceiptChange] = useState(0);
+  const [businessName, setBusinessName] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
   useEffect(() => {
-    let unsubTickets = () => {};
     let unsubInv = () => {};
+    let unsubBundles = () => {};
 
     const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-      unsubTickets();
       unsubInv();
+      unsubBundles();
 
       if (!user) {
         router.push("/login");
@@ -5075,677 +4596,517 @@ export default function RepairTicketsPage() {
       setUid(user.uid);
 
       getDoc(doc(db, "tenants", user.uid)).then((snap) => {
-        if (snap.exists()) setBusinessName(snap.data().businessName || "");
-      });
-
-      const ticketQuery = query(
-        collection(db, "tenants", user.uid, "repairTickets"),
-        orderBy("createdAt", "desc")
-      );
-      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
-        setTickets(
-          snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicket[]
-        );
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          setLogoUrl(data.logoUrl || null);
+        }
       });
 
       const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
       });
+
+      const bundleQuery = query(collection(db, "tenants", user.uid, "bundles"), orderBy("name"));
+      unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
+        setBundles(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]);
+      });
     });
 
     return () => {
       unsubscribeAuth();
-      unsubTickets();
       unsubInv();
+      unsubBundles();
     };
   }, [router]);
 
-  useEffect(() => {
-    if (!detail) return;
-    const fresh = tickets.find((t) => t.id === detail.id);
-    if (fresh) setDetail(fresh);
-  }, [tickets]);
+  const categories = useMemo(() => {
+    const all = [...items.map((i) => i.category), ...bundles.map((b) => b.category)];
+    return ["All", ...Array.from(new Set(all.filter(Boolean))).sort()];
+  }, [items, bundles]);
 
-  const filteredTickets = useMemo(() => {
+  const filteredProducts = useMemo(() => {
     const searchLower = searchText.toLowerCase().trim();
-    return tickets.filter((t) => {
-      const matchesStatus = statusFilter === "All" || t.status === statusFilter;
-      if (!matchesStatus) return false;
-      if (!searchLower) return true;
-      return (
-        t.customerName.toLowerCase().includes(searchLower) ||
-        t.deviceInfo.toLowerCase().includes(searchLower) ||
-        t.customerPhone.toLowerCase().includes(searchLower)
-      );
-    });
-  }, [tickets, statusFilter, searchText]);
+    const itemCards = items
+      .filter((i) => selectedCategory === "All" || i.category === selectedCategory)
+      .filter((i) => !searchLower || i.name.toLowerCase().includes(searchLower))
+      .map((i) => ({ kind: "item" as const, data: i }));
+    const bundleCards = bundles
+      .filter((b) => selectedCategory === "All" || b.category === selectedCategory)
+      .filter((b) => !searchLower || b.name.toLowerCase().includes(searchLower))
+      .map((b) => ({ kind: "bundle" as const, data: b }));
+    return [...itemCards, ...bundleCards];
+  }, [items, bundles, selectedCategory, searchText]);
 
-  const resetNewForm = () => {
-    setCustomerName("");
-    setCustomerPhone("");
-    setDeviceInfo("");
-    setIssueDescription("");
+  // Cash-in-hand quantity available per underlying inventory item, accounting for
+  // both direct item lines AND bundle component consumption already in the cart.
+  const stockRemaining = useMemo(() => {
+    const remaining = new Map(items.map((i) => [i.id, i.stock]));
+    cart.forEach((line) => {
+      if (line.kind === "item") {
+        remaining.set(line.refId, (remaining.get(line.refId) || 0) - line.quantity);
+      } else {
+        line.components.forEach((c) => {
+          remaining.set(c.itemId, (remaining.get(c.itemId) || 0) - c.quantity * line.quantity);
+        });
+      }
+    });
+    return remaining;
+  }, [items, cart]);
+
+  const addItemToCart = (item: InventoryItem) => {
+    setErrorMessage("");
+    const existing = cart.find((l) => l.kind === "item" && l.refId === item.id);
+    const currentRemaining = stockRemaining.get(item.id) ?? item.stock;
+    if (currentRemaining <= 0) {
+      setErrorMessage(`No more stock available for "${item.name}".`);
+      return;
+    }
+    if (existing) {
+      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
+    } else {
+      setCart([
+        ...cart,
+        {
+          lineId: `item-${item.id}`,
+          kind: "item",
+          refId: item.id,
+          name: item.name,
+          unitPrice: item.sellingPrice,
+          unitCost: item.unitCost || 0,
+          quantity: 1,
+          maxStock: item.stock,
+        },
+      ]);
+    }
   };
 
-  const handleCreateTicket = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uid) return;
-    setSavingTicket(true);
+  const addBundleToCart = (bundle: Bundle) => {
+    setErrorMessage("");
+    // Check every component has enough remaining stock for one more bundle unit
+    const insufficient = bundle.components.find((c) => (stockRemaining.get(c.itemId) ?? 0) < c.quantity);
+    if (insufficient) {
+      setErrorMessage(`Not enough stock of "${insufficient.itemName}" for this bundle.`);
+      return;
+    }
+    const existing = cart.find((l) => l.kind === "bundle" && l.refId === bundle.id);
+    if (existing) {
+      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
+    } else {
+      setCart([
+        ...cart,
+        {
+          lineId: `bundle-${bundle.id}`,
+          kind: "bundle",
+          refId: bundle.id,
+          name: bundle.name,
+          unitPrice: bundle.price,
+          quantity: 1,
+          components: bundle.components,
+          maxBundleStock: 0,
+        },
+      ]);
+    }
+  };
+
+  const updateQuantity = (lineId: string, delta: number) => {
+    setErrorMessage("");
+    setCart((prev) => {
+      const line = prev.find((l) => l.lineId === lineId);
+      if (!line) return prev;
+      const newQty = line.quantity + delta;
+      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
+      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
+    });
+  };
+
+  const removeLine = (lineId: string) => {
+    setCart(cart.filter((l) => l.lineId !== lineId));
+  };
+
+  const cartTotal = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0), [cart]);
+  const change = Number(cashReceived || 0) - cartTotal;
+
+  const handleCompleteSale = async () => {
+    if (!uid || cart.length === 0) return;
+    if (Number(cashReceived) < cartTotal) {
+      setErrorMessage("Cash received is less than the total amount due.");
+      return;
+    }
+
+    setProcessing(true);
+    setErrorMessage("");
+
     try {
-      const now = new Date().toISOString();
-      await addDoc(collection(db, "tenants", uid, "repairTickets"), {
-        customerName,
-        customerPhone,
-        deviceInfo,
-        issueDescription,
-        status: "Pending" as Status,
-        partsUsed: [],
-        laborPayment: 0,
-        createdAt: now,
-        updatedAt: now,
-        salesRecorded: false,
-      });
-      resetNewForm();
-      setShowNewForm(false);
+      for (const line of cart) {
+        if (line.kind === "item") {
+          const total = line.unitPrice * line.quantity;
+          const profit = total - line.unitCost * line.quantity;
+          await addDoc(collection(db, "tenants", uid, "sales"), {
+            itemName: line.name,
+            quantity: line.quantity,
+            price: line.unitPrice,
+            total,
+            profit,
+            serialNumberUsed: null,
+            date: new Date().toISOString(),
+          });
+          await updateDoc(doc(db, "tenants", uid, "inventory", line.refId), {
+            stock: increment(-line.quantity),
+          });
+        } else {
+          let totalCost = 0;
+          for (const comp of line.components) {
+            const invItem = items.find((i) => i.id === comp.itemId);
+            totalCost += (invItem?.unitCost || 0) * comp.quantity * line.quantity;
+          }
+          const total = line.unitPrice * line.quantity;
+          const profit = total - totalCost;
+
+          await addDoc(collection(db, "tenants", uid, "sales"), {
+            itemName: `${line.name} (Bundle)`,
+            quantity: line.quantity,
+            price: line.unitPrice,
+            total,
+            profit,
+            serialNumberUsed: null,
+            date: new Date().toISOString(),
+          });
+
+          for (const comp of line.components) {
+            await updateDoc(doc(db, "tenants", uid, "inventory", comp.itemId), {
+              stock: increment(-comp.quantity * line.quantity),
+            });
+          }
+        }
+      }
+
+      setReceiptLines(cart);
+      setReceiptChange(change);
+      setCart([]);
+      setCashReceived("");
     } catch (err) {
       console.error(err);
+      setErrorMessage("Something went wrong while completing the sale. Please try again.");
     } finally {
-      setSavingTicket(false);
+      setProcessing(false);
     }
   };
-
-  // Safely adjust an inventory item's stock. Checks that the document still
-  // exists before calling updateDoc, since parts referenced by older repair
-  // tickets can point to inventory items that were later deleted. Returns
-  // true if the stock was actually adjusted, false if the item no longer
-  // exists (so callers can warn the user instead of crashing).
-  const safeAdjustStock = async (
-    uidParam: string,
-    itemId: string,
-    delta: number
-  ): Promise<boolean> => {
-    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      console.warn(`Inventory item ${itemId} no longer exists — skipping stock update.`);
-      return false;
-    }
-    await updateDoc(ref, { stock: increment(delta) });
-    return true;
-  };
-
-  const openDetail = (ticket: RepairTicket) => {
-    setDetail(ticket);
-    setLaborInput(String(ticket.laborPayment || 0));
-  };
-
-  const partsCostOf = (ticket: RepairTicket) =>
-    ticket.partsUsed.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
-
-  const totalCostOf = (ticket: RepairTicket) => partsCostOf(ticket) + (ticket.laborPayment || 0);
-
-  // Records the ticket as a sale. Called automatically the moment a ticket is
-  // marked "Paid". Guarded by salesRecorded so it can never double-post,
-  // even if the button is clicked more than once or the write is retried.
-  const recordTicketAsSale = async (uidParam: string, ticket: RepairTicket) => {
-    const partsCost = partsCostOf(ticket);
-    const totalCharge = partsCost + (ticket.laborPayment || 0);
-
-    await addDoc(collection(db, "tenants", uidParam, "sales"), {
-      itemName: `Repair: ${ticket.deviceInfo} (${ticket.customerName})`,
-      quantity: 1,
-      price: totalCharge,
-      total: totalCharge,
-      profit: ticket.laborPayment || 0,
-      serialNumberUsed: null,
-      date: new Date().toISOString(),
-      source: "repairTicket",
-      repairTicketId: ticket.id,
-    });
-  };
-
-  const handleChangeStatus = async (ticket: RepairTicket, newStatus: Status) => {
-    if (!uid || changingStatus) return;
-    setChangingStatus(true);
-
-    try {
-      // Returning parts to stock when a ticket is cancelled
-      if (newStatus === "Cancelled" && ticket.partsUsed.length > 0) {
-        const confirmed = window.confirm(
-          "Cancelling this ticket will return all assigned parts back to inventory stock. Continue?"
-        );
-        if (!confirmed) {
-          setChangingStatus(false);
-          return;
-        }
-        const missingParts: string[] = [];
-        for (const part of ticket.partsUsed) {
-          const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
-          if (!ok) missingParts.push(part.itemName);
-        }
-        if (missingParts.length > 0) {
-          window.alert(
-            `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
-              missingParts.length > 1 ? "them" : "it"
-            }.`
-          );
-        }
-      }
-
-      // Auto-list sa Sales sa sandaling naging "Paid" ang ticket.
-      // salesRecorded guard = kahit ilang beses ma-trigger ito, minsan lang
-      // talaga siya makakapasok sa sales collection.
-      const shouldRecordSale = newStatus === "Paid" && !ticket.salesRecorded;
-      if (shouldRecordSale) {
-        await recordTicketAsSale(uid, ticket);
-      }
-
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", ticket.id), {
-        status: newStatus,
-        updatedAt: new Date().toISOString(),
-        ...(shouldRecordSale ? { salesRecorded: true } : {}),
-      });
-    } catch (err) {
-      console.error("Failed to change ticket status:", err);
-      window.alert("May problema sa pag-update ng ticket. Subukan ulit.");
-    } finally {
-      setChangingStatus(false);
-    }
-  };
-
-  const handleAddPart = async (item: InventoryItem) => {
-    if (!uid || !detail) return;
-    if (item.stock <= 0) return;
-
-    const existing = detail.partsUsed.find((p) => p.itemId === item.id);
-    const updatedParts = existing
-      ? detail.partsUsed.map((p) =>
-          p.itemId === item.id ? { ...p, quantity: p.quantity + 1 } : p
-        )
-      : [...detail.partsUsed, { itemId: item.id, itemName: item.name, quantity: 1, unitCost: item.unitCost || 0 }];
-
-    try {
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-        partsUsed: updatedParts,
-        updatedAt: new Date().toISOString(),
-      });
-      const ok = await safeAdjustStock(uid, item.id, -1);
-      if (!ok) {
-        window.alert(
-          `"${item.name}" was removed from inventory just now, so stock could not be reduced. Please refresh.`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to add part:", err);
-      window.alert("May problema sa pagdagdag ng part. Subukan ulit.");
-    }
-  };
-
-  const handleRemovePart = async (part: PartUsed) => {
-    if (!uid || !detail) return;
-
-    const updatedParts =
-      part.quantity <= 1
-        ? detail.partsUsed.filter((p) => p.itemId !== part.itemId)
-        : detail.partsUsed.map((p) =>
-            p.itemId === part.itemId ? { ...p, quantity: p.quantity - 1 } : p
-          );
-
-    try {
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-        partsUsed: updatedParts,
-        updatedAt: new Date().toISOString(),
-      });
-      const ok = await safeAdjustStock(uid, part.itemId, 1);
-      if (!ok) {
-        window.alert(
-          `"${part.itemName}" no longer exists in inventory, so stock was not restored.`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to remove part:", err);
-      window.alert("May problema sa pagtanggal ng part. Subukan ulit.");
-    }
-  };
-
-  const handleSaveLabor = async () => {
-    if (!uid || !detail) return;
-    setSavingLabor(true);
-    try {
-      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
-        laborPayment: Number(laborInput) || 0,
-        updatedAt: new Date().toISOString(),
-      });
-    } finally {
-      setSavingLabor(false);
-    }
-  };
-
-  const handleDeleteTicket = async (ticket: RepairTicket) => {
-    if (!uid) return;
-    const confirmed = window.confirm(
-      `Delete the repair ticket for "${ticket.customerName}"? This cannot be undone.`
-    );
-    if (!confirmed) return;
-
-    try {
-      const missingParts: string[] = [];
-      for (const part of ticket.partsUsed) {
-        const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
-        if (!ok) missingParts.push(part.itemName);
-      }
-
-      await deleteDoc(doc(db, "tenants", uid, "repairTickets", ticket.id));
-      setDetail(null);
-
-      if (missingParts.length > 0) {
-        window.alert(
-          `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
-            missingParts.length > 1 ? "them" : "it"
-          }.`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to delete ticket:", err);
-      window.alert("May problema sa pagbura ng ticket. Subukan ulit.");
-    }
-  };
-
-  const isLocked = (status: Status) => status === "Cancelled" || status === "Paid";
 
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6">
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
-          <div>
-            <h1
-              className="text-xl font-bold"
-              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-            >
-              Repair Tickets
-            </h1>
-            <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-              Track customer repairs from drop-off to pickup
-            </p>
-          </div>
-          <button
-            onClick={() => setShowNewForm(true)}
-            className="font-semibold px-4 py-2 text-sm hover:opacity-90"
-            style={{
-              background: "var(--gradient-accent)",
-              color: "#fff",
-              borderRadius: "var(--radius-button)",
-              boxShadow: "var(--glow-shadow)",
-            }}
+      <main className="flex-1 p-6 flex flex-col lg:flex-row gap-6">
+        {/* Product picker */}
+        <div className="flex-1">
+          <h1
+            className="text-xl font-bold mb-1"
+            style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
           >
-            + New Ticket
-          </button>
-        </div>
+            Point of Sale
+          </h1>
+          <p className="text-sm mb-4" style={{ color: "var(--color-text-secondary)" }}>
+            Tap items to add them to the cart
+          </p>
 
-        <div className="mb-4">
           <input
             type="text"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
-            placeholder="Search by customer name, phone, or device..."
-            className="w-full px-4 py-2"
+            placeholder="Search products..."
+            className="w-full px-4 py-2 mb-3"
             style={inputStyle}
           />
-        </div>
 
-        {/* Status filter chips */}
-        <div className="flex flex-wrap gap-2 mb-6">
-          {(["All", ...STATUS_FLOW, "Cancelled"] as const).map((s) => {
-            const isActive = statusFilter === s;
-            return (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s as "All" | Status)}
-                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
-                style={{
-                  background: isActive ? "var(--color-primary)" : "var(--color-surface)",
-                  color: isActive ? "#fff" : "var(--color-text-secondary)",
-                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
-                  borderWidth: isActive ? 0 : "var(--border-width)",
-                  borderColor: "var(--color-border)",
-                }}
-              >
-                {s}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Ticket list */}
-        {filteredTickets.length === 0 ? (
-          <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-            No repair tickets found. Click "+ New Ticket" to log a customer's device.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredTickets.map((ticket) => {
-              const colors = getStatusColors(ticket.status);
+          <div className="flex flex-wrap gap-2 mb-4">
+            {categories.map((cat) => {
+              const isActive = selectedCategory === cat;
               return (
                 <button
-                  key={ticket.id}
-                  onClick={() => openDetail(ticket)}
-                  className="text-left p-4 transition hover:opacity-90"
-                  style={cardStyle}
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className="px-3 py-1 rounded-full text-xs font-medium transition"
+                  style={{
+                    background: isActive ? "var(--color-primary)" : "var(--color-surface)",
+                    color: isActive ? "#fff" : "var(--color-text-secondary)",
+                    borderWidth: isActive ? 0 : "var(--border-width)",
+                    borderColor: "var(--color-border)",
+                  }}
                 >
-                  <div className="flex justify-between items-start mb-2">
-                    <p className="font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                      {ticket.customerName}
-                    </p>
-                    <span
-                      className="text-xs font-medium px-2 py-1 rounded-full"
-                      style={{ background: colors.bg, color: colors.text }}
-                    >
-                      {ticket.status || "Unknown"}
-                    </span>
-                  </div>
-                  <p className="text-sm mb-1" style={{ color: "var(--color-text-secondary)" }}>
-                    {ticket.deviceInfo}
-                  </p>
-                  <p className="text-xs mb-3 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>
-                    {ticket.issueDescription}
-                  </p>
-                  <div className="flex justify-between items-center text-xs">
-                    <span style={{ color: "var(--color-text-secondary)" }}>
-                      {ticket.partsUsed?.length || 0} part(s)
-                    </span>
-                    <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>
-                      ₱{totalCostOf(ticket).toLocaleString()}
-                    </span>
-                  </div>
+                  {cat}
                 </button>
               );
             })}
           </div>
-        )}
 
-        {/* ---- NEW TICKET MODAL ---- */}
-        {showNewForm && (
-          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <form
-              onSubmit={handleCreateTicket}
-              className="w-full max-w-md p-6 space-y-4"
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {filteredProducts.map((p) => {
+              if (p.kind === "item") {
+                const remaining = stockRemaining.get(p.data.id) ?? p.data.stock;
+                const outOfStock = remaining <= 0;
+                return (
+                  <button
+                    key={`item-${p.data.id}`}
+                    onClick={() => addItemToCart(p.data)}
+                    disabled={outOfStock}
+                    className="p-3 text-left transition hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
+                    style={cardStyle}
+                  >
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                      {p.data.name}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                      Stock: {remaining}
+                    </p>
+                    <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
+                      ₱{p.data.sellingPrice.toLocaleString()}
+                    </p>
+                  </button>
+                );
+              }
+              return (
+                <button
+                  key={`bundle-${p.data.id}`}
+                  onClick={() => addBundleToCart(p.data)}
+                  className="p-3 text-left transition hover:opacity-90"
+                  style={{ ...cardStyle, background: "var(--color-surface-glass)" }}
+                >
+                  <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                    {p.data.name}{" "}
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded-full"
+                      style={{ background: "var(--color-secondary)", color: "#fff" }}
+                    >
+                      Bundle
+                    </span>
+                  </p>
+                  <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                    {p.data.components.length} parts
+                  </p>
+                  <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
+                    ₱{p.data.price.toLocaleString()}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Cart / Checkout panel */}
+        <div className="w-full lg:w-96 flex-shrink-0">
+          <div className="p-4 sticky top-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+            <p
+              className="text-sm font-semibold mb-3"
+              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+            >
+              🛒 Cart
+            </p>
+
+            {cart.length === 0 ? (
+                <p className="text-sm py-6 text-center" style={{ color: "var(--color-text-secondary)" }}>
+                No items in cart yet
+              </p>
+            ) : (
+              <div className="space-y-2 mb-4 max-h-72 overflow-y-auto">
+                {cart.map((line) => (
+                  <div
+                    key={line.lineId}
+                    className="flex justify-between items-center px-2 py-2 rounded-lg text-sm"
+                    style={{ background: "var(--color-bg-secondary)" }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="truncate" style={{ color: "var(--color-text-primary)" }}>
+                        {line.name}
+                      </p>
+                      <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                        ₱{line.unitPrice.toLocaleString()} × {line.quantity}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button
+                        onClick={() => updateQuantity(line.lineId, -1)}
+                        className="w-6 h-6 rounded-full font-bold"
+                        style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                      >
+                        −
+                      </button>
+                      <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
+                        {line.quantity}
+                      </span>
+                      <button
+                        onClick={() => updateQuantity(line.lineId, 1)}
+                        className="w-6 h-6 rounded-full font-bold"
+                        style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                      >
+                        +
+                      </button>
+                      <button
+                        onClick={() => removeLine(line.lineId)}
+                        className="ml-1 text-xs"
+                        style={{ color: "#f87171" }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div
+              className="flex justify-between items-center py-3 mb-3"
+              style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
+            >
+              <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                Total
+              </span>
+              <span
+                className="text-xl font-bold"
+                style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+              >
+                ₱{cartTotal.toLocaleString()}
+              </span>
+            </div>
+
+            <label className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+              Cash Received (₱)
+            </label>
+            <input
+              type="number"
+              value={cashReceived}
+              onChange={(e) => setCashReceived(e.target.value)}
+              className="w-full mt-1 mb-3 px-3 py-2"
+              style={inputStyle}
+              placeholder="0"
+            />
+
+            <div
+              className="flex justify-between items-center px-4 py-3 mb-4"
+              style={{
+                background: change >= 0 ? "var(--gradient-accent)" : "rgba(239, 68, 68, 0.15)",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+                <span
+                className="text-sm font-medium"
+                style={{ color: change >= 0 ? "#fff" : "#f87171" }}
+              >
+                {change >= 0 ? "Change" : "Insufficient"}
+              </span>
+              <span
+                className="text-lg font-bold"
+                style={{ color: change >= 0 ? "#fff" : "#f87171", fontFamily: "var(--font-heading)" }}
+              >
+                ₱{Math.abs(change).toLocaleString()}
+              </span>
+            </div>
+
+            {errorMessage && (
+              <p
+                className="text-sm p-2 rounded-lg mb-3"
+                style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}
+              >
+                {errorMessage}
+              </p>
+            )}
+
+            <button
+              onClick={handleCompleteSale}
+              disabled={cart.length === 0 || processing}
+              className="w-full font-semibold py-3 disabled:opacity-50 hover:opacity-90"
+              style={{
+                background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                color: "#fff",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+              {processing ? "Processing..." : "✓ Complete Sale"}
+            </button>
+          </div>
+        </div>
+
+        {/* Receipt confirmation */}
+        {receiptLines && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+            <div
+              className="w-full max-w-sm p-6"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
-              <div className="flex justify-between items-center">
-                <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>
-                  New Repair Ticket
-                </p>
+              <p
+                className="text-lg font-bold mb-1 text-center"
+                style={{ color: "#4ade80", fontFamily: "var(--font-heading)" }}
+              >
+                ✓ Sale Complete
+              </p>
+              <p className="text-xs text-center mb-4" style={{ color: "var(--color-text-secondary)" }}>
+                {new Date().toLocaleString()}
+              </p>
+
+              <div className="space-y-1 mb-4">
+                {receiptLines.map((line) => (
+                  <div key={line.lineId} className="flex justify-between text-sm">
+                    <span style={{ color: "var(--color-text-primary)" }}>
+                      {line.name} × {line.quantity}
+                    </span>
+                    <span style={{ color: "var(--color-text-secondary)" }}>
+                      ₱{(line.unitPrice * line.quantity).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div
+                className="flex justify-between items-center py-2 mb-4"
+                style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
+              >
+                <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                  Change
+                </span>
+                <span className="text-lg font-bold" style={{ color: "var(--color-primary-light)" }}>
+                  ₱{receiptChange.toLocaleString()}
+                </span>
+              </div>
+
                 <button
-                  type="button"
-                  onClick={() => setShowNewForm(false)}
-                  className="text-xl leading-none hover:opacity-70"
-                  style={{ color: "var(--color-text-secondary)" }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Customer Name</label>
-                <input
-                  required
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. Juan Dela Cruz"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Contact Number</label>
-                <input
-                  value={customerPhone}
-                  onChange={(e) => setCustomerPhone(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. 09171234567"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Device</label>
-                <input
-                  required
-                  value={deviceInfo}
-                  onChange={(e) => setDeviceInfo(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. HP Pavilion 14 Laptop"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>Reported Issue</label>
-                <textarea
-                  required
-                  value={issueDescription}
-                  onChange={(e) => setIssueDescription(e.target.value)}
-                  rows={3}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. Won't turn on, no display"
-                />
-              </div>
+                onClick={() => {
+                  const total = receiptLines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+                  printReceipt({
+                    businessName,
+                    logoUrl,
+                    receiptTitle: "Sales Receipt",
+                    date: new Date(),
+                    lines: receiptLines.map((l) => ({
+                      label: `${l.name} × ${l.quantity}`,
+                      amount: l.unitPrice * l.quantity,
+                    })),
+                    total,
+                    cashReceived: total + receiptChange,
+                    change: receiptChange,
+                  });
+                }}
+                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                🖨️ Print Receipt
+              </button>
 
               <button
-                type="submit"
-                disabled={savingTicket}
-                className="w-full font-semibold py-2.5 disabled:opacity-50 hover:opacity-90"
+                onClick={() => setReceiptLines(null)}
+                className="w-full font-semibold py-2.5 hover:opacity-90"
                 style={{
                   background: "var(--gradient-accent)",
                   color: "#fff",
                   borderRadius: "var(--radius-button)",
-                  boxShadow: "var(--glow-shadow)",
                 }}
               >
-                {savingTicket ? "Saving..." : "Create Ticket"}
-              </button>
-            </form>
-          </div>
-        )}
-
-        {/* ---- TICKET DETAIL MODAL ---- */}
-        {detail && (
-          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <div
-              className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
-              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
-            >
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3
-                    className="text-lg font-bold"
-                    style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-                  >
-                    {detail.customerName}
-                  </h3>
-                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-                    {detail.customerPhone || "No contact number"}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setDetail(null)}
-                  className="text-xl leading-none hover:opacity-70"
-                  style={{ color: "var(--color-text-secondary)" }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
-                <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
-                  {detail.deviceInfo}
-                </p>
-                <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                  {detail.issueDescription}
-                </p>
-              </div>
-
-              {/* Status flow */}
-              <div className="mb-6">
-                <p className="text-sm font-medium mb-2" style={labelStyle}>Status</p>
-                {detail.status === "Paid" && detail.salesRecorded && (
-                <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
-                 ✓ Recorded in Sales
-                </p>
-                )}
-                <div className="flex flex-wrap gap-2">
-                  {STATUS_FLOW.map((s) => {
-                    const isActive = detail.status === s;
-                    const colors = STATUS_COLORS[s];
-                    return (
-                      <button
-                        key={s}
-                        onClick={() => handleChangeStatus(detail, s)}
-                        disabled={isLocked(detail.status) || changingStatus}
-                        className="px-3 py-1.5 rounded-full text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed"
-                        style={{
-                          background: isActive ? colors.bg : "var(--color-bg-secondary)",
-                          color: isActive ? colors.text : "var(--color-text-secondary)",
-                          boxShadow: isActive ? `0 0 12px ${colors.bg}` : "none",
-                        }}
-                      >
-                        {s === "Paid" ? "Mark as Paid" : s}
-                      </button>
-                    );
-                  })}
-                  {!isLocked(detail.status) && (
-                    <button
-                      onClick={() => handleChangeStatus(detail, "Cancelled")}
-                      disabled={changingStatus}
-                      className="px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80 disabled:opacity-40"
-                      style={{ background: STATUS_COLORS.Cancelled.bg, color: STATUS_COLORS.Cancelled.text }}
-                    >
-                      Cancel Ticket
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Parts used */}
-              <div className="mb-6">
-                <p className="text-sm font-medium mb-2" style={labelStyle}>Parts Used</p>
-
-                {detail.partsUsed.length > 0 && (
-                  <div className="space-y-2 mb-3">
-                    {detail.partsUsed.map((p) => (
-                      <div
-                        key={p.itemId}
-                        className="flex justify-between items-center px-3 py-2 rounded-lg text-sm"
-                        style={{ background: "var(--color-bg-secondary)" }}
-                      >
-                        <span style={{ color: "var(--color-text-primary)" }}>{p.itemName}</span>
-                        <div className="flex items-center gap-3">
-                          <span style={{ color: "var(--color-text-secondary)" }}>
-                            {p.quantity} × ₱{p.unitCost.toLocaleString()}
-                          </span>
-                          <button
-                            onClick={() => handleRemovePart(p)}
-                            disabled={isLocked(detail.status)}
-                            className="w-6 h-6 rounded-full font-bold disabled:opacity-30"
-                            style={{ background: "var(--color-surface)", color: "#f87171" }}
-                          >
-                            −
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {!isLocked(detail.status) && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
-                    {items.length === 0 ? (
-                      <p className="col-span-full text-sm py-3 text-center" style={{ color: "var(--color-text-secondary)" }}>
-                        No inventory items available.
-                      </p>
-                    ) : (
-                      items.map((item) => (
-                        <button
-                          key={item.id}
-                          onClick={() => handleAddPart(item)}
-                          disabled={item.stock <= 0}
-                          className="p-2 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
-                          style={{
-                            background: "var(--color-bg-secondary)",
-                            borderRadius: "var(--radius-button)",
-                            borderWidth: "var(--border-width)",
-                            borderColor: "var(--color-border)",
-                          }}
-                        >
-                          <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>
-                            {item.name}
-                          </p>
-                          <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>
-                            Stock: {item.stock}
-                          </p>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Labor payment */}
-              <div className="mb-6">
-                <label className="text-sm font-medium" style={labelStyle}>Labor Payment (₱)</label>
-                <div className="flex gap-2 mt-1">
-                  <input
-                    type="number"
-                    value={laborInput}
-                    onChange={(e) => setLaborInput(e.target.value)}
-                    disabled={isLocked(detail.status)}
-                    className="flex-1 px-3 py-2 disabled:opacity-50"
-                    style={inputStyle}
-                  />
-                  <button
-                    onClick={handleSaveLabor}
-                    disabled={savingLabor || isLocked(detail.status)}
-                    className="px-4 py-2 text-sm font-semibold disabled:opacity-50 hover:opacity-90"
-                    style={{
-                      background: "var(--color-primary)",
-                      color: "#fff",
-                      borderRadius: "var(--radius-button)",
-                    }}
-                  >
-                    {savingLabor ? "..." : "Save"}
-                  </button>
-                </div>
-              </div>
-
-              {/* Total cost summary */}
-              <div
-                className="flex justify-between items-center p-4 mb-4"
-                style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)", boxShadow: "var(--glow-shadow)" }}
-              >
-                <div>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Parts + Labor</p>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                    ₱{partsCostOf(detail).toLocaleString()} + ₱{(detail.laborPayment || 0).toLocaleString()}
-                  </p>
-                </div>
-                <p
-                  className="text-xl font-bold"
-                  style={{ color: "var(--color-primary-light)", fontFamily: "var(--font-heading)" }}
-                >
-                  ₱{totalCostOf(detail).toLocaleString()}
-                </p>
-              </div>
-
-              <button
-                onClick={() => handleDeleteTicket(detail)}
-                className="w-full text-sm font-medium py-2 hover:opacity-80"
-                style={{ color: "#f87171" }}
-              >
-                Delete Ticket
+                New Transaction
               </button>
             </div>
           </div>
@@ -8293,6 +7654,841 @@ export default function InventoryPage() {
 
 
 
+      </main>
+    </div>
+  );
+}
+</file>
+
+<file path="app/repair-tickets/page.tsx">
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import {
+  collection,
+  addDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  doc,
+  getDoc,
+  updateDoc,
+  deleteDoc,
+  increment,
+} from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
+
+type InventoryItem = {
+  id: string;
+  name: string;
+  stock: number;
+  unitCost: number;
+  sellingPrice: number;
+};
+
+type PartUsed = {
+  itemId: string;
+  itemName: string;
+  quantity: number;
+  unitCost: number;
+};
+
+type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
+
+type RepairTicket = {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  deviceInfo: string;
+  issueDescription: string;
+  status: Status;
+  partsUsed: PartUsed[];
+  laborPayment: number;
+  createdAt: string;
+  updatedAt: string;
+  salesRecorded?: boolean;
+};
+
+const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Paid"];
+
+const STATUS_COLORS: Record<Status, { bg: string; text: string }> = {
+  Pending: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
+  "In Progress": { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa" },
+  "Ready for Pickup": { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc" },
+  Paid: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
+  Cancelled: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
+};
+
+// Fallback color so an unexpected/missing status value never crashes the UI
+const DEFAULT_STATUS_COLOR = { bg: "rgba(148, 163, 184, 0.15)", text: "#94a3b8" };
+
+const getStatusColors = (status: Status | undefined) =>
+  (status && STATUS_COLORS[status]) || DEFAULT_STATUS_COLOR;
+
+const inputStyle: React.CSSProperties = {
+  background: "var(--color-bg-secondary)",
+  color: "var(--color-text-primary)",
+  borderColor: "var(--color-border)",
+  borderRadius: "var(--radius-button)",
+  borderWidth: "var(--border-width)",
+};
+
+const labelStyle: React.CSSProperties = { color: "var(--color-text-secondary)" };
+
+const cardStyle: React.CSSProperties = {
+  background: "var(--color-surface)",
+  borderRadius: "var(--radius-card)",
+  borderWidth: "var(--border-width)",
+  borderColor: "var(--color-border)",
+};
+
+export default function RepairTicketsPage() {
+  const [tickets, setTickets] = useState<RepairTicket[]>([]);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [uid, setUid] = useState<string | null>(null);
+  const router = useRouter();
+
+  const [statusFilter, setStatusFilter] = useState<"All" | Status>("All");
+  const [searchText, setSearchText] = useState("");
+
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [deviceInfo, setDeviceInfo] = useState("");
+  const [issueDescription, setIssueDescription] = useState("");
+  const [savingTicket, setSavingTicket] = useState(false);
+
+  const [detail, setDetail] = useState<RepairTicket | null>(null);
+  const [laborInput, setLaborInput] = useState("");
+  const [savingLabor, setSavingLabor] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
+  const [businessName, setBusinessName] = useState('');
+
+  useEffect(() => {
+    let unsubTickets = () => {};
+    let unsubInv = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+      unsubTickets();
+      unsubInv();
+
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+      setUid(user.uid);
+
+      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+      });
+
+      const ticketQuery = query(
+        collection(db, "tenants", user.uid, "repairTickets"),
+        orderBy("createdAt", "desc")
+      );
+      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
+        setTickets(
+          snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicket[]
+        );
+      });
+
+      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
+        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubTickets();
+      unsubInv();
+    };
+  }, [router]);
+
+  useEffect(() => {
+    if (!detail) return;
+    const fresh = tickets.find((t) => t.id === detail.id);
+    if (fresh) setDetail(fresh);
+  }, [tickets]);
+
+  const filteredTickets = useMemo(() => {
+    const searchLower = searchText.toLowerCase().trim();
+    return tickets.filter((t) => {
+      const matchesStatus = statusFilter === "All" || t.status === statusFilter;
+      if (!matchesStatus) return false;
+      if (!searchLower) return true;
+      return (
+        t.customerName.toLowerCase().includes(searchLower) ||
+        t.deviceInfo.toLowerCase().includes(searchLower) ||
+        t.customerPhone.toLowerCase().includes(searchLower)
+      );
+    });
+  }, [tickets, statusFilter, searchText]);
+
+  const resetNewForm = () => {
+    setCustomerName("");
+    setCustomerPhone("");
+    setDeviceInfo("");
+    setIssueDescription("");
+  };
+
+  const handleCreateTicket = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uid) return;
+    setSavingTicket(true);
+    try {
+      const now = new Date().toISOString();
+      await addDoc(collection(db, "tenants", uid, "repairTickets"), {
+        customerName,
+        customerPhone,
+        deviceInfo,
+        issueDescription,
+        status: "Pending" as Status,
+        partsUsed: [],
+        laborPayment: 0,
+        createdAt: now,
+        updatedAt: now,
+        salesRecorded: false,
+      });
+      resetNewForm();
+      setShowNewForm(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingTicket(false);
+    }
+  };
+
+  // Safely adjust an inventory item's stock. Checks that the document still
+  // exists before calling updateDoc, since parts referenced by older repair
+  // tickets can point to inventory items that were later deleted. Returns
+  // true if the stock was actually adjusted, false if the item no longer
+  // exists (so callers can warn the user instead of crashing).
+  const safeAdjustStock = async (
+    uidParam: string,
+    itemId: string,
+    delta: number
+  ): Promise<boolean> => {
+    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      console.warn(`Inventory item ${itemId} no longer exists — skipping stock update.`);
+      return false;
+    }
+    await updateDoc(ref, { stock: increment(delta) });
+    return true;
+  };
+
+  const openDetail = (ticket: RepairTicket) => {
+    setDetail(ticket);
+    setLaborInput(String(ticket.laborPayment || 0));
+  };
+
+  const partsCostOf = (ticket: RepairTicket) =>
+    ticket.partsUsed.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
+
+  const totalCostOf = (ticket: RepairTicket) => partsCostOf(ticket) + (ticket.laborPayment || 0);
+
+  // Records the ticket as a sale. Called automatically the moment a ticket is
+  // marked "Paid". Guarded by salesRecorded so it can never double-post,
+  // even if the button is clicked more than once or the write is retried.
+  const recordTicketAsSale = async (uidParam: string, ticket: RepairTicket) => {
+    const partsCost = partsCostOf(ticket);
+    const totalCharge = partsCost + (ticket.laborPayment || 0);
+
+    await addDoc(collection(db, "tenants", uidParam, "sales"), {
+      itemName: `Repair: ${ticket.deviceInfo} (${ticket.customerName})`,
+      quantity: 1,
+      price: totalCharge,
+      total: totalCharge,
+      profit: ticket.laborPayment || 0,
+      serialNumberUsed: null,
+      date: new Date().toISOString(),
+      source: "repairTicket",
+      repairTicketId: ticket.id,
+    });
+  };
+
+  const handleChangeStatus = async (ticket: RepairTicket, newStatus: Status) => {
+    if (!uid || changingStatus) return;
+    setChangingStatus(true);
+
+    try {
+      // Returning parts to stock when a ticket is cancelled
+      if (newStatus === "Cancelled" && ticket.partsUsed.length > 0) {
+        const confirmed = window.confirm(
+          "Cancelling this ticket will return all assigned parts back to inventory stock. Continue?"
+        );
+        if (!confirmed) {
+          setChangingStatus(false);
+          return;
+        }
+        const missingParts: string[] = [];
+        for (const part of ticket.partsUsed) {
+          const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
+          if (!ok) missingParts.push(part.itemName);
+        }
+        if (missingParts.length > 0) {
+          window.alert(
+            `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
+              missingParts.length > 1 ? "them" : "it"
+            }.`
+          );
+        }
+      }
+
+      // Auto-list sa Sales sa sandaling naging "Paid" ang ticket.
+      // salesRecorded guard = kahit ilang beses ma-trigger ito, minsan lang
+      // talaga siya makakapasok sa sales collection.
+      const shouldRecordSale = newStatus === "Paid" && !ticket.salesRecorded;
+      if (shouldRecordSale) {
+        await recordTicketAsSale(uid, ticket);
+      }
+
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", ticket.id), {
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+        ...(shouldRecordSale ? { salesRecorded: true } : {}),
+      });
+    } catch (err) {
+      console.error("Failed to change ticket status:", err);
+      window.alert("May problema sa pag-update ng ticket. Subukan ulit.");
+    } finally {
+      setChangingStatus(false);
+    }
+  };
+
+  const handleAddPart = async (item: InventoryItem) => {
+    if (!uid || !detail) return;
+    if (item.stock <= 0) return;
+
+    const existing = detail.partsUsed.find((p) => p.itemId === item.id);
+    const updatedParts = existing
+      ? detail.partsUsed.map((p) =>
+          p.itemId === item.id ? { ...p, quantity: p.quantity + 1 } : p
+        )
+      : [...detail.partsUsed, { itemId: item.id, itemName: item.name, quantity: 1, unitCost: item.unitCost || 0 }];
+
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        partsUsed: updatedParts,
+        updatedAt: new Date().toISOString(),
+      });
+      const ok = await safeAdjustStock(uid, item.id, -1);
+      if (!ok) {
+        window.alert(
+          `"${item.name}" was removed from inventory just now, so stock could not be reduced. Please refresh.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to add part:", err);
+      window.alert("May problema sa pagdagdag ng part. Subukan ulit.");
+    }
+  };
+
+  const handleRemovePart = async (part: PartUsed) => {
+    if (!uid || !detail) return;
+
+    const updatedParts =
+      part.quantity <= 1
+        ? detail.partsUsed.filter((p) => p.itemId !== part.itemId)
+        : detail.partsUsed.map((p) =>
+            p.itemId === part.itemId ? { ...p, quantity: p.quantity - 1 } : p
+          );
+
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        partsUsed: updatedParts,
+        updatedAt: new Date().toISOString(),
+      });
+      const ok = await safeAdjustStock(uid, part.itemId, 1);
+      if (!ok) {
+        window.alert(
+          `"${part.itemName}" no longer exists in inventory, so stock was not restored.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to remove part:", err);
+      window.alert("May problema sa pagtanggal ng part. Subukan ulit.");
+    }
+  };
+
+  const handleSaveLabor = async () => {
+    if (!uid || !detail) return;
+    setSavingLabor(true);
+    try {
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        laborPayment: Number(laborInput) || 0,
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      setSavingLabor(false);
+    }
+  };
+
+  const handleDeleteTicket = async (ticket: RepairTicket) => {
+    if (!uid) return;
+    const confirmed = window.confirm(
+      `Delete the repair ticket for "${ticket.customerName}"? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const missingParts: string[] = [];
+      for (const part of ticket.partsUsed) {
+        const ok = await safeAdjustStock(uid, part.itemId, part.quantity);
+        if (!ok) missingParts.push(part.itemName);
+      }
+
+      await deleteDoc(doc(db, "tenants", uid, "repairTickets", ticket.id));
+      setDetail(null);
+
+      if (missingParts.length > 0) {
+        window.alert(
+          `Note: ${missingParts.join(", ")} no longer exist(s) in inventory, so stock was not restored for ${
+            missingParts.length > 1 ? "them" : "it"
+          }.`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to delete ticket:", err);
+      window.alert("May problema sa pagbura ng ticket. Subukan ulit.");
+    }
+  };
+
+  const isLocked = (status: Status) => status === "Cancelled" || status === "Paid";
+
+  return (
+    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+      <Sidebar />
+      <main className="flex-1 p-6">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
+          <div>
+            <h1
+              className="text-xl font-bold"
+              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+            >
+              Repair Tickets
+            </h1>
+            <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+              Track customer repairs from drop-off to pickup
+            </p>
+          </div>
+          <button
+            onClick={() => setShowNewForm(true)}
+            className="font-semibold px-4 py-2 text-sm hover:opacity-90"
+            style={{
+              background: "var(--gradient-accent)",
+              color: "#fff",
+              borderRadius: "var(--radius-button)",
+              boxShadow: "var(--glow-shadow)",
+            }}
+          >
+            + New Ticket
+          </button>
+        </div>
+
+        <div className="mb-4">
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Search by customer name, phone, or device..."
+            className="w-full px-4 py-2"
+            style={inputStyle}
+          />
+        </div>
+
+        {/* Status filter chips */}
+        <div className="flex flex-wrap gap-2 mb-6">
+          {(["All", ...STATUS_FLOW, "Cancelled"] as const).map((s) => {
+            const isActive = statusFilter === s;
+            return (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s as "All" | Status)}
+                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                style={{
+                  background: isActive ? "var(--color-primary)" : "var(--color-surface)",
+                  color: isActive ? "#fff" : "var(--color-text-secondary)",
+                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
+                  borderWidth: isActive ? 0 : "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Ticket list */}
+        {filteredTickets.length === 0 ? (
+          <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
+            No repair tickets found. Click "+ New Ticket" to log a customer's device.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredTickets.map((ticket) => {
+              const colors = getStatusColors(ticket.status);
+              return (
+                <button
+                  key={ticket.id}
+                  onClick={() => openDetail(ticket)}
+                  className="text-left p-4 transition hover:opacity-90"
+                  style={cardStyle}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <p className="font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                      {ticket.customerName}
+                    </p>
+                    <span
+                      className="text-xs font-medium px-2 py-1 rounded-full"
+                      style={{ background: colors.bg, color: colors.text }}
+                    >
+                      {ticket.status || "Unknown"}
+                    </span>
+                  </div>
+                  <p className="text-sm mb-1" style={{ color: "var(--color-text-secondary)" }}>
+                    {ticket.deviceInfo}
+                  </p>
+                  <p className="text-xs mb-3 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>
+                    {ticket.issueDescription}
+                  </p>
+                  <div className="flex justify-between items-center text-xs">
+                    <span style={{ color: "var(--color-text-secondary)" }}>
+                      {ticket.partsUsed?.length || 0} part(s)
+                    </span>
+                    <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>
+                      ₱{totalCostOf(ticket).toLocaleString()}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ---- NEW TICKET MODAL ---- */}
+        {showNewForm && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <form
+              onSubmit={handleCreateTicket}
+              className="w-full max-w-md p-6 space-y-4"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <div className="flex justify-between items-center">
+                <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>
+                  New Repair Ticket
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowNewForm(false)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Customer Name</label>
+                <input
+                  required
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. Juan Dela Cruz"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Contact Number</label>
+                <input
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. 09171234567"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Device</label>
+                <input
+                  required
+                  value={deviceInfo}
+                  onChange={(e) => setDeviceInfo(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. HP Pavilion 14 Laptop"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Reported Issue</label>
+                <textarea
+                  required
+                  value={issueDescription}
+                  onChange={(e) => setIssueDescription(e.target.value)}
+                  rows={3}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="e.g. Won't turn on, no display"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={savingTicket}
+                className="w-full font-semibold py-2.5 disabled:opacity-50 hover:opacity-90"
+                style={{
+                  background: "var(--gradient-accent)",
+                  color: "#fff",
+                  borderRadius: "var(--radius-button)",
+                  boxShadow: "var(--glow-shadow)",
+                }}
+              >
+                {savingTicket ? "Saving..." : "Create Ticket"}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* ---- TICKET DETAIL MODAL ---- */}
+        {detail && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <div
+              className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h3
+                    className="text-lg font-bold"
+                    style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+                  >
+                    {detail.customerName}
+                  </h3>
+                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                    {detail.customerPhone || "No contact number"}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDetail(null)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                  {detail.deviceInfo}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                  {detail.issueDescription}
+                </p>
+              </div>
+
+              {/* Status flow */}
+              <div className="mb-6">
+                <p className="text-sm font-medium mb-2" style={labelStyle}>Status</p>
+                {detail.status === "Paid" && detail.salesRecorded && (
+                <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
+                 ✓ Recorded in Sales
+                </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {STATUS_FLOW.map((s) => {
+                    const isActive = detail.status === s;
+                    const colors = STATUS_COLORS[s];
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => handleChangeStatus(detail, s)}
+                        disabled={isLocked(detail.status) || changingStatus}
+                        className="px-3 py-1.5 rounded-full text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{
+                          background: isActive ? colors.bg : "var(--color-bg-secondary)",
+                          color: isActive ? colors.text : "var(--color-text-secondary)",
+                          boxShadow: isActive ? `0 0 12px ${colors.bg}` : "none",
+                        }}
+                      >
+                        {s === "Paid" ? "Mark as Paid" : s}
+                      </button>
+                    );
+                  })}
+                  {!isLocked(detail.status) && (
+                    <button
+                      onClick={() => handleChangeStatus(detail, "Cancelled")}
+                      disabled={changingStatus}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80 disabled:opacity-40"
+                      style={{ background: STATUS_COLORS.Cancelled.bg, color: STATUS_COLORS.Cancelled.text }}
+                    >
+                      Cancel Ticket
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Parts used */}
+              <div className="mb-6">
+                <p className="text-sm font-medium mb-2" style={labelStyle}>Parts Used</p>
+
+                {detail.partsUsed.length > 0 && (
+                  <div className="space-y-2 mb-3">
+                    {detail.partsUsed.map((p) => (
+                      <div
+                        key={p.itemId}
+                        className="flex justify-between items-center px-3 py-2 rounded-lg text-sm"
+                        style={{ background: "var(--color-bg-secondary)" }}
+                      >
+                        <span style={{ color: "var(--color-text-primary)" }}>{p.itemName}</span>
+                        <div className="flex items-center gap-3">
+                          <span style={{ color: "var(--color-text-secondary)" }}>
+                            {p.quantity} × ₱{p.unitCost.toLocaleString()}
+                          </span>
+                          <button
+                            onClick={() => handleRemovePart(p)}
+                            disabled={isLocked(detail.status)}
+                            className="w-6 h-6 rounded-full font-bold disabled:opacity-30"
+                            style={{ background: "var(--color-surface)", color: "#f87171" }}
+                          >
+                            −
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!isLocked(detail.status) && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto">
+                    {items.length === 0 ? (
+                      <p className="col-span-full text-sm py-3 text-center" style={{ color: "var(--color-text-secondary)" }}>
+                        No inventory items available.
+                      </p>
+                    ) : (
+                      items.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => handleAddPart(item)}
+                          disabled={item.stock <= 0}
+                          className="p-2 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
+                          style={{
+                            background: "var(--color-bg-secondary)",
+                            borderRadius: "var(--radius-button)",
+                            borderWidth: "var(--border-width)",
+                            borderColor: "var(--color-border)",
+                          }}
+                        >
+                          <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>
+                            {item.name}
+                          </p>
+                          <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>
+                            Stock: {item.stock}
+                          </p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Labor payment */}
+              <div className="mb-6">
+                <label className="text-sm font-medium" style={labelStyle}>Labor Payment (₱)</label>
+                <div className="flex gap-2 mt-1">
+                  <input
+                    type="number"
+                    value={laborInput}
+                    onChange={(e) => setLaborInput(e.target.value)}
+                    disabled={isLocked(detail.status)}
+                    className="flex-1 px-3 py-2 disabled:opacity-50"
+                    style={inputStyle}
+                  />
+                  <button
+                    onClick={handleSaveLabor}
+                    disabled={savingLabor || isLocked(detail.status)}
+                    className="px-4 py-2 text-sm font-semibold disabled:opacity-50 hover:opacity-90"
+                    style={{
+                      background: "var(--color-primary)",
+                      color: "#fff",
+                      borderRadius: "var(--radius-button)",
+                    }}
+                  >
+                    {savingLabor ? "..." : "Save"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Total cost summary */}
+              <div
+                className="flex justify-between items-center p-4 mb-4"
+                style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)", boxShadow: "var(--glow-shadow)" }}
+              >
+                <div>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Parts + Labor</p>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                    ₱{partsCostOf(detail).toLocaleString()} + ₱{(detail.laborPayment || 0).toLocaleString()}
+                  </p>
+                </div>
+                <p
+                  className="text-xl font-bold"
+                  style={{ color: "var(--color-primary-light)", fontFamily: "var(--font-heading)" }}
+                >
+                  ₱{totalCostOf(detail).toLocaleString()}
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  const partsLines = detail.partsUsed.map((p) => ({
+                    label: `${p.itemName} × ${p.quantity}`,
+                    amount: p.unitCost * p.quantity,
+                  }));
+                  const linesWithLabor = [
+                    ...partsLines,
+                    { label: "Labor", amount: detail.laborPayment || 0 },
+                  ];
+                  printReceipt({
+                    businessName,
+                    receiptTitle: "Repair Receipt",
+                    receiptNumber: detail.id.slice(0, 8).toUpperCase(),
+                    date: new Date(),
+                    customerName: detail.customerName,
+                    lines: linesWithLabor,
+                    total: totalCostOf(detail),
+                  });
+                }}
+                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                🖨️ Print Receipt
+              </button>
+
+              <button
+                onClick={() => handleDeleteTicket(detail)}
+                className="w-full text-sm font-medium py-2 hover:opacity-80"
+                style={{ color: "#f87171" }}
+              >
+                Delete Ticket
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
