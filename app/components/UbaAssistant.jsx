@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { collection, doc, getDoc, getDocs, query, orderBy, limit } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 
 export default function UbaAssistant() {
   const [uid, setUid] = useState(null);
@@ -99,6 +100,19 @@ export default function UbaAssistant() {
       ]);
       setInput("");
       return;
+    }
+
+    if (uid) {
+      const usage = await checkAndIncrementUsage(uid, "chatCount");
+      if (!usage.allowed) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "user", content: text },
+          { role: "assistant", content: usageLimitMessage("chatCount", usage.limit) },
+        ]);
+        setInput("");
+        return;
+      }
     }
 
     const newMessages = [...messages, { role: "user", content: text }];

@@ -18,6 +18,7 @@ import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 
 
 type InventoryItem = {
@@ -866,6 +867,15 @@ export default function InventoryPage() {
       setScanError(AI_LOCKED_MESSAGE);
       setScanning(false);
       return;
+    }
+
+    if (needsAi && uid) {
+      const usage = await checkAndIncrementUsage(uid, "scanCount");
+      if (!usage.allowed) {
+        setScanError(usageLimitMessage("scanCount", usage.limit));
+        setScanning(false);
+        return;
+      }
     }
 
     try {

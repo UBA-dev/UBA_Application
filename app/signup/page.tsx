@@ -270,6 +270,18 @@ export default function SignUpPage() {
                 Sign in
               </a>
             </p>
+
+            <p className="text-xs text-center mt-4" style={{ color: "#54608a" }}>
+              By creating an account, you agree to our{" "}
+              <a href="/terms" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Terms
+              </a>{" "}
+              and{" "}
+              <a href="/privacy" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Privacy Policy
+              </a>
+              .
+            </p>
           </div>
         </div>
       )}

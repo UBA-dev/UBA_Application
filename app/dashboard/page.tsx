@@ -19,6 +19,7 @@ import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 import {
   ResponsiveContainer,
   LineChart,
@@ -321,6 +322,13 @@ export default function DashboardPage() {
 
   const runAnalysis = async () => {
     if (!uid || !aiAccess.allowed) return;
+
+    const usage = await checkAndIncrementUsage(uid, "analysisCount");
+    if (!usage.allowed) {
+      setInsightError(usageLimitMessage("analysisCount", usage.limit));
+      return;
+    }
+
     setLoadingInsight(true);
     setInsightError("");
     try {

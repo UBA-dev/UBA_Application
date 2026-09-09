@@ -73,11 +73,14 @@ app/
     receipt.ts
     subscription.js
     themes.js
+    usageLimits.js
   login/
     page.tsx
   onboarding/
     page.tsx
   pos/
+    page.tsx
+  privacy/
     page.tsx
   repair-tickets/
     page.tsx
@@ -86,6 +89,8 @@ app/
   settings/
     page.jsx
   signup/
+    page.tsx
+  terms/
     page.tsx
   verify-email/
     page.tsx
@@ -112,6 +117,309 @@ tsconfig.json
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="app/lib/usageLimits.js">
+// Soft, client-enforced monthly usage caps per tenant for AI-powered features.
+// Tracks counts in Firestore (tenants/{uid}/usage/{YYYY-MM}), protected by the
+// same tenant-scoped security rules as everything else — a tenant can only
+// read/write their OWN usage doc. This is not attacker-proof (a determined
+// user could bypass it client-side), but it catches accidental overuse/bugs,
+// which is the real risk during the manual pilot phase.
+
+import { doc, getDoc, setDoc, increment } from "firebase/firestore";
+import { db } from "./firebase";
+
+export const MONTHLY_LIMITS = {
+  scanCount: 100, // Universal Scanner (photo/PDF/Word)
+  chatCount: 150, // UBA Assistant messages
+  analysisCount: 60, // Dashboard "Analyze My Business"
+  notificationCount: 100, // AI-drafted customer notifications
+};
+
+export const LIMIT_LABELS = {
+  scanCount: "AI scans",
+  chatCount: "assistant messages",
+  analysisCount: "business analyses",
+  notificationCount: "customer notifications",
+};
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// Checks whether the tenant still has room for one more call of `feature`
+// this month. If allowed, increments the count. Returns { allowed, count, limit }.
+export async function checkAndIncrementUsage(uid, feature) {
+  const limit = MONTHLY_LIMITS[feature];
+  const usageRef = doc(db, "tenants", uid, "usage", currentMonthKey());
+
+  const snap = await getDoc(usageRef);
+  const currentCount = snap.exists() ? snap.data()[feature] || 0 : 0;
+
+  if (currentCount >= limit) {
+    return { allowed: false, count: currentCount, limit };
+  }
+
+  await setDoc(usageRef, { [feature]: increment(1) }, { merge: true });
+  return { allowed: true, count: currentCount + 1, limit };
+}
+
+export function usageLimitMessage(feature, limit) {
+  return `You've used all ${limit} ${LIMIT_LABELS[feature]} for this month. This resets on the 1st — contact your UBA provider if you need a higher limit.`;
+}
+</file>
+
+<file path="app/privacy/page.tsx">
+"use client";
+
+import Link from "next/link";
+
+export default function PrivacyPage() {
+  return (
+    <div className="min-h-screen bg-white text-gray-800 px-6 py-12">
+      <div className="max-w-2xl mx-auto">
+        <Link href="/" className="text-sm text-blue-600 hover:underline">
+          ← Back to UBA
+        </Link>
+
+        <h1 className="text-2xl font-bold mt-4 mb-2">Privacy Policy</h1>
+        <p className="text-sm text-gray-500 mb-8">Last updated: September 2026</p>
+
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="font-semibold text-base mb-1">1. What We Collect</h2>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Account information: your email address and business name.</li>
+              <li>
+                Business data you enter: inventory items, sales records, expenses, and repair
+                ticket details.
+              </li>
+              <li>
+                Customer information you choose to record through Repair Tickets: customer name
+                and contact number, used solely to help you manage repairs and notify customers.
+              </li>
+              <li>
+                Photos or documents you upload to the Scanner feature, processed to extract
+                inventory information.
+              </li>
+            </ul>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">2. How We Use It</h2>
+            <p>
+              Your data is used solely to operate UBA for your business — displaying your
+              inventory, generating reports, processing sales, and powering optional AI features
+              you choose to use. We do not sell your data or share it with other businesses using
+              UBA.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">3. Third-Party Services</h2>
+            <p>UBA relies on the following third-party services to operate:</p>
+            <ul className="list-disc pl-5 space-y-1 mt-1">
+              <li>
+                <strong>Google Firebase</strong> — stores your account and business data.
+              </li>
+              <li>
+                <strong>Google Gemini API</strong> — processes data you submit to AI features
+                (Scanner, Business Analyst, Assistant) to generate results.
+              </li>
+              <li>
+                <strong>Resend</strong> — sends automated low-stock email alerts to your
+                registered email.
+              </li>
+            </ul>
+            <p className="mt-2">
+              These providers process data according to their own privacy and security practices.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">4. Data Isolation & Security</h2>
+            <p>
+              Each business's data is stored separately and protected by access rules that only
+              allow the account owner (and, for support purposes, the UBA administrator) to read
+              or modify it. No other UBA customer can access your data.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">5. Data Retention</h2>
+            <p>
+              Your data is retained for as long as your account remains active. If you discontinue
+              use of UBA, you may request deletion of your data by contacting your UBA provider.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">6. Your Rights</h2>
+            <p>
+              Under the Philippine Data Privacy Act (RA 10173), you have the right to access,
+              correct, or request deletion of your personal data. Contact your UBA provider to
+              exercise these rights.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">7. Changes to This Policy</h2>
+            <p>
+              This policy may be updated as UBA's features evolve. Continued use of the service
+              after changes constitutes acceptance of the updated policy.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">8. Contact</h2>
+            <p>
+              Questions about this policy or your data can be directed to your UBA provider
+              through the contact details they gave you at onboarding.
+            </p>
+          </section>
+        </div>
+
+        <p className="text-xs text-gray-400 mt-10">
+          See also our{" "}
+          <Link href="/terms" className="text-blue-600 hover:underline">
+            Terms of Service
+          </Link>
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/terms/page.tsx">
+"use client";
+
+import Link from "next/link";
+
+export default function TermsPage() {
+  return (
+    <div className="min-h-screen bg-white text-gray-800 px-6 py-12">
+      <div className="max-w-2xl mx-auto">
+        <Link href="/" className="text-sm text-blue-600 hover:underline">
+          ← Back to UBA
+        </Link>
+
+        <h1 className="text-2xl font-bold mt-4 mb-2">Terms of Service</h1>
+        <p className="text-sm text-gray-500 mb-8">Last updated: September 2026</p>
+
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="font-semibold text-base mb-1">1. What UBA Is</h2>
+            <p>
+              UBA (Universal Business Assistant) is a business management application for small
+              retail and repair shops, providing inventory management, point-of-sale, sales
+              tracking, repair ticket management, and optional AI-powered features (scanning,
+              business analysis, and a chat assistant).
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">2. Accounts</h2>
+            <p>
+              Each account is tied to one business ("shop"). Your business data — inventory,
+              sales, expenses, repair tickets, and related records — is stored separately from
+              every other UBA customer and is not shared or visible to other users.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">3. Subscription & Fees</h2>
+            <p>
+              New accounts begin with a free trial period. After the trial, continued access to
+              AI-powered features (Scanner, Business Analyst, Assistant, automated low-stock
+              alerts) requires an active paid plan (monthly or one-time/lifetime, as agreed with
+              your UBA provider). Core business tools — inventory, point-of-sale, sales
+              tracking, and repair tickets — remain available regardless of subscription status.
+            </p>
+            <p className="mt-2">
+              Payment terms, amounts, and billing frequency are agreed directly between you and
+              your UBA provider outside of this app. UBA does not process payments automatically
+              within the application at this time.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">4. AI Features & Usage Limits</h2>
+            <p>
+              AI-powered features send relevant business data (e.g. item descriptions, sales
+              summaries, uploaded photos or documents) to third-party AI providers (Google
+              Gemini) to generate results. AI-generated content (item details, business
+              insights, draft customer messages) should be reviewed before relying on it — it
+              may occasionally be inaccurate. AI features are subject to reasonable monthly
+              usage limits to prevent abuse.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">5. Your Data</h2>
+            <p>
+              You own the business data you enter into UBA. You are responsible for the accuracy
+              of the data you input and for any customer information (such as names and phone
+              numbers) you record through the Repair Tickets feature — you are responsible for
+              having the appropriate basis to collect and use that information under applicable
+              law.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">6. Acceptable Use</h2>
+            <p>
+              You agree not to attempt to access other tenants' data, share your account across
+              multiple unrelated businesses, or use the service for unlawful purposes.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">7. Availability & Limitation of Liability</h2>
+            <p>
+              UBA is provided "as is." While reasonable efforts are made to keep the service
+              available and your data safe, UBA and its provider are not liable for lost profits,
+              data loss, or business interruption arising from use of the service, to the fullest
+              extent permitted by law.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">8. Termination</h2>
+            <p>
+              Either party may discontinue use of the service. Upon termination, your data may be
+              retained for a reasonable period and then deleted, unless otherwise agreed.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">9. Governing Law</h2>
+            <p>These terms are governed by the laws of the Republic of the Philippines.</p>
+          </section>
+
+          <section>
+            <h2 className="font-semibold text-base mb-1">10. Contact</h2>
+            <p>
+              Questions about these terms can be directed to your UBA provider through the
+              contact details they gave you at onboarding.
+            </p>
+          </section>
+        </div>
+
+        <p className="text-xs text-gray-400 mt-10">
+          See also our{" "}
+          <Link href="/privacy" className="text-blue-600 hover:underline">
+            Privacy Policy
+          </Link>
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+</file>
 
 <file path="app/admin/page.tsx">
 "use client";
@@ -3679,6 +3987,18 @@ export default function SignUpPage() {
                 Sign in
               </a>
             </p>
+
+            <p className="text-xs text-center mt-4" style={{ color: "#54608a" }}>
+              By creating an account, you agree to our{" "}
+              <a href="/terms" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Terms
+              </a>{" "}
+              and{" "}
+              <a href="/privacy" className="hover:opacity-80" style={{ color: "#60a5fa" }}>
+                Privacy Policy
+              </a>
+              .
+            </p>
           </div>
         </div>
       )}
@@ -4265,6 +4585,7 @@ import { useEffect, useRef, useState } from "react";
 import { collection, doc, getDoc, getDocs, query, orderBy, limit } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 
 export default function UbaAssistant() {
   const [uid, setUid] = useState(null);
@@ -4360,6 +4681,19 @@ export default function UbaAssistant() {
       ]);
       setInput("");
       return;
+    }
+
+    if (uid) {
+      const usage = await checkAndIncrementUsage(uid, "chatCount");
+      if (!usage.allowed) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "user", content: text },
+          { role: "assistant", content: usageLimitMessage("chatCount", usage.limit) },
+        ]);
+        setInput("");
+        return;
+      }
     }
 
     const newMessages = [...messages, { role: "user", content: text }];
@@ -5233,6 +5567,7 @@ import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 
 
 type InventoryItem = {
@@ -6081,6 +6416,15 @@ export default function InventoryPage() {
       setScanError(AI_LOCKED_MESSAGE);
       setScanning(false);
       return;
+    }
+
+    if (needsAi && uid) {
+      const usage = await checkAndIncrementUsage(uid, "scanCount");
+      if (!usage.allowed) {
+        setScanError(usageLimitMessage("scanCount", usage.limit));
+        setScanning(false);
+        return;
+      }
     }
 
     try {
@@ -8638,6 +8982,7 @@ import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 import {
   ResponsiveContainer,
   LineChart,
@@ -8940,6 +9285,13 @@ export default function DashboardPage() {
 
   const runAnalysis = async () => {
     if (!uid || !aiAccess.allowed) return;
+
+    const usage = await checkAndIncrementUsage(uid, "analysisCount");
+    if (!usage.allowed) {
+      setInsightError(usageLimitMessage("analysisCount", usage.limit));
+      return;
+    }
+
     setLoadingInsight(true);
     setInsightError("");
     try {
