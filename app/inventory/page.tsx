@@ -28,6 +28,7 @@ type InventoryItem = {
   category: string;
   subCategory: string;
   stock: number;
+  unit: string;
   threshold: number;
   unitCost: number;
   sellingPrice: number;
@@ -210,7 +211,7 @@ function resizeItemPhoto(file: File, maxSize = 300): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
-
+const UNIT_OPTIONS = ["Piece", "Kilogram", "Liter", "Sack", "Box", "Gallon", "Meter"];
 const inputStyle: React.CSSProperties = {
   background: "var(--color-bg-secondary)",
   color: "var(--color-text-primary)",
@@ -271,6 +272,7 @@ export default function InventoryPage() {
   const [category, setCategory] = useState("");
   const [subCategory, setSubCategory] = useState("");
   const [stock, setStock] = useState("");
+  const [unit, setUnit] = useState("Piece");
   const [threshold, setThreshold] = useState("");
   const [unitCost, setUnitCost] = useState("");
   const [sellingPrice, setSellingPrice] = useState("");
@@ -284,6 +286,9 @@ export default function InventoryPage() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [viewingPhoto, setViewingPhoto] = useState<string | null>(null);
   const [itemBarcode, setItemBarcode] = useState("");
+  const [showSackCalc, setShowSackCalc] = useState(false);
+  const [sackCount, setSackCount] = useState("");
+  const [kgPerSack, setKgPerSack] = useState("");
 
   const [showBundleForm, setShowBundleForm] = useState(false);
   const [bundleName, setBundleName] = useState("");
@@ -495,6 +500,7 @@ export default function InventoryPage() {
   setCategory(selectedCategory !== "All" ? selectedCategory : "");
   setSubCategory(selectedSubCategory !== "All" ? selectedSubCategory : "");
   setStock("");
+  setUnit("Piece");
   setThreshold("");
   setUnitCost("");
   setSellingPrice("");
@@ -504,6 +510,9 @@ export default function InventoryPage() {
   setSerialNumbersText("");
   setPhotoUrl(null);
   setItemBarcode("");
+  setShowSackCalc(false);
+  setSackCount("");
+  setKgPerSack("");
   setEditingItemId(null);
 };
 
@@ -519,6 +528,7 @@ export default function InventoryPage() {
     setCategory(item.category || "");
     setSubCategory(item.subCategory || "");
     setStock(String(item.stock));
+    setUnit(item.unit || "Piece");
     setThreshold(String(item.threshold));
     setUnitCost(String(item.unitCost || ""));
     setSellingPrice(String(item.sellingPrice || ""));
@@ -544,6 +554,7 @@ export default function InventoryPage() {
       category: normalizeText(category),
       subCategory: normalizeText(subCategory),
       stock: Number(stock),
+      unit,
       threshold: Number(threshold),
       unitCost: Number(unitCost) || 0,
       sellingPrice: Number(sellingPrice) || 0,
@@ -1231,7 +1242,7 @@ export default function InventoryPage() {
                               color: isLow ? "#f87171" : "#4ade80",
                             }}
                           >
-                            {item.stock} {isLow ? "(Low)" : ""}
+                            {item.stock} {item.unit || "Piece"} {isLow ? "(Low)" : ""}
                           </span>
                         </td>
                         <td className="px-4 py-3" style={{ color: "var(--color-text-primary)" }}>
@@ -1608,12 +1619,102 @@ export default function InventoryPage() {
                 <input
                   required
                   type="number"
+                  step="any"
                   value={stock}
                   onChange={(e) => setStock(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
                 />
               </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>
+                  Unit
+                </label>
+                <select
+                  value={unit}
+                  onChange={(e) => setUnit(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                >
+                  {UNIT_OPTIONS.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+              </div>
+                  
+                            {unit !== "Piece" && (
+                <div className="sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSackCalc(!showSackCalc)}
+                    className="text-sm font-medium hover:underline"
+                    style={{ color: "var(--color-primary-light)" }}
+                  >
+                    🧮 {showSackCalc ? "Itago" : "Gumamit ng"} Sack/Pack Calculator
+                  </button>
+
+                  {showSackCalc && (
+                    <div
+                      className="mt-2 p-3 grid grid-cols-2 gap-3"
+                      style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}
+                    >
+                      <div>
+                        <label className="text-xs" style={labelStyle}>
+                          Bilang ng Sako/Pack
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={sackCount}
+                          onChange={(e) => setSackCount(e.target.value)}
+                          placeholder="hal. 45"
+                          className="w-full mt-1 px-3 py-2"
+                          style={inputStyle}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs" style={labelStyle}>
+                          {unit} bawat Sako/Pack
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={kgPerSack}
+                          onChange={(e) => setKgPerSack(e.target.value)}
+                          placeholder="hal. 50"
+                          className="w-full mt-1 px-3 py-2"
+                          style={inputStyle}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const toAdd = (Number(sackCount) || 0) * (Number(kgPerSack) || 0);
+                          const current = Number(stock) || 0;
+                          setStock(String(current + toAdd));
+                          setSackCount("");
+                          setKgPerSack("");
+                        }}
+                        disabled={!sackCount || !kgPerSack}
+                        className="col-span-2 font-semibold py-2 text-sm disabled:opacity-40"
+                        style={{
+                          background: "var(--gradient-accent)",
+                          color: "#fff",
+                          borderRadius: "var(--radius-button)",
+                        }}
+                      >
+                        Idagdag sa Current Stock
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+
+
 
               <div>
                 <label className="text-sm" style={labelStyle}>
