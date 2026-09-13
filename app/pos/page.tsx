@@ -22,6 +22,7 @@ type InventoryItem = {
   name: string;
   category: string;
   stock: number;
+  unit: string;
   unitCost: number;
   sellingPrice: number;
 };
@@ -36,7 +37,7 @@ type Bundle = {
 };
 
 type CartLine =
-  | { lineId: string; kind: "item"; refId: string; name: string; unitPrice: number; unitCost: number; quantity: number; maxStock: number }
+  | { lineId: string; kind: "item"; refId: string; name: string; unit: string; unitPrice: number; unitCost: number; quantity: number; maxStock: number }
   | { lineId: string; kind: "bundle"; refId: string; name: string; unitPrice: number; quantity: number; components: BundleComponent[]; maxBundleStock: number };
 
 const cardStyle: React.CSSProperties = {
@@ -163,6 +164,7 @@ export default function PosPage() {
           kind: "item",
           refId: item.id,
           name: item.name,
+          unit: item.unit || "Piece",
           unitPrice: item.sellingPrice,
           unitCost: item.unitCost || 0,
           quantity: 1,
@@ -206,6 +208,18 @@ export default function PosPage() {
       const line = prev.find((l) => l.lineId === lineId);
       if (!line) return prev;
       const newQty = line.quantity + delta;
+      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
+      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
+    });
+  };
+
+  const setExactQuantity = (lineId: string, valueStr: string) => {
+    setErrorMessage("");
+    const newQty = Number(valueStr);
+    if (isNaN(newQty)) return;
+    setCart((prev) => {
+      const line = prev.find((l) => l.lineId === lineId);
+      if (!line) return prev;
       if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
       return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
     });
@@ -347,7 +361,7 @@ export default function PosPage() {
                       {p.data.name}
                     </p>
                     <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                      Stock: {remaining}
+                      Stock: {remaining} {p.data.unit || "Piece"}
                     </p>
                     <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
                       ₱{p.data.sellingPrice.toLocaleString()}
@@ -384,8 +398,8 @@ export default function PosPage() {
         </div>
 
         {/* Cart / Checkout panel */}
-        <div className="w-full lg:w-96 flex-shrink-0">
-          <div className="p-4 sticky top-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+        <div className="w-full lg:w-96 flex-shrink-0 flex">
+          <div className="p-4 flex flex-col w-full" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
             <p
               className="text-sm font-semibold mb-3"
               style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
@@ -411,26 +425,41 @@ export default function PosPage() {
                       </p>
                       <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
                         ₱{line.unitPrice.toLocaleString()} × {line.quantity}
+                        {line.kind === "item" && line.unit !== "Piece" ? ` ${line.unit}` : ""}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        onClick={() => updateQuantity(line.lineId, -1)}
-                        className="w-6 h-6 rounded-full font-bold"
-                        style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
-                      >
-                        −
-                      </button>
-                      <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
-                        {line.quantity}
-                      </span>
-                      <button
-                        onClick={() => updateQuantity(line.lineId, 1)}
-                        className="w-6 h-6 rounded-full font-bold"
-                        style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
-                      >
-                        +
-                      </button>
+                      {line.kind === "item" && line.unit !== "Piece" ? (
+                        <input
+                          type="number"
+                          step="any"
+                          min={0.01}
+                          value={line.quantity}
+                          onChange={(e) => setExactQuantity(line.lineId, e.target.value)}
+                          className="w-16 px-2 py-1 text-center"
+                          style={inputStyle}
+                        />
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => updateQuantity(line.lineId, -1)}
+                            className="w-6 h-6 rounded-full font-bold"
+                            style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                          >
+                            −
+                          </button>
+                          <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
+                            {line.quantity}
+                          </span>
+                          <button
+                            onClick={() => updateQuantity(line.lineId, 1)}
+                            className="w-6 h-6 rounded-full font-bold"
+                            style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                          >
+                            +
+                          </button>
+                        </>
+                      )}
                       <button
                         onClick={() => removeLine(line.lineId)}
                         className="ml-1 text-xs"

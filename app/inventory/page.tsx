@@ -212,6 +212,7 @@ function resizeItemPhoto(file: File, maxSize = 300): Promise<string> {
   });
 }
 const UNIT_OPTIONS = ["Piece", "Kilogram", "Liter", "Sack", "Box", "Gallon", "Meter"];
+const CONTAINER_UNITS = ["Sack", "Box"];
 const inputStyle: React.CSSProperties = {
   background: "var(--color-bg-secondary)",
   color: "var(--color-text-primary)",
@@ -289,6 +290,9 @@ export default function InventoryPage() {
   const [showSackCalc, setShowSackCalc] = useState(false);
   const [sackCount, setSackCount] = useState("");
   const [kgPerSack, setKgPerSack] = useState("");
+  const [showThresholdCalc, setShowThresholdCalc] = useState(false);
+  const [contentPerPack, setContentPerPack] = useState("");
+  const [desiredRemaining, setDesiredRemaining] = useState("");
 
   const [showBundleForm, setShowBundleForm] = useState(false);
   const [bundleName, setBundleName] = useState("");
@@ -513,6 +517,9 @@ export default function InventoryPage() {
   setShowSackCalc(false);
   setSackCount("");
   setKgPerSack("");
+  setShowThresholdCalc(false);
+  setContentPerPack("");
+  setDesiredRemaining("");
   setEditingItemId(null);
 };
 
@@ -1245,8 +1252,11 @@ export default function InventoryPage() {
                             {item.stock} {item.unit || "Piece"} {isLow ? "(Low)" : ""}
                           </span>
                         </td>
-                        <td className="px-4 py-3" style={{ color: "var(--color-text-primary)" }}>
+                         <td className="px-4 py-3" style={{ color: "var(--color-text-primary)" }}>
                           ₱{item.sellingPrice.toLocaleString()}
+                          <span className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                            {" "}/{item.unit || "Piece"}
+                          </span>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-3">
@@ -1401,11 +1411,12 @@ export default function InventoryPage() {
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <div>
                   <label className="text-sm" style={labelStyle}>
-                    Quantity
+                    Quantity {detail.kind === "item" ? `(${detail.data.unit || "Piece"})` : ""}
                   </label>
                   <input
                     type="number"
-                    min={1}
+                    step="any"
+                    min={0.01}
                     value={sellQty}
                     onChange={(e) => setSellQty(e.target.value)}
                     className="w-full mt-1 px-3 py-2"
@@ -1414,10 +1425,11 @@ export default function InventoryPage() {
                 </div>
                 <div>
                   <label className="text-sm" style={labelStyle}>
-                    Price (₱)
+                    Price (₱{detail.kind === "item" ? ` per ${detail.data.unit || "Piece"}` : ""})
                   </label>
                   <input
                     type="number"
+                    step="any"
                     value={sellPrice}
                     onChange={(e) => setSellPrice(e.target.value)}
                     className="w-full mt-1 px-3 py-2"
@@ -1546,7 +1558,7 @@ export default function InventoryPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>
-                  Item Name
+                  Product Name
                 </label>
                 <input
                   required
@@ -1554,7 +1566,7 @@ export default function InventoryPage() {
                   onChange={(e) => setName(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. Motherboard - MSI B450"
+                  placeholder="Enter item name"
                 />
               </div>
 
@@ -1568,7 +1580,7 @@ export default function InventoryPage() {
                   onChange={(e) => setCategory(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. Computer Parts"
+                  placeholder="Enter category"
                 />
                 <datalist id="category-suggestions">
                   {categories.filter((c) => c !== "All").map((c) => (
@@ -1587,7 +1599,7 @@ export default function InventoryPage() {
                   onChange={(e) => setSubCategory(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. Motherboard (optional)"
+                  placeholder="Enter sub-category (optional)"
                 />
                 <datalist id="subcategory-suggestions">
                   {allSubCategories.map((s) => (
@@ -1614,21 +1626,6 @@ export default function InventoryPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>
-                  Current Stock
-                </label>
-                <input
-                  required
-                  type="number"
-                  step="any"
-                  value={stock}
-                  onChange={(e) => setStock(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label className="text-sm" style={labelStyle}>
                   Unit
                 </label>
                 <select
@@ -1644,6 +1641,21 @@ export default function InventoryPage() {
                   ))}
                 </select>
               </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>
+                  Current Stock
+                </label>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={stock}
+                  onChange={(e) => setStock(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
                   
                             {unit !== "Piece" && (
                 <div className="sm:col-span-2">
@@ -1653,7 +1665,7 @@ export default function InventoryPage() {
                     className="text-sm font-medium hover:underline"
                     style={{ color: "var(--color-primary-light)" }}
                   >
-                    🧮 {showSackCalc ? "Itago" : "Gumamit ng"} Sack/Pack Calculator
+                  📦 {showSackCalc ? "Hide" : "Use"} Pack Calculator
                   </button>
 
                   {showSackCalc && (
@@ -1663,28 +1675,28 @@ export default function InventoryPage() {
                     >
                       <div>
                         <label className="text-xs" style={labelStyle}>
-                          Bilang ng Sako/Pack
+                          Number of Packs
                         </label>
                         <input
                           type="number"
                           step="any"
                           value={sackCount}
                           onChange={(e) => setSackCount(e.target.value)}
-                          placeholder="hal. 45"
+                          placeholder="e.g. 45"
                           className="w-full mt-1 px-3 py-2"
                           style={inputStyle}
                         />
                       </div>
                       <div>
                         <label className="text-xs" style={labelStyle}>
-                          {unit} bawat Sako/Pack
+                          {unit} per Pack
                         </label>
                         <input
                           type="number"
                           step="any"
                           value={kgPerSack}
                           onChange={(e) => setKgPerSack(e.target.value)}
-                          placeholder="hal. 50"
+                          placeholder="e.g. 50"
                           className="w-full mt-1 px-3 py-2"
                           style={inputStyle}
                         />
@@ -1706,7 +1718,7 @@ export default function InventoryPage() {
                           borderRadius: "var(--radius-button)",
                         }}
                       >
-                        Idagdag sa Current Stock
+                        Add to Current Stock
                       </button>
                     </div>
                   )}
@@ -1718,11 +1730,12 @@ export default function InventoryPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>
-                  Low Stock Threshold
+                  Low Stock Threshold ({unit})
                 </label>
                 <input
                   required
                   type="number"
+                  step="any"
                   value={threshold}
                   onChange={(e) => setThreshold(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
@@ -1730,12 +1743,81 @@ export default function InventoryPage() {
                 />
               </div>
 
+              {CONTAINER_UNITS.includes(unit) && (
+                <div className="sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowThresholdCalc(!showThresholdCalc)}
+                    className="text-sm font-medium hover:underline"
+                    style={{ color: "var(--color-primary-light)" }}
+                  >
+                    🧮 {showThresholdCalc ? "Hide" : "Show"} Simple Calculator
+                  </button>
+
+                  {showThresholdCalc && (
+                    <div
+                      className="mt-2 p-3 grid grid-cols-2 gap-3"
+                      style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}
+                    >
+                      <div className="col-span-2">
+                        <label className="text-xs" style={labelStyle}>
+                          How many are inside 1 {unit}?
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={contentPerPack}
+                          onChange={(e) => setContentPerPack(e.target.value)}
+                          placeholder="e.g. 10"
+                          className="w-full mt-1 px-3 py-2"
+                          style={inputStyle}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-xs" style={labelStyle}>
+                          Warn me when only this many are left
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={desiredRemaining}
+                          onChange={(e) => setDesiredRemaining(e.target.value)}
+                          placeholder="e.g. 2"
+                          className="w-full mt-1 px-3 py-2"
+                          style={inputStyle}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const perPack = Number(contentPerPack) || 0;
+                          const remaining = Number(desiredRemaining) || 0;
+                          if (perPack > 0) {
+                            setThreshold(String(remaining / perPack));
+                          }
+                        }}
+                        disabled={!contentPerPack || !desiredRemaining}
+                        className="col-span-2 font-semibold py-2 text-sm disabled:opacity-40"
+                        style={{
+                          background: "var(--gradient-accent)",
+                          color: "#fff",
+                          borderRadius: "var(--radius-button)",
+                        }}
+                      >
+                        Calculate
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="text-sm" style={labelStyle}>
-                  Unit Cost (₱)
+                  Unit Cost (₱ per {unit})
                 </label>
                 <input
                   type="number"
+                  step="any"
                   value={unitCost}
                   onChange={(e) => setUnitCost(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
@@ -1745,10 +1827,11 @@ export default function InventoryPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>
-                  Selling Price (₱)
+                  Selling Price (₱ per {unit})
                 </label>
                 <input
                   type="number"
+                  step="any"
                   value={sellingPrice}
                   onChange={(e) => setSellingPrice(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
@@ -1876,7 +1959,7 @@ export default function InventoryPage() {
                   onChange={(e) => setBundleName(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. Ryzen 5 Starter Build"
+                  placeholder="Enter bundle name"
                 />
               </div>
 
@@ -2418,7 +2501,7 @@ export default function InventoryPage() {
                               onChange={(e) => updateScanRow(i, "name", e.target.value)}
                               className="flex-1 px-2 py-1 text-sm font-medium"
                               style={fieldHighlightStyle("name", row)}
-                              placeholder="Item name"
+                              placeholder="Item Name"
                             />
                             <ConfidenceBadge confidence={row.confidence} />
                           </div>

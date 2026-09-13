@@ -11,6 +11,8 @@ const navItems: { href: string; label: string; icon: string; disabled?: boolean 
   { href: "/dashboard", label: "Dashboard", icon: "🏠" },
   { href: "/inventory", label: "Inventory", icon: "📦" },
   { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️" },
+  { href: "/delivery-tickets", label: "Delivery Tickets", icon: "🚚" },
+  { href: "/po-tickets", label: "P.O. / Purchase Order", icon: "📋" },
   { href: "/sales", label: "Sales & Expenses", icon: "💰" },
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
   { href: "/settings", label: "Settings", icon: "⚙️" },

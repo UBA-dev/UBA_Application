@@ -6,17 +6,9 @@ import { doc, setDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { defaultThemeId } from "../lib/themes";
 
-const BUSINESS_TYPES = [
-  { id: "electronics_repair", label: "Electronics / Computer Repair", icon: "🔧" },
-  { id: "agrivet", label: "Agrivet & Supply Store", icon: "🌾" },
-  { id: "auto_parts", label: "Auto / Motorcycle Parts", icon: "🏍️" },
-  { id: "general_retail", label: "General Retail", icon: "🛒" },
-];
-
 export default function OnboardingPage() {
   const [step, setStep] = useState(1);
   const [businessName, setBusinessName] = useState("");
-  const [businessType, setBusinessType] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
@@ -40,7 +32,6 @@ export default function OnboardingPage() {
 
       await setDoc(doc(db, "tenants", user.uid), {
         businessName,
-        businessType,
         theme: defaultThemeId,
         subscriptionStatus: "TRIAL",
         trialStartDate: new Date().toISOString(),
@@ -61,7 +52,7 @@ export default function OnboardingPage() {
       <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8">
         {/* Progress dots */}
         <div className="flex justify-center gap-2 mb-6">
-          {[1, 2, 3].map((s) => (
+          {[1, 2].map((s) => (
             <div
               key={s}
               className={`h-2 w-8 rounded-full ${
@@ -84,7 +75,7 @@ export default function OnboardingPage() {
               type="text"
               value={businessName}
               onChange={(e) => setBusinessName(e.target.value)}
-              placeholder="e.g. Kuya Jun's Repair Shop"
+              placeholder="Enter your business name"
               className="w-full px-4 py-2 border rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 mb-6"
             />
             <button
@@ -97,53 +88,8 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        {/* Step 2: Business Type */}
+        {/* Step 2: Confirm */}
         {step === 2 && (
-          <div>
-            <h1 className="text-xl font-bold text-gray-800 mb-2">
-              What type of business do you run?
-            </h1>
-            <p className="text-sm text-gray-500 mb-4">
-              This helps us tailor the app for you.
-            </p>
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              {BUSINESS_TYPES.map((type) => (
-                <button
-                  key={type.id}
-                  onClick={() => setBusinessType(type.id)}
-                  className={`flex flex-col items-center justify-center gap-2 p-4 rounded-xl border-2 transition ${
-                    businessType === type.id
-                      ? "border-blue-600 bg-blue-50"
-                      : "border-gray-200"
-                  }`}
-                >
-                  <span className="text-3xl">{type.icon}</span>
-                  <span className="text-xs text-center text-gray-700">
-                    {type.label}
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setStep(1)}
-                className="flex-1 border border-gray-300 text-gray-600 font-semibold py-2 rounded-lg"
-              >
-                Back
-              </button>
-              <button
-                disabled={!businessType}
-                onClick={() => setStep(3)}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Step 3: Confirm */}
-        {step === 3 && (
           <div className="text-center">
             <h1 className="text-xl font-bold text-gray-800 mb-2">
               You're all set, {businessName}!
@@ -160,7 +106,7 @@ export default function OnboardingPage() {
 
             <div className="flex gap-2">
               <button
-                onClick={() => setStep(2)}
+                onClick={() => setStep(1)}
                 className="flex-1 border border-gray-300 text-gray-600 font-semibold py-2 rounded-lg"
               >
                 Back
