@@ -154,6 +154,7 @@ export default function POTicketsPage() {
   const [poDate, setPoDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [dueDate, setDueDate] = useState("");
   const [newItems, setNewItems] = useState<POItem[]>([]);
+  const [itemSearchText, setItemSearchText] = useState("");
   const [savingTicket, setSavingTicket] = useState(false);
 
   const [detail, setDetail] = useState<PurchaseOrder | null>(null);
@@ -210,6 +211,12 @@ export default function POTicketsPage() {
     if (fresh) setDetail(fresh);
   }, [tickets]);
 
+
+    const filteredItemsForPO = useMemo(() => {
+    const searchLower = itemSearchText.toLowerCase().trim();
+    if (!searchLower) return items;
+    return items.filter((i) => i.name.toLowerCase().includes(searchLower));
+  }, [items, itemSearchText]);
   const filteredTickets = useMemo(() => {
     const searchLower = searchText.toLowerCase().trim();
     if (!searchLower) return tickets;
@@ -253,7 +260,9 @@ export default function POTicketsPage() {
     setPoDate(new Date().toISOString().slice(0, 10));
     setDueDate("");
     setNewItems([]);
+    setItemSearchText("");
   };
+
 
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -513,7 +522,7 @@ export default function POTicketsPage() {
 
         {showNewForm && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <form onSubmit={handleCreateTicket} className="w-full max-w-md p-6 space-y-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+            <form onSubmit={handleCreateTicket} className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto space-y-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
               <div className="flex justify-between items-center">
                 <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>New Purchase Order</p>
                 <button type="button" onClick={() => setShowNewForm(false)} className="text-xl leading-none hover:opacity-70" style={{ color: "var(--color-text-secondary)" }}>×</button>
@@ -554,44 +563,56 @@ export default function POTicketsPage() {
                 <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} />
               </div>
 
+
               <div className="pt-2" style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}>
                 <label className="text-sm font-medium" style={labelStyle}>
-                  Tap items to add them to this P.O.
+                  Search and tap items to add them to this P.O.
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2 max-h-40 overflow-y-auto">
-                  {items.length === 0 ? (
+                <input
+                  type="text"
+                  value={itemSearchText}
+                  onChange={(e) => setItemSearchText(e.target.value)}
+                  placeholder="Search item name..."
+                  className="w-full mt-2 mb-2 px-3 py-2"
+                  style={inputStyle}
+                />
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-72 overflow-y-auto p-1">
+                  {filteredItemsForPO.length === 0 ? (
                     <p className="col-span-full text-sm py-3 text-center" style={{ color: "var(--color-text-secondary)" }}>
-                      No inventory items available.
+                      {items.length === 0 ? "No inventory items available." : "No items match your search."}
                     </p>
                   ) : (
-                    items.map((item) => (
+                    filteredItemsForPO.map((item) => (
                       <button
                         key={item.id}
                         type="button"
                         onClick={() => addNewItem(item)}
                         disabled={item.stock <= 0}
-                        className="p-2 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
+                        className="p-3 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
                         style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)", borderWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
                       >
-                        <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>{item.name}</p>
-                        <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>Stock: {item.stock} {item.unit || "Piece"}</p>
+                        <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>{item.name}</p>
+                        <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Stock: {item.stock} {item.unit || "Piece"}</p>
                       </button>
                     ))
                   )}
                 </div>
 
                 {newItems.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    {newItems.map((p) => (
-                      <div key={p.itemId} className="flex justify-between items-center px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-bg-secondary)" }}>
-                        <span style={{ color: "var(--color-text-primary)" }}>{p.itemName} ({p.unit})</span>
-                        <div className="flex items-center gap-2">
-                          <button type="button" onClick={() => removeNewItem(p.itemId)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>−</button>
-                          <span style={{ color: "var(--color-text-primary)" }}>{p.quantity}</span>
-                          <button type="button" onClick={() => addNewItem(items.find((i) => i.id === p.itemId)!)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>+</button>
+                  <div className="mt-3">
+                    <p className="text-xs font-medium mb-2" style={labelStyle}>Added to this P.O.:</p>
+                    <div className="space-y-2">
+                      {newItems.map((p) => (
+                        <div key={p.itemId} className="flex justify-between items-center px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-bg-secondary)" }}>
+                          <span style={{ color: "var(--color-text-primary)" }}>{p.itemName} ({p.unit})</span>
+                          <div className="flex items-center gap-2">
+                            <button type="button" onClick={() => removeNewItem(p.itemId)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>−</button>
+                            <span style={{ color: "var(--color-text-primary)" }}>{p.quantity}</span>
+                            <button type="button" onClick={() => addNewItem(items.find((i) => i.id === p.itemId)!)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>+</button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
