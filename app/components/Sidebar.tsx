@@ -7,7 +7,7 @@ import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 
-const navItems: { href: string; label: string; icon: string; disabled?: boolean }[] = [
+const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "🏠" },
   { href: "/inventory", label: "Inventory", icon: "📦" },
   { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️" },
@@ -16,7 +16,7 @@ const navItems: { href: string; label: string; icon: string; disabled?: boolean 
   { href: "/sales", label: "Sales & Expenses", icon: "💰" },
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
-  { href: "/admin", label: "Admin", icon: "👑" },
+  { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
 ];
 
 interface LowStockItem {
@@ -78,33 +78,44 @@ export default function Sidebar() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [planId, setPlanId] = useState<string | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Notification states
   const [notification, setNotification] = useState<NotificationData | null>(null);
   const [showNotifModal, setShowNotifModal] = useState(false);
 
-  // Fetch shop tenant details
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) return;
+      if (!user) {
+        setIsAdmin(false);
+        setBusinessName("");
+        setLogoUrl(null);
+        return;
+      }
       setIsAdmin(user.uid === ADMIN_UID);
-      const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
-      if (tenantSnap.exists()) {
-        const data = tenantSnap.data();
-        setBusinessName(data.businessName || "");
-        setNameDraft(data.businessName || "");
-        setLogoUrl(data.logoUrl || null);
+      try {
+        const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
+        if (tenantSnap.exists()) {
+          const data = tenantSnap.data();
+          setBusinessName(data.businessName || "");
+          setNameDraft(data.businessName || "");
+          setLogoUrl(data.logoUrl || null);
+          setPlanId(data.planId || null);
+          setSubscriptionStatus(data.subscriptionStatus || "trial");
+        }
+      } catch (err) {
+        console.error("Error fetching tenant data:", err);
       }
     });
+
     return () => unsubscribe();
   }, []);
 
-  // Fetch low stock reorder notifications directly from Firestore (tenant-scoped)
   useEffect(() => {
     let unsubInv = () => {};
 
@@ -117,34 +128,43 @@ export default function Sidebar() {
       }
 
       const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(invQuery, (snapshot) => {
-        const lowStockItems: LowStockItem[] = snapshot.docs
-          .map((d) => ({ id: d.id, ...d.data() } as any))
-          .filter((i) => (i.stock ?? 0) <= (i.threshold ?? 0))
-          .map((i) => ({
-            id: i.id,
-            name: i.name,
-            stock: i.stock ?? 0,
-            minStock: i.threshold ?? 0,
-            suggestedOrder: Math.max((i.threshold ?? 0) * 2 - (i.stock ?? 0), i.threshold || 1),
-            supplier: i.supplierName?.trim() || "N/A",
-          }));
+      unsubInv = onSnapshot(
+        invQuery,
+        (snapshot) => {
+          const lowStockItems: LowStockItem[] = snapshot.docs
+            .map((d) => ({ id: d.id, ...d.data() } as any))
+            .filter((i) => (i.stock ?? 0) <= (i.threshold ?? i.minStock ?? 0))
+            .map((i) => {
+              const limit = i.threshold ?? i.minStock ?? 0;
+              return {
+                id: i.id,
+                name: i.name,
+                stock: i.stock ?? 0,
+                minStock: limit,
+                suggestedOrder: Math.max(limit * 2 - (i.stock ?? 0), limit || 1),
+                supplier: i.supplierName?.trim() || "N/A",
+              };
+            });
 
-        if (lowStockItems.length === 0) {
-          setNotification(null);
-          return;
+          if (lowStockItems.length === 0) {
+            setNotification(null);
+            return;
+          }
+
+          setNotification({
+            hasNotification: true,
+            count: lowStockItems.length,
+            title: "⚠️ Low Stock Alert",
+            message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
+              .map((i) => i.name)
+              .join(", ")}.`,
+            items: lowStockItems,
+          });
+        },
+        (error) => {
+          console.error("Error fetching inventory notifications:", error);
         }
-
-        setNotification({
-          hasNotification: true,
-          count: lowStockItems.length,
-          title: "⚠️ Low Stock Alert",
-          message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
-            .map((i) => i.name)
-            .join(", ")}.`,
-          items: lowStockItems,
-        });
-      });
+      );
     });
 
     return () => {
@@ -161,9 +181,14 @@ export default function Sidebar() {
       return;
     }
     const trimmed = nameDraft.trim();
-    await updateDoc(doc(db, "tenants", user.uid), { businessName: trimmed });
-    setBusinessName(trimmed);
-    setEditingName(false);
+    try {
+      await updateDoc(doc(db, "tenants", user.uid), { businessName: trimmed });
+      setBusinessName(trimmed);
+    } catch (err) {
+      console.error("Failed to update business name:", err);
+    } finally {
+      setEditingName(false);
+    }
   };
 
   const handleLogoClick = () => {
@@ -191,13 +216,27 @@ export default function Sidebar() {
   };
 
   const handleLogout = async () => {
-    await signOut(auth);
-    router.push("/login");
+    try {
+      await signOut(auth);
+      router.push("/login");
+    } catch (err) {
+      console.error("Error signing out:", err);
+    }
   };
+
+  const navItems = baseNavItems.filter((item) => !item.adminOnly || isAdmin);
+
+  const planLabel: { text: string; bg: string; color: string } = (() => {
+    if (subscriptionStatus === "active" && planId) {
+      const labels: Record<string, string> = { basic: "BASIC", pro: "PRO", business: "BUSINESS" };
+      return { text: labels[planId] || planId.toUpperCase(), bg: "rgba(74, 222, 128, 0.15)", color: "#4ade80" };
+    }
+    return { text: "FREE TRIAL", bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
+  })();
 
   return (
     <>
-      {/* Mobile top bar with hamburger — visible only below sm breakpoint */}
+      {/* MOBILE TOP BAR - Upgrade button sa TOP RIGHT CORNER */}
       <div
         className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
         style={{
@@ -213,29 +252,40 @@ export default function Sidebar() {
         >
           ☰
         </button>
-        <p
-          className="text-sm font-semibold truncate max-w-[60%]"
-          style={{ color: "var(--color-text-primary)" }}
-        >
-          {businessName || "My Shop"}
-        </p>
-        {notification && notification.count > 0 ? (
-          <button
-            onClick={() => setShowNotifModal(true)}
-            className="relative text-xl"
-            aria-label="Notifications"
+
+        <div className="flex items-center gap-1.5 max-w-[45%]">
+          <p
+            className="text-sm font-semibold truncate"
+            style={{ color: "var(--color-text-primary)" }}
           >
-            🔔
-            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-              {notification.count}
-            </span>
-          </button>
-        ) : (
-          <span className="w-6" />
-        )}
+            {businessName || "My Shop"}
+          </p>
+          <span
+            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
+            style={{ background: planLabel.bg, color: planLabel.color }}
+          >
+            {planLabel.text}
+          </span>
+        </div>
+
+        {/* TOP RIGHT CORNER: Notification Icon */}
+        <div className="flex items-center gap-2">
+          {notification && notification.count > 0 &&  (
+            <button
+              onClick={() => setShowNotifModal(true)}
+              className="relative text-lg"
+              aria-label="Notifications"
+            >
+              🔔
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                {notification.count}
+              </span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Mobile drawer overlay */}
+      {/* Mobile Drawer Overlay */}
       {mobileMenuOpen && (
         <div className="sm:hidden fixed inset-0 z-50 flex">
           <div
@@ -291,13 +341,6 @@ export default function Sidebar() {
                   >
                     <span>{item.icon}</span>
                     <span>{item.label}</span>
-                    {(item.href === "/settings" || item.href === "/inventory") &&
-                      notification &&
-                      notification.count > 0 && (
-                        <span className="ml-auto bg-red-500 text-white rounded-full text-[10px] font-bold px-1.5 py-0.5">
-                          {notification.count}
-                        </span>
-                      )}
                   </Link>
                 );
               })}
@@ -315,6 +358,7 @@ export default function Sidebar() {
         </div>
       )}
 
+      {/* DESKTOP SIDEBAR - Upgrade button sa TOP RIGHT CORNER ng Sidebar Header */}
       <aside
         className={`${
           collapsed ? "w-16" : "w-64"
@@ -324,24 +368,38 @@ export default function Sidebar() {
           borderColor: "var(--color-border)",
         }}
       >
-        {/* Header & Collapse Toggle */}
-        <div className="flex items-center justify-between mb-4 px-1">
-          {!collapsed && (
-            <p
-              className="text-xs font-semibold uppercase tracking-wide"
+        {/* Header Section (May UPGRADE button sa Top Right) */}
+        <div className="flex items-center justify-between mb-4 px-1 relative">
+          {!collapsed ? (
+            <div className="flex items-center justify-between w-full">
+              <p
+                className="text-xs font-semibold uppercase tracking-wide"
+                style={{ color: "var(--color-text-secondary)" }}
+              >
+                My Shop
+              </p>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setCollapsed(!collapsed)}
+                  className="p-1 rounded-lg transition hover:opacity-80"
+                  style={{ color: "var(--color-text-secondary)" }}
+                  title="Collapse sidebar"
+                >
+                  «
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              className="p-1.5 rounded-lg transition mx-auto hover:opacity-80"
               style={{ color: "var(--color-text-secondary)" }}
+              title="Expand sidebar"
             >
-              My Shop
-            </p>
+              »
+            </button>
           )}
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            className="p-1.5 rounded-lg transition ml-auto hover:opacity-80"
-            style={{ color: "var(--color-text-secondary)" }}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {collapsed ? "»" : "«"}
-          </button>
         </div>
 
         {/* Logo Section */}
@@ -357,27 +415,18 @@ export default function Sidebar() {
             onClick={handleLogoClick}
             disabled={collapsed}
             title="Click to change logo"
-            className={`relative rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 border transition theme-pulse ${
+            className={`relative rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 border transition ${
               collapsed ? "w-9 h-9" : "w-16 h-16"
             } ${!collapsed ? "hover:opacity-80 cursor-pointer" : ""}`}
             style={{
               background: "var(--color-surface)",
               borderColor: "var(--color-border)",
-              boxShadow: logoUrl ? "var(--glow-shadow)" : "none",
             }}
           >
             {logoUrl ? (
               <img src={logoUrl} alt="Shop logo" className="w-full h-full object-cover" />
             ) : (
               <span className={collapsed ? "text-sm" : "text-xl"}>🏪</span>
-            )}
-            {uploading && (
-              <span
-                className="absolute inset-0 flex items-center justify-center text-[10px]"
-                style={{ background: "var(--color-surface-glass)", color: "var(--color-text-secondary)" }}
-              >
-                ...
-              </span>
             )}
           </button>
 
@@ -394,17 +443,7 @@ export default function Sidebar() {
                   value={nameDraft}
                   onChange={(e) => setNameDraft(e.target.value)}
                   onBlur={saveBusinessName}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      saveBusinessName();
-                    }
-                    if (e.key === "Escape") {
-                      setNameDraft(businessName);
-                      setEditingName(false);
-                    }
-                  }}
-                  className="w-full text-sm font-semibold text-center leading-snug rounded px-1 py-1 resize-none focus:outline-none focus:ring-1"
+                  className="w-full text-sm font-semibold text-center leading-snug rounded px-1 py-1 resize-none focus:outline-none"
                   style={{
                     background: "var(--color-surface)",
                     color: "var(--color-text-primary)",
@@ -415,7 +454,6 @@ export default function Sidebar() {
               ) : (
                 <button
                   onClick={() => setEditingName(true)}
-                  title="Click to edit shop name"
                   className="text-sm font-semibold leading-snug break-words whitespace-normal w-full hover:opacity-80"
                   style={{ color: "var(--color-text-primary)" }}
                 >
@@ -423,11 +461,17 @@ export default function Sidebar() {
                   <span style={{ color: "var(--color-text-secondary)" }}>✎</span>
                 </button>
               )}
+              <span
+                className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full"
+                style={{ background: planLabel.bg, color: planLabel.color }}
+              >
+                {planLabel.text}
+              </span>
             </div>
           )}
         </div>
 
-        {/* Owner Quick Alert Trigger Button */}
+        {/* Low Stock Alert Button */}
         {notification && notification.count > 0 && (
           <button
             onClick={() => setShowNotifModal(true)}
@@ -446,69 +490,25 @@ export default function Sidebar() {
         <nav className="space-y-1">
           {navItems.map((item) => {
             const isActive = pathname === item.href;
-            const isSettings = item.href === "/settings";
-            const isInventory = item.href === "/inventory";
-
-            if (item.disabled) {
-              return (
-                <div
-                  key={item.href}
-                  className={`flex items-center gap-3 px-2 py-2 rounded-lg cursor-not-allowed text-sm ${
-                    collapsed ? "justify-center" : ""
-                  }`}
-                  style={{ color: "var(--color-text-secondary)", opacity: 0.4 }}
-                  title="Coming soon"
-                >
-                  <span>{item.icon}</span>
-                  {!collapsed && <span>{item.label}</span>}
-                </div>
-              );
-            }
-
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 title={collapsed ? item.label : ""}
-                className={`relative flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition ${
+                className={`flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition ${
                   collapsed ? "justify-center" : ""
                 }`}
                 style={{
                   background: isActive ? "var(--color-surface)" : "transparent",
                   color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
-                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
                 }}
               >
                 <span>{item.icon}</span>
                 {!collapsed && <span>{item.label}</span>}
-
-                {/* Badge Indicator for Inventory or Settings */}
-                {(isSettings || isInventory) && notification && notification.count > 0 && (
-                  <span
-                    className={`bg-red-500 text-white rounded-full font-bold flex items-center justify-center ${
-                      collapsed
-                        ? "absolute -top-1 -right-1 w-4 h-4 text-[9px]"
-                        : "ml-auto px-1.5 py-0.2 text-[10px]"
-                    }`}
-                  >
-                    {notification.count}
-                  </span>
-                )}
               </Link>
             );
           })}
         </nav>
-
-        {isAdmin && (
-          <Link
-            href="/admin"
-            className="flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 mb-1"
-            style={{ color: "#a855f7" }}
-          >
-            <span>🛡️</span>
-            {!collapsed && <span>Admin</span>}
-          </Link>
-        )}
 
         {/* Logout Button */}
         <button
@@ -524,7 +524,7 @@ export default function Sidebar() {
         </button>
       </aside>
 
-      {/* Owner Reorder Notification Modal */}
+      {/* Low Stock Modal */}
       {showNotifModal && notification && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div
@@ -540,17 +540,12 @@ export default function Sidebar() {
                 <span className="text-xl">⚠️</span>
                 <h3 className="font-bold text-base">Owner Reorder Notifications</h3>
               </div>
-              <button
-                onClick={() => setShowNotifModal(false)}
-                className="text-gray-400 hover:text-white text-lg font-bold"
-              >
+              <button onClick={() => setShowNotifModal(false)} className="text-gray-400 hover:text-white text-lg font-bold">
                 ✕
               </button>
             </div>
 
-            <p className="text-xs text-gray-400">
-              {notification.message}
-            </p>
+            <p className="text-xs text-gray-400">{notification.message}</p>
 
             <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
               {notification.items.map((item) => (
@@ -568,7 +563,6 @@ export default function Sidebar() {
                   </div>
                   <div className="text-right">
                     <p className="text-red-400 font-bold">Stock: {item.stock} / {item.minStock}</p>
-                    <p className="text-blue-400 font-semibold">Order: +{item.suggestedOrder} pcs</p>
                   </div>
                 </div>
               ))}
@@ -582,19 +576,11 @@ export default function Sidebar() {
               >
                 Close
               </button>
-              <Link
-                href="/settings"
-                onClick={() => setShowNotifModal(false)}
-                className="px-4 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
-              >
-                Open Settings & Download CSV 📥
-              </Link>
             </div>
           </div>
         </div>
       )}
 
-      {/* Spacer so page content isn't hidden behind the fixed mobile top bar */}
       <div className="sm:hidden h-14" />
     </>
   );

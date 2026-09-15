@@ -16,6 +16,7 @@ import {
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
+import { useOfflineSync } from "../lib/useOfflineSync";
 
 type InventoryItem = {
   id: string;
@@ -55,6 +56,12 @@ const inputStyle: React.CSSProperties = {
   borderWidth: "var(--border-width)",
 };
 
+type QueuedSalePayload = {
+  uid: string;
+  saleRecords: { itemName: string; quantity: number; price: number; total: number; profit: number; date: string }[];
+  stockDeltas: { itemId: string; qty: number }[];
+};
+
 export default function PosPage() {
   const [uid, setUid] = useState<string | null>(null);
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -72,6 +79,24 @@ export default function PosPage() {
   const [receiptChange, setReceiptChange] = useState(0);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
+  // Processes one queued offline sale by replaying the exact Firestore writes
+  // that would have happened had the device been online at checkout time.
+  const processPosSale = async (payload: QueuedSalePayload) => {
+    for (const record of payload.saleRecords) {
+      await addDoc(collection(db, "tenants", payload.uid, "sales"), record);
+    }
+    for (const delta of payload.stockDeltas) {
+      await updateDoc(doc(db, "tenants", payload.uid, "inventory", delta.itemId), {
+        stock: increment(-delta.qty),
+      });
+    }
+  };
+
+  const { isOnline, pendingCount, syncing, enqueue, syncNow } = useOfflineSync({
+    pos_sale: processPosSale,
+  });
+
   useEffect(() => {
     let unsubInv = () => {};
     let unsubBundles = () => {};
@@ -243,22 +268,24 @@ export default function PosPage() {
     setErrorMessage("");
 
     try {
+      // Build the sale records + stock deltas once, regardless of connection status.
+      const saleRecords: QueuedSalePayload["saleRecords"] = [];
+      const stockDeltas: QueuedSalePayload["stockDeltas"] = [];
+      const nowIso = new Date().toISOString();
+
       for (const line of cart) {
         if (line.kind === "item") {
           const total = line.unitPrice * line.quantity;
           const profit = total - line.unitCost * line.quantity;
-          await addDoc(collection(db, "tenants", uid, "sales"), {
+          saleRecords.push({
             itemName: line.name,
             quantity: line.quantity,
             price: line.unitPrice,
             total,
             profit,
-            serialNumberUsed: null,
-            date: new Date().toISOString(),
+            date: nowIso,
           });
-          await updateDoc(doc(db, "tenants", uid, "inventory", line.refId), {
-            stock: increment(-line.quantity),
-          });
+          stockDeltas.push({ itemId: line.refId, qty: line.quantity });
         } else {
           let totalCost = 0;
           for (const comp of line.components) {
@@ -267,23 +294,42 @@ export default function PosPage() {
           }
           const total = line.unitPrice * line.quantity;
           const profit = total - totalCost;
-
-          await addDoc(collection(db, "tenants", uid, "sales"), {
+          saleRecords.push({
             itemName: `${line.name} (Bundle)`,
             quantity: line.quantity,
             price: line.unitPrice,
             total,
             profit,
-            serialNumberUsed: null,
-            date: new Date().toISOString(),
+            date: nowIso,
           });
-
           for (const comp of line.components) {
-            await updateDoc(doc(db, "tenants", uid, "inventory", comp.itemId), {
-              stock: increment(-comp.quantity * line.quantity),
-            });
+            stockDeltas.push({ itemId: comp.itemId, qty: comp.quantity * line.quantity });
           }
         }
+      }
+
+      if (isOnline) {
+        // Write straight to Firestore as before.
+        for (const record of saleRecords) {
+          await addDoc(collection(db, "tenants", uid, "sales"), { ...record, serialNumberUsed: null });
+        }
+        for (const delta of stockDeltas) {
+          await updateDoc(doc(db, "tenants", uid, "inventory", delta.itemId), {
+            stock: increment(-delta.qty),
+          });
+        }
+      } else {
+        // Queue the sale locally, then reflect the stock change immediately
+        // on this device so the next transaction sees accurate stock.
+        await enqueue("pos_sale", { uid, saleRecords, stockDeltas });
+        setItems((prev) =>
+          prev.map((item) => {
+            const totalDeducted = stockDeltas
+              .filter((d) => d.itemId === item.id)
+              .reduce((sum, d) => sum + d.qty, 0);
+            return totalDeducted > 0 ? { ...item, stock: item.stock - totalDeducted } : item;
+          })
+        );
       }
 
       setReceiptLines(cart);
@@ -298,12 +344,39 @@ export default function PosPage() {
     }
   };
 
+
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
       <main className="flex-1 p-6 flex flex-col lg:flex-row gap-6">
         {/* Product picker */}
         <div className="flex-1">
+          {(!isOnline || pendingCount > 0) && (
+            <div
+              className="flex items-center justify-between gap-3 px-4 py-2.5 mb-4 text-sm font-medium"
+              style={{
+                background: isOnline ? "rgba(250, 204, 21, 0.1)" : "rgba(239, 68, 68, 0.1)",
+                color: isOnline ? "#facc15" : "#f87171",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+              <span>
+                {isOnline
+                  ? `🟡 ${pendingCount} sale(s) waiting to sync`
+                  : "🔴 Offline — sales are being saved on this device"}
+              </span>
+              {isOnline && pendingCount > 0 && (
+                <button
+                  onClick={() => syncNow()}
+                  disabled={syncing}
+                  className="text-xs font-bold px-3 py-1 rounded-full hover:opacity-80 disabled:opacity-50"
+                  style={{ background: "rgba(250, 204, 21, 0.2)" }}
+                >
+                  {syncing ? "Syncing..." : "Sync Now"}
+                </button>
+              )}
+            </div>
+          )}
           <h1
             className="text-xl font-bold mb-1"
             style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}

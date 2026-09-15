@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useMemo, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   doc,
@@ -102,8 +102,10 @@ function TrendArrow({ pct }: { pct: number }) {
   );
 }
 
-export default function DashboardPage() {
+function DashboardContent() {
   const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [showPaymentBanner, setShowPaymentBanner] = useState(false);
+  const searchParams = useSearchParams();
   const [uid, setUid] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sales, setSales] = useState<SaleRecord[]>([]);
@@ -125,6 +127,7 @@ export default function DashboardPage() {
     let unsubInv = () => {};
     let unsubTickets = () => {};
     let unsubTasks = () => {};
+    let unsubTenant = () => {};
 
     const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubSales();
@@ -137,15 +140,24 @@ export default function DashboardPage() {
         router.push("/login");
         return;
       }
-      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
-      if (tenantDoc.exists()) {
-        setTenant(tenantDoc.data() as Tenant);
+
+
+      const tenantDocRef = doc(db, "tenants", user.uid);
+      const initialSnap = await getDoc(tenantDocRef);
+      if (initialSnap.exists()) {
+        setTenant(initialSnap.data() as Tenant);
       } else {
         router.push("/onboarding");
         return;
       }
       setUid(user.uid);
       setLoading(false);
+
+      unsubTenant = onSnapshot(tenantDocRef, (snap) => {
+        if (snap.exists()) setTenant(snap.data() as Tenant);
+      });
+
+
 
       const salesQuery = query(collection(db, "tenants", user.uid, "sales"), orderBy("date", "desc"));
       unsubSales = onSnapshot(salesQuery, (snapshot) => {
@@ -185,6 +197,7 @@ export default function DashboardPage() {
       unsubInv();
       unsubTickets();
       unsubTasks();
+      unsubTenant();
     };
   }, [router]);
 
@@ -320,6 +333,17 @@ export default function DashboardPage() {
     }
   }, [tenant]);
 
+
+  useEffect(() => {
+    if (searchParams.get("payment") === "success") {
+      setShowPaymentBanner(true);
+      const timeout = setTimeout(() => setShowPaymentBanner(false), 8000);
+      return () => clearTimeout(timeout);
+    }
+  }, [searchParams]);
+
+
+
   const runAnalysis = async () => {
     if (!uid || !aiAccess.allowed) return;
 
@@ -437,16 +461,51 @@ export default function DashboardPage() {
       <Sidebar />
       <div className="flex-1">
         <header
-          className="px-6 py-4 border-b"
+          className="border-b"
           style={{ background: "var(--color-bg-secondary)", borderColor: "var(--color-border)" }}
         >
-          <h1 className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
-            Welcome back, {tenant.businessName}!
-          </h1>
-          <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-            Trial Status: {tenant.subscriptionStatus}
-          </p>
+          {showPaymentBanner && (
+            <div
+              className="px-6 py-2.5 text-sm font-medium flex items-center gap-2"
+              style={{ background: "rgba(74, 222, 128, 0.15)", color: "#4ade80" }}
+            >
+              <span>✅</span>
+              <span>
+                Payment received! Your plan is being activated — this page will update automatically within a few seconds.
+              </span>
+            </div>
+          )}
+
+          <div className="px-6 py-4 flex items-center justify-between gap-4">
+            <div>
+              <h1 className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
+                Welcome back, {tenant.businessName}!
+              </h1>
+              <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                {tenant.subscriptionStatus === "active" ? "Current Plan: " : "Status: "}
+                <span
+                  className="font-semibold"
+                  style={{ color: tenant.subscriptionStatus === "active" ? "#4ade80" : "var(--color-text-secondary)" }}
+                >
+                  {tenant.subscriptionStatus === "active"
+                    ? (tenant as any).planId?.toUpperCase() || "ACTIVE"
+                    : "Free Trial"}
+                </span>
+              </p>
+            </div>
+
+            <Link
+              href="/pricing"
+              className="flex-shrink-0 text-sm font-bold px-4 py-2 rounded-lg text-white transition flex items-center gap-2 shadow-sm hover:opacity-90"
+              style={{ background: "linear-gradient(135deg, #8b5cf6, #d946ef)" }}
+            >
+              <span>👑</span>
+              <span>Upgrade Plan</span>
+            </Link>
+          </div>
         </header>
+
+        
 
         <main className="p-6">
           {!hasEnoughData ? (
@@ -722,5 +781,13 @@ export default function DashboardPage() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <DashboardContent />
+    </Suspense>
   );
 }
