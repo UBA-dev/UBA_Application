@@ -10,13 +10,13 @@ import {
   orderBy,
   doc,
   getDoc,
+  getDocs,
   updateDoc,
   deleteDoc,
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
-import { printReceipt } from "../lib/receipt";
 
 type InventoryItem = {
   id: string;
@@ -25,6 +25,18 @@ type InventoryItem = {
   unit: string;
   unitCost: number;
   sellingPrice: number;
+};
+
+type ReorderSuggestion = {
+  itemId: string;
+  itemName: string;
+  unit: string;
+  currentStock: number;
+  threshold: number;
+  avgDailySales: number;
+  daysRemaining: number;
+  suggestedReorderQty: number;
+  urgent: boolean;
 };
 
 type POItem = {
@@ -97,7 +109,7 @@ function numberToWords(num: number): string {
   return words.trim();
 }
 
-function amountToPesoWords(amount: number): string {
+export function amountToPesoWords(amount: number): string {
   const pesos = Math.floor(amount);
   const centavos = Math.round((amount - pesos) * 100);
   let result = numberToWords(pesos) + " Pesos";
@@ -137,7 +149,6 @@ const cardStyle: React.CSSProperties = {
   borderColor: "var(--color-border)",
 };
 
-
 function daysSince(dateStr: string): number {
   const created = new Date(dateStr).getTime();
   if (isNaN(created)) return 0;
@@ -161,8 +172,7 @@ function AgingBadge({ createdAt, warnAfterDays }: { createdAt: string; warnAfter
   );
 }
 
-
-
+const FULFILLMENT_FILTERS: FulfillmentStatus[] = ["Pending", "Fulfilled", "Cancelled"];
 
 export default function POTicketsPage() {
   const [tickets, setTickets] = useState<PurchaseOrder[]>([]);
@@ -192,7 +202,10 @@ export default function POTicketsPage() {
   const [editPrNumber, setEditPrNumber] = useState("");
   const [savingDetails, setSavingDetails] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
-  const [businessName, setBusinessName] = useState("");
+  const [computingReorder, setComputingReorder] = useState(false);
+  const [reorderSuggestions, setReorderSuggestions] = useState<ReorderSuggestion[] | null>(null);
+  const [reorderSummary, setReorderSummary] = useState("");
+  const [reorderError, setReorderError] = useState("");
   const [draftingMessage, setDraftingMessage] = useState(false);
   const [draftedMessage, setDraftedMessage] = useState("");
   const [messageError, setMessageError] = useState("");
@@ -210,10 +223,6 @@ export default function POTicketsPage() {
         return;
       }
       setUid(user.uid);
-
-      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
-        if (snap.exists()) setBusinessName(snap.data().businessName || "");
-      });
 
       const ticketQuery = query(
         collection(db, "tenants", user.uid, "poTickets"),
@@ -240,14 +249,15 @@ export default function POTicketsPage() {
     if (!detail) return;
     const fresh = tickets.find((t) => t.id === detail.id);
     if (fresh) setDetail(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tickets]);
 
-
-    const filteredItemsForPO = useMemo(() => {
+  const filteredItemsForPO = useMemo(() => {
     const searchLower = itemSearchText.toLowerCase().trim();
     if (!searchLower) return items;
     return items.filter((i) => i.name.toLowerCase().includes(searchLower));
   }, [items, itemSearchText]);
+
   const filteredTickets = useMemo(() => {
     const searchLower = searchText.toLowerCase().trim();
     return tickets.filter((t) => {
@@ -297,6 +307,16 @@ export default function POTicketsPage() {
     setItemSearchText("");
   };
 
+  // Safely adjust an inventory item's stock. Checks that the document still
+  // exists before calling updateDoc, since items referenced by older P.O.s
+  // can point to inventory items that were later deleted.
+  const safeAdjustStock = async (uidParam: string, itemId: string, delta: number): Promise<boolean> => {
+    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return false;
+    await updateDoc(ref, { stock: increment(delta) });
+    return true;
+  };
 
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -331,13 +351,8 @@ export default function POTicketsPage() {
     }
   };
 
-  const safeAdjustStock = async (uidParam: string, itemId: string, delta: number): Promise<boolean> => {
-    const ref = doc(db, "tenants", uidParam, "inventory", itemId);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return false;
-    await updateDoc(ref, { stock: increment(delta) });
-    return true;
-  };
+  const itemsCostOf = (ticket: PurchaseOrder) =>
+    ticket.items.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
 
   const openDetail = (ticket: PurchaseOrder) => {
     setDetail(ticket);
@@ -380,6 +395,80 @@ export default function POTicketsPage() {
     }
   };
 
+  // Computes real reorder math from actual sales history — the AI only
+  // narrates this afterward, it never invents these numbers itself.
+  const handleComputeReorderSuggestions = async () => {
+    if (!uid) return;
+    setComputingReorder(true);
+    setReorderError("");
+    setReorderSuggestions(null);
+    setReorderSummary("");
+
+    try {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      const salesSnap = await getDocs(collection(db, "tenants", uid, "sales"));
+      const recentSales = salesSnap.docs
+        .map((d) => d.data())
+        .filter((s: any) => new Date(s.date) >= thirtyDaysAgo);
+
+      const salesByItem = new Map<string, number>();
+      recentSales.forEach((s: any) => {
+        const qty = Number(s.quantity) || 0;
+        salesByItem.set(s.itemName, (salesByItem.get(s.itemName) || 0) + qty);
+      });
+
+      const suggestions: ReorderSuggestion[] = [];
+      for (const item of items) {
+        const totalSoldLast30 = salesByItem.get(item.name) || 0;
+        const avgDailySales = totalSoldLast30 / 30;
+
+        // Only flag items that are actually selling AND running low —
+        // no point suggesting a reorder for something that never moves.
+        if (avgDailySales <= 0) continue;
+
+        const daysRemaining = Math.floor(item.stock / avgDailySales);
+        const isLowStock = item.stock <= (item as any).threshold || daysRemaining <= 14;
+        if (!isLowStock) continue;
+
+        // Target: enough stock to cover 30 days at current sales pace
+        const targetStock = Math.ceil(avgDailySales * 30);
+        const suggestedReorderQty = Math.max(targetStock - item.stock, 0);
+
+        suggestions.push({
+          itemId: item.id,
+          itemName: item.name,
+          unit: item.unit || "Piece",
+          currentStock: item.stock,
+          threshold: (item as any).threshold || 0,
+          avgDailySales,
+          daysRemaining,
+          suggestedReorderQty,
+          urgent: daysRemaining <= 5,
+        });
+      }
+
+      suggestions.sort((a, b) => a.daysRemaining - b.daysRemaining);
+      setReorderSuggestions(suggestions);
+
+      if (suggestions.length > 0) {
+        const res = await fetch("/api/generate-reorder-summary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ suggestions }),
+        });
+        const data = await res.json();
+        if (res.ok) setReorderSummary(data.summary);
+      }
+    } catch (err) {
+      console.error(err);
+      setReorderError("Couldn't compute reorder suggestions right now.");
+    } finally {
+      setComputingReorder(false);
+    }
+  };
+
   const handleSaveDetails = async () => {
     if (!uid || !detail) return;
     setSavingDetails(true);
@@ -395,9 +484,6 @@ export default function POTicketsPage() {
       setSavingDetails(false);
     }
   };
-
-  const itemsCostOf = (ticket: PurchaseOrder) =>
-    ticket.items.reduce((sum, p) => sum + p.unitCost * p.quantity, 0);
 
   const recordTicketAsSale = async (uidParam: string, ticket: PurchaseOrder) => {
     const total = itemsCostOf(ticket);
@@ -552,8 +638,9 @@ export default function POTicketsPage() {
           />
         </div>
 
+        {/* Fulfillment status filter chips */}
         <div className="flex flex-wrap gap-2 mb-6">
-          {(["All", "Pending", "Fulfilled", "Cancelled"] as const).map((s) => {
+          {(["All", ...FULFILLMENT_FILTERS] as const).map((s) => {
             const isActive = statusFilter === s;
             return (
               <button
@@ -574,9 +661,75 @@ export default function POTicketsPage() {
           })}
         </div>
 
+        {/* AI Smart Reorder Suggestions */}
+        <div className="mb-6 p-4" style={cardStyle}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+              🤖 Smart Reorder Suggestions
+            </p>
+            <button
+              onClick={handleComputeReorderSuggestions}
+              disabled={computingReorder}
+              className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+              style={{ background: "var(--gradient-accent)", color: "#fff" }}
+            >
+              {computingReorder ? "Computing..." : "Get Suggestions"}
+            </button>
+          </div>
+          <p className="text-xs mb-2" style={{ color: "var(--color-text-secondary)" }}>
+            Based on your last 30 days of sales — flags items about to run out and how much to reorder.
+          </p>
+          {reorderError && (
+            <p className="text-xs p-2 rounded-lg" style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}>
+              {reorderError}
+            </p>
+          )}
+          {reorderSuggestions && reorderSuggestions.length === 0 && (
+            <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+              No urgent reorders needed right now based on your recent sales pace.
+            </p>
+          )}
+          {reorderSummary && (
+            <p className="text-xs p-2 mb-3 rounded-lg" style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-primary)" }}>
+              {reorderSummary}
+            </p>
+          )}
+          {reorderSuggestions && reorderSuggestions.length > 0 && (
+            <div className="space-y-2">
+              {reorderSuggestions.map((s) => (
+                <div
+                  key={s.itemId}
+                  className="flex justify-between items-center p-3"
+                  style={{
+                    background: "var(--color-bg-secondary)",
+                    borderRadius: "var(--radius-button)",
+                    borderWidth: s.urgent ? "1px" : 0,
+                    borderColor: "#f87171",
+                  }}
+                >
+                  <div>
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                      {s.itemName} {s.urgent && <span style={{ color: "#f87171" }}>⚠️ Urgent</span>}
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                      {s.currentStock} {s.unit} left · ~{s.daysRemaining} days remaining
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Reorder</p>
+                    <p className="text-sm font-bold" style={{ color: "var(--color-primary-light)" }}>
+                      {s.suggestedReorderQty} {s.unit}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {filteredTickets.length === 0 ? (
           <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-            No purchase orders found. Click "+ New P.O." to log one.
+            No purchase orders found. Click &quot;+ New P.O.&quot; to log one.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -612,6 +765,7 @@ export default function POTicketsPage() {
           </div>
         )}
 
+        {/* ---- NEW P.O. MODAL ---- */}
         {showNewForm && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form onSubmit={handleCreateTicket} className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto space-y-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
@@ -634,6 +788,7 @@ export default function POTicketsPage() {
                 <label className="text-sm" style={labelStyle}>Contact No.</label>
                 <input required value={buyerContact} onChange={(e) => setBuyerContact(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter contact number" />
               </div>
+
               <div>
                 <label className="text-sm" style={labelStyle}>PR No.</label>
                 <input value={prNumber} onChange={(e) => setPrNumber(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter PR number (optional)" />
@@ -654,7 +809,6 @@ export default function POTicketsPage() {
                 <label className="text-sm" style={labelStyle}>Payment Due Date (optional)</label>
                 <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} />
               </div>
-
 
               <div className="pt-2" style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}>
                 <label className="text-sm font-medium" style={labelStyle}>
@@ -700,7 +854,17 @@ export default function POTicketsPage() {
                           <div className="flex items-center gap-2">
                             <button type="button" onClick={() => removeNewItem(p.itemId)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>−</button>
                             <span style={{ color: "var(--color-text-primary)" }}>{p.quantity}</span>
-                            <button type="button" onClick={() => addNewItem(items.find((i) => i.id === p.itemId)!)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>+</button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const inv = items.find((i) => i.id === p.itemId);
+                                if (inv) addNewItem(inv);
+                              }}
+                              className="w-6 h-6 rounded-full font-bold"
+                              style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                            >
+                              +
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -726,6 +890,7 @@ export default function POTicketsPage() {
           </div>
         )}
 
+        {/* ---- P.O. DETAIL MODAL ---- */}
         {detail && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <div className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
@@ -772,6 +937,7 @@ export default function POTicketsPage() {
                   {savingDetails ? "Saving..." : "Save PO Details"}
                 </button>
               </div>
+
               <div className="mb-4">
                 <p className="text-sm font-medium mb-2" style={labelStyle}>Payment Status</p>
                 <div className="flex gap-2">
@@ -817,8 +983,7 @@ export default function POTicketsPage() {
                 </div>
               </div>
 
-
-                            {/* AI Customer Message Drafter */}
+              {/* AI Customer Message Drafter */}
               <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-medium" style={labelStyle}>🤖 Message to Buyer</p>
@@ -853,7 +1018,6 @@ export default function POTicketsPage() {
                   </div>
                 )}
               </div>
-
 
               <div className="mb-6">
                 <p className="text-sm font-medium mb-2" style={labelStyle}>Item No. / Unit / Description / Qty</p>

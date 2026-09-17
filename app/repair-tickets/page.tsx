@@ -35,6 +35,13 @@ type PartUsed = {
 
 type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
 
+type IssuePattern = {
+  issue: string;
+  count: number;
+  affectedDevices: string[];
+  suggestedPartsToStock: string[];
+};
+
 type DiagnosisResult = {
   possibleCauses: string[];
   suggestedPartsInStock: string[];
@@ -120,8 +127,6 @@ function AgingBadge({ createdAt, warnAfterDays }: { createdAt: string; warnAfter
   );
 }
 
-
-
 export default function RepairTicketsPage() {
   const [tickets, setTickets] = useState<RepairTicket[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -145,10 +150,48 @@ export default function RepairTicketsPage() {
   const [laborInput, setLaborInput] = useState("");
   const [savingLabor, setSavingLabor] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
-  const [businessName, setBusinessName] = useState('');
+  const [businessName, setBusinessName] = useState("");
+  const [analyzingPatterns, setAnalyzingPatterns] = useState(false);
+  const [issuePatterns, setIssuePatterns] = useState<IssuePattern[] | null>(null);
+  const [patternsError, setPatternsError] = useState("");
   const [draftingMessage, setDraftingMessage] = useState(false);
   const [draftedMessage, setDraftedMessage] = useState("");
   const [messageError, setMessageError] = useState("");
+
+  // Looks across past tickets for recurring issues so common parts can be
+  // pre-stocked. Lives at component scope so the button in the JSX can see it.
+  const handleAnalyzePatterns = async () => {
+    const relevantTickets = tickets.filter((t) => t.status !== "Cancelled");
+    if (relevantTickets.length < 3) {
+      setPatternsError("Need at least 3 tickets to detect meaningful patterns.");
+      return;
+    }
+    setAnalyzingPatterns(true);
+    setPatternsError("");
+    try {
+      const res = await fetch("/api/analyze-repair-patterns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tickets: relevantTickets.map((t) => ({
+            deviceInfo: t.deviceInfo,
+            issueDescription: t.issueDescription,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPatternsError(data.error || "Couldn't analyze patterns right now.");
+        return;
+      }
+      setIssuePatterns(data.commonIssues || []);
+    } catch (err) {
+      console.error(err);
+      setPatternsError("Couldn't analyze patterns right now.");
+    } finally {
+      setAnalyzingPatterns(false);
+    }
+  };
 
   useEffect(() => {
     let unsubTickets = () => {};
@@ -195,6 +238,7 @@ export default function RepairTicketsPage() {
     if (!detail) return;
     const fresh = tickets.find((t) => t.id === detail.id);
     if (fresh) setDetail(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tickets]);
 
   const filteredTickets = useMemo(() => {
@@ -252,13 +296,6 @@ export default function RepairTicketsPage() {
     }
   };
 
-
-  
-
-
-
-
-
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uid) return;
@@ -278,9 +315,6 @@ export default function RepairTicketsPage() {
         salesRecorded: false,
       });
       resetNewForm();
-
-
-      
       setShowNewForm(false);
     } catch (err) {
       console.error(err);
@@ -458,7 +492,6 @@ export default function RepairTicketsPage() {
     }
   };
 
-
   const handleDraftMessage = async () => {
     if (!detail) return;
     setDraftingMessage(true);
@@ -489,8 +522,6 @@ export default function RepairTicketsPage() {
       setDraftingMessage(false);
     }
   };
-
-
 
   const handleDeleteTicket = async (ticket: RepairTicket) => {
     if (!uid) return;
@@ -588,10 +619,65 @@ export default function RepairTicketsPage() {
           })}
         </div>
 
+        {/* AI Common Issues Pattern Detector */}
+        <div className="mb-6 p-4" style={cardStyle}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+              🤖 Common Issues Detector
+            </p>
+            <button
+              onClick={handleAnalyzePatterns}
+              disabled={analyzingPatterns}
+              className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+              style={{ background: "var(--gradient-accent)", color: "#fff" }}
+            >
+              {analyzingPatterns ? "Analyzing..." : "Analyze Patterns"}
+            </button>
+          </div>
+          <p className="text-xs mb-2" style={{ color: "var(--color-text-secondary)" }}>
+            Finds recurring issues across your repair history — so you can pre-stock the parts they need.
+          </p>
+          {patternsError && (
+            <p className="text-xs p-2 rounded-lg" style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}>
+              {patternsError}
+            </p>
+          )}
+          {issuePatterns && issuePatterns.length === 0 && (
+            <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+              No recurring patterns found yet — your issues are still fairly varied.
+            </p>
+          )}
+          {issuePatterns && issuePatterns.length > 0 && (
+            <div className="space-y-2 mt-2">
+              {issuePatterns.map((p, i) => (
+                <div key={i} className="p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>{p.issue}</p>
+                    <span
+                      className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                      style={{ background: "rgba(250, 204, 21, 0.15)", color: "#facc15" }}
+                    >
+                      {p.count}× reported
+                    </span>
+                  </div>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                    Devices: {p.affectedDevices.join(", ")}
+                  </p>
+                  {p.suggestedPartsToStock.length > 0 && (
+                    <p className="text-xs mt-1" style={{ color: "#4ade80" }}>
+                      💡 Consider pre-stocking: {p.suggestedPartsToStock.join(", ")}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Ticket list */}
         {filteredTickets.length === 0 ? (
           <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-            No repair tickets found. Click "+ New Ticket" to log a customer's device.
+            No repair tickets found. Click &quot;+ New Ticket&quot; to log a customer&apos;s device.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -839,9 +925,9 @@ export default function RepairTicketsPage() {
               <div className="mb-6">
                 <p className="text-sm font-medium mb-2" style={labelStyle}>Status</p>
                 {detail.status === "Paid" && detail.salesRecorded && (
-                <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
-                 ✓ Recorded in Sales
-                </p>
+                  <p className="text-xs mb-2" style={{ color: "#4ade80" }}>
+                    ✓ Recorded in Sales
+                  </p>
                 )}
                 <div className="flex flex-wrap gap-2">
                   {STATUS_FLOW.map((s) => {
@@ -940,7 +1026,7 @@ export default function RepairTicketsPage() {
                 )}
               </div>
 
-                              {/* AI Customer Message Drafter */}
+              {/* AI Customer Message Drafter */}
               <div className="mb-6 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-medium" style={labelStyle}>🤖 Message to Customer</p>
@@ -975,8 +1061,6 @@ export default function RepairTicketsPage() {
                   </div>
                 )}
               </div>
-
-
 
               {/* Labor payment */}
               <div className="mb-6">
