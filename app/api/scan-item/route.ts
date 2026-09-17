@@ -35,6 +35,7 @@ Respond with ONLY this exact JSON shape — items is ALWAYS an array, even if th
       "description": "",
       "category": "",
       "subCategory": "",
+      "unit": "Piece",
       "unitCost": null,
       "sellingPrice": null,
       "supplierName": "",
@@ -46,6 +47,7 @@ Respond with ONLY this exact JSON shape — items is ALWAYS an array, even if th
 }
 
 Rules:
+- unit: the unit of measurement this item is sold or stocked in. Must be EXACTLY one of: "Piece", "Kilogram", "Liter", "Sack", "Box", "Gallon", "Meter". Infer this from context — e.g. rice or cement in bulk is usually "Sack" or "Kilogram", cooking oil or fuel is usually "Liter" or "Gallon", cable or wiring is usually "Meter", individual electronics/parts/accessories are usually "Piece". Default to "Piece" only if genuinely unclear.
 - unitCost/sellingPrice: use numbers if visible/stated, otherwise null. Never invent prices that aren't shown.
 - barcodeText: only fill if an actual barcode/UPC number is visibly printed near the item, otherwise "".
 - confidence: "low" if the image/text is blurry, ambiguous, or you're guessing; "high" if clearly legible.

@@ -77,6 +77,7 @@ type ScanApiItem = {
   description: string;
   category: string;
   subCategory: string;
+  unit: string;
   unitCost: number | null;
   sellingPrice: number | null;
   supplierName: string;
@@ -84,6 +85,7 @@ type ScanApiItem = {
   confidence: ScanConfidence;
   lowConfidenceFields: string[];
 };
+
 
 type ScanApiResponse = {
   documentType: ScanDocumentType;
@@ -105,6 +107,10 @@ type ScannedItemRow = {
   confidence: ScanConfidence;
   lowConfidenceFields: string[];
   quantity: string;
+  unit: string;
+  showPackCalc: boolean;
+  packCount: string;
+  unitPerPack: string;
 };
 
 const documentTypeLabels: Record<ScanDocumentType, string> = {
@@ -798,6 +804,104 @@ export default function InventoryPage() {
     }
   };
 
+
+  // ---- Inventory Export (CSV backup, works even offline) ----
+
+  function escapeCsvField(value: string | number): string {
+    const str = String(value ?? "");
+    if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  }
+
+  const handleDownloadInventory = () => {
+    const today = new Date();
+    const dateStr = today.toISOString().split("T")[0];
+
+    const headers = [
+      "Category",
+      "Sub-Category",
+      "Item Name",
+      "Description",
+      "Unit",
+      "Current Stock",
+      "Low Stock Threshold",
+      "Unit Cost (₱)",
+      "Selling Price (₱)",
+      "Stock Value (₱)",
+      "Supplier",
+      "Barcode",
+    ];
+
+    // Sorted by category then name so the file reads like a real stock ledger,
+    // not a random dump — easy to scan even outside the app.
+    const sortedItems = [...items].sort((a, b) => {
+      const catCompare = (a.category || "").localeCompare(b.category || "");
+      if (catCompare !== 0) return catCompare;
+      return a.name.localeCompare(b.name);
+    });
+
+    const rows = sortedItems.map((item) => {
+      const stockValue = (item.stock || 0) * (item.unitCost || 0);
+      return [
+        item.category || "Uncategorized",
+        item.subCategory || "",
+        item.name,
+        item.description || "",
+        item.unit || "Piece",
+        item.stock,
+        item.threshold,
+        item.unitCost || 0,
+        item.sellingPrice || 0,
+        stockValue.toFixed(2),
+        item.supplierName || "",
+        item.barcode || "",
+      ];
+    });
+
+    const totalStockValue = sortedItems.reduce(
+      (sum, item) => sum + (item.stock || 0) * (item.unitCost || 0),
+      0
+    );
+    const lowStockCount = sortedItems.filter((i) => i.stock <= i.threshold).length;
+
+    // Summary block up top — so the owner sees the shape of their business
+    // at a glance, even if they never open the app again.
+    const summaryLines = [
+      [`${businessName || "Shop"} — Inventory Backup`],
+      [`Generated on: ${today.toLocaleString()}`],
+      [`Total Items: ${sortedItems.length}`],
+      [`Total Stock Value: ₱${totalStockValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}`],
+      [`Items at/below Low Stock Threshold: ${lowStockCount}`],
+      [],
+      headers,
+    ];
+
+    const csvContent = [...summaryLines, ...rows]
+      .map((row) => row.map((cell) => escapeCsvField(cell as string | number)).join(","))
+      .join("\n");
+
+    // Prepend BOM so Excel opens special characters (₱, etc.) correctly
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(businessName || "UBA").replace(/[^a-z0-9]/gi, "_")}_Inventory_${dateStr}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // ---- Universal Scanner handlers ----
+
+
+
+
+
+
+
   // ---- Universal Scanner handlers ----
 
     const openScanModal = () => {
@@ -869,6 +973,10 @@ export default function InventoryPage() {
         confidence: it.confidence || "medium",
         lowConfidenceFields: it.lowConfidenceFields || [],
         quantity: "",
+        unit: UNIT_OPTIONS.includes(it.unit) ? it.unit : "Piece",
+        showPackCalc: false,
+        packCount: "",
+        unitPerPack: "",
       }))
     );
   };
@@ -924,6 +1032,10 @@ export default function InventoryPage() {
             confidence: "high" as const,
             lowConfidenceFields: [],
             quantity: it.quantity || "",
+            unit: it.unit || "Piece",
+            showPackCalc: false,
+            packCount: "",
+            unitPerPack: "",
           }))
         );
       } else if (kind === "docx") {
@@ -960,11 +1072,11 @@ export default function InventoryPage() {
     setDescription(row.description);
     setCategory(row.category);
     setSubCategory(row.subCategory);
+    setUnit(row.unit || "Piece");
     setUnitCost(row.unitCost);
     setSellingPrice(row.sellingPrice);
     setSupplierName(row.supplierName);
     setItemBarcode(row.barcodeText);
-
     // Reuse the scanned photo as the item's thumbnail — no extra step for the owner
     if (scanFile) {
       try {
@@ -1011,6 +1123,7 @@ export default function InventoryPage() {
           category: normalizeText(row.category),
           subCategory: normalizeText(row.subCategory),
           stock: Number(row.quantity) || 0,
+          unit: row.unit || "Piece",
           threshold: 3,
           unitCost: Number(row.unitCost) || 0,
           sellingPrice: Number(row.sellingPrice) || 0,
@@ -1048,6 +1161,22 @@ export default function InventoryPage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <button
+              onClick={handleDownloadInventory}
+              disabled={items.length === 0}
+              title={items.length === 0 ? "No items to download yet" : "Download a backup of your inventory"}
+              className="font-semibold px-4 py-2 text-sm transition hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{
+                background: "var(--color-surface)",
+                color: "var(--color-text-primary)",
+                borderRadius: "var(--radius-button)",
+                borderWidth: "var(--border-width)",
+                borderColor: "var(--color-border)",
+              }}
+            >
+              <span className="sm:hidden">⬇️ Backup</span>
+              <span className="hidden sm:inline">⬇️ Download Inventory</span>
+            </button>
+            <button
               onClick={openScanModal}
               className="font-semibold px-4 py-2 text-sm transition hover:opacity-90"
               style={{
@@ -1060,8 +1189,10 @@ export default function InventoryPage() {
               }}
             >
               <span className="sm:hidden">🔍 Scanner</span>
-              <span className="hidden sm:inline">🔍 Universal Scanner</span>
+              <span className="hidden sm:inline">🔍 UBA Scanner</span>
             </button>
+
+            
             <button
               onClick={openAddItemForm}
               className="font-semibold px-4 py-2 text-sm transition hover:opacity-90"
@@ -2140,7 +2271,7 @@ export default function InventoryPage() {
         {showScanModal && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <div
-              className="w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto"
+              className="w-full max-w-lg sm:max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
               style={{
                 background: "var(--color-surface)",
                 borderRadius: "var(--radius-card)",
@@ -2154,7 +2285,7 @@ export default function InventoryPage() {
                   className="text-lg font-bold"
                   style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
                 >
-                  🔍 Universal Scanner
+                  🔍 UBA Scanner
                 </h3>
                 <button
                   onClick={closeScanModal}
@@ -2477,16 +2608,18 @@ export default function InventoryPage() {
                     Found {scanRows.length} item(s). Review and enter the quantity received for each before adding.
                   </p>
 
-                  <div className="space-y-3 mb-4 max-h-96 overflow-y-auto pr-1">
+                  <div className="space-y-4 mb-4 max-h-[32rem] overflow-y-auto pr-1">
                     {scanRows.map((row, i) => {
                       const existingMatch = findPossibleExistingMatch(row);
                       return (
                         <div
                           key={i}
-                          className="p-3 space-y-2"
+                          className="p-4 space-y-3"
                           style={{
                             background: "var(--color-bg-secondary)",
                             borderRadius: "var(--radius-button)",
+                            borderWidth: "var(--border-width)",
+                            borderColor: "var(--color-border)",
                             opacity: row.selected ? 1 : 0.5,
                           }}
                         >
@@ -2499,7 +2632,7 @@ export default function InventoryPage() {
                             <input
                               value={row.name}
                               onChange={(e) => updateScanRow(i, "name", e.target.value)}
-                              className="flex-1 px-2 py-1 text-sm font-medium"
+                              className="flex-1 px-3 py-2 text-sm font-medium"
                               style={fieldHighlightStyle("name", row)}
                               placeholder="Item Name"
                             />
@@ -2512,53 +2645,157 @@ export default function InventoryPage() {
                             </p>
                           )}
 
-                          <div className="grid grid-cols-2 gap-2">
-                            <input
-                              value={row.category}
-                              onChange={(e) => updateScanRow(i, "category", e.target.value)}
-                              className="px-2 py-1 text-xs"
-                              style={fieldHighlightStyle("category", row)}
-                              placeholder="Category"
-                            />
-                            <input
-                              value={row.subCategory}
-                              onChange={(e) => updateScanRow(i, "subCategory", e.target.value)}
-                              className="px-2 py-1 text-xs"
-                              style={fieldHighlightStyle("subCategory", row)}
-                              placeholder="Sub-category"
-                            />
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs" style={labelStyle}>Category</label>
+                              <input
+                                value={row.category}
+                                onChange={(e) => updateScanRow(i, "category", e.target.value)}
+                                className="w-full mt-1 px-3 py-2 text-sm"
+                                style={fieldHighlightStyle("category", row)}
+                                placeholder="Category"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs" style={labelStyle}>Sub-category</label>
+                              <input
+                                value={row.subCategory}
+                                onChange={(e) => updateScanRow(i, "subCategory", e.target.value)}
+                                className="w-full mt-1 px-3 py-2 text-sm"
+                                style={fieldHighlightStyle("subCategory", row)}
+                                placeholder="Sub-category"
+                              />
+                            </div>
                           </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            <input
-                              type="number"
-                              value={row.unitCost}
-                              onChange={(e) => updateScanRow(i, "unitCost", e.target.value)}
-                              className="px-2 py-1 text-xs"
-                              style={fieldHighlightStyle("unitCost", row)}
-                              placeholder="Cost ₱"
-                            />
-                            <input
-                              type="number"
-                              value={row.sellingPrice}
-                              onChange={(e) => updateScanRow(i, "sellingPrice", e.target.value)}
-                              className="px-2 py-1 text-xs"
-                              style={fieldHighlightStyle("sellingPrice", row)}
-                              placeholder="Price ₱"
-                            />
-                            <input
-                              type="number"
-                              required={row.selected}
-                              value={row.quantity}
-                              onChange={(e) => updateScanRow(i, "quantity", e.target.value)}
-                              className="px-2 py-1 text-xs font-semibold"
-                              style={{
-                                ...inputStyle,
-                                background: "var(--color-surface)",
-                                borderColor: "var(--color-primary)",
-                              }}
-                              placeholder="Qty *"
-                            />
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div>
+                              <label className="text-xs" style={labelStyle}>Unit</label>
+                              <select
+                                value={row.unit}
+                                onChange={(e) => updateScanRow(i, "unit", e.target.value)}
+                                className="w-full mt-1 px-3 py-2 text-sm"
+                                style={inputStyle}
+                              >
+                                {UNIT_OPTIONS.map((u) => (
+                                  <option key={u} value={u}>{u}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-xs" style={labelStyle}>Cost ₱</label>
+                              <input
+                                type="number"
+                                value={row.unitCost}
+                                onChange={(e) => updateScanRow(i, "unitCost", e.target.value)}
+                                className="w-full mt-1 px-3 py-2 text-sm"
+                                style={fieldHighlightStyle("unitCost", row)}
+                                placeholder="0"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs" style={labelStyle}>Price ₱</label>
+                              <input
+                                type="number"
+                                value={row.sellingPrice}
+                                onChange={(e) => updateScanRow(i, "sellingPrice", e.target.value)}
+                                className="w-full mt-1 px-3 py-2 text-sm"
+                                style={fieldHighlightStyle("sellingPrice", row)}
+                                placeholder="0"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs" style={labelStyle}>Qty ({row.unit}) *</label>
+                              <input
+                                type="number"
+                                step="any"
+                                required={row.selected}
+                                value={row.quantity}
+                                onChange={(e) => updateScanRow(i, "quantity", e.target.value)}
+                                className="w-full mt-1 px-3 py-2 text-sm font-semibold"
+                                style={{
+                                  ...inputStyle,
+                                  background: "var(--color-surface)",
+                                  borderColor: "var(--color-primary)",
+                                }}
+                                placeholder="0"
+                              />
+                            </div>
                           </div>
+
+                          {row.unit !== "Piece" && (
+                            <div>
+                              <button
+                                type="button"
+                                onClick={() => updateScanRow(i, "showPackCalc", !row.showPackCalc)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "var(--color-primary-light)" }}
+                              >
+                                📦 {row.showPackCalc ? "Hide" : "Use"} Pack Calculator
+                              </button>
+
+                              {row.showPackCalc && (
+                                <div
+                                  className="mt-2 p-3 grid grid-cols-2 gap-3"
+                                  style={{ background: "var(--color-surface)", borderRadius: "var(--radius-button)" }}
+                                >
+                                  <div>
+                                    <label className="text-xs" style={labelStyle}>Number of Packs</label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={row.packCount}
+                                      onChange={(e) => updateScanRow(i, "packCount", e.target.value)}
+                                      placeholder="e.g. 45"
+                                      className="w-full mt-1 px-3 py-2 text-sm"
+                                      style={inputStyle}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-xs" style={labelStyle}>{row.unit} per Pack</label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={row.unitPerPack}
+                                      onChange={(e) => updateScanRow(i, "unitPerPack", e.target.value)}
+                                      placeholder="e.g. 50"
+                                      className="w-full mt-1 px-3 py-2 text-sm"
+                                      style={inputStyle}
+                                    />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setScanRows((prev) => {
+                                        if (!prev) return prev;
+                                        return prev.map((r, idx) => {
+                                          if (idx !== i) return r;
+                                          const toAdd = (Number(r.packCount) || 0) * (Number(r.unitPerPack) || 0);
+                                          const current = Number(r.quantity) || 0;
+                                          return {
+                                            ...r,
+                                            quantity: String(current + toAdd),
+                                            packCount: "",
+                                            unitPerPack: "",
+                                          };
+                                        });
+                                      });
+                                    }}
+                                    disabled={!row.packCount || !row.unitPerPack}
+                                    className="col-span-2 font-semibold py-2 text-sm disabled:opacity-40"
+                                    style={{
+                                      background: "var(--gradient-accent)",
+                                      color: "#fff",
+                                      borderRadius: "var(--radius-button)",
+                                    }}
+                                  >
+                                    Add to Quantity
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {row.barcodeText && (
                             <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
                               Barcode: {row.barcodeText}

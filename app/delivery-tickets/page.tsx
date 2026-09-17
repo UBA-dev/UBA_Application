@@ -85,6 +85,32 @@ const cardStyle: React.CSSProperties = {
   borderColor: "var(--color-border)",
 };
 
+
+
+function daysSince(dateStr: string): number {
+  const created = new Date(dateStr).getTime();
+  if (isNaN(created)) return 0;
+  return Math.floor((Date.now() - created) / (1000 * 60 * 60 * 24));
+}
+
+function AgingBadge({ createdAt, warnAfterDays }: { createdAt: string; warnAfterDays: number }) {
+  const days = daysSince(createdAt);
+  const isOverdue = days >= warnAfterDays;
+  const label = days === 0 ? "Today" : days === 1 ? "1 day ago" : `${days} days ago`;
+  return (
+    <span
+      className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+      style={{
+        background: isOverdue ? "rgba(239, 68, 68, 0.15)" : "rgba(148, 163, 184, 0.15)",
+        color: isOverdue ? "#f87171" : "#94a3b8",
+      }}
+    >
+      {isOverdue ? "⏰ " : ""}{label}
+    </span>
+  );
+}
+
+
 export default function DeliveryTicketsPage() {
   const [tickets, setTickets] = useState<DeliveryTicket[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -106,6 +132,9 @@ export default function DeliveryTicketsPage() {
   const [savingFee, setSavingFee] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
   const [businessName, setBusinessName] = useState("");
+  const [draftingMessage, setDraftingMessage] = useState(false);
+  const [draftedMessage, setDraftedMessage] = useState("");
+  const [messageError, setMessageError] = useState("");
 
   useEffect(() => {
     let unsubTickets = () => {};
@@ -212,6 +241,39 @@ export default function DeliveryTicketsPage() {
   const openDetail = (ticket: DeliveryTicket) => {
     setDetail(ticket);
     setFeeInput(String(ticket.deliveryFee || 0));
+    setDraftedMessage("");
+    setMessageError("");
+  };
+
+  const handleDraftMessage = async () => {
+    if (!detail) return;
+    setDraftingMessage(true);
+    setMessageError("");
+    setDraftedMessage("");
+    try {
+      const res = await fetch("/api/generate-ticket-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketType: "delivery",
+          customerName: detail.customerName,
+          statusLabel: `Delivery status: ${detail.deliveryStatus}`,
+          details: detail.deliveryAddress,
+          totalAmount: totalAmountOf(detail),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessageError(data.error || "Couldn't draft a message right now.");
+        return;
+      }
+      setDraftedMessage(data.message);
+    } catch (err) {
+      console.error(err);
+      setMessageError("Couldn't draft a message right now.");
+    } finally {
+      setDraftingMessage(false);
+    }
   };
 
   const itemsCostOf = (ticket: DeliveryTicket) =>
@@ -430,10 +492,13 @@ export default function DeliveryTicketsPage() {
                   </div>
                   <p className="text-sm mb-1" style={{ color: "var(--color-text-secondary)" }}>{ticket.deliveryAddress}</p>
                   <p className="text-xs mb-3 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>{ticket.orderNotes}</p>
-                  <div className="flex justify-between items-center text-xs">
+                  <div className="flex justify-between items-center text-xs mb-2">
                     <span style={{ color: "var(--color-text-secondary)" }}>{ticket.itemsOrdered?.length || 0} item(s)</span>
                     <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>₱{totalAmountOf(ticket).toLocaleString()}</span>
                   </div>
+                  {!isLocked(ticket.deliveryStatus) && (
+                    <AgingBadge createdAt={ticket.createdAt} warnAfterDays={2} />
+                  )}
                 </button>
               );
             })}
@@ -577,6 +642,45 @@ export default function DeliveryTicketsPage() {
                   </div>
                 )}
               </div>
+
+
+                              {/* AI Customer Message Drafter */}
+              <div className="mb-6 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-medium" style={labelStyle}>🤖 Message to Customer</p>
+                  <button
+                    onClick={handleDraftMessage}
+                    disabled={draftingMessage}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+                    style={{ background: "var(--gradient-accent)", color: "#fff" }}
+                  >
+                    {draftingMessage ? "Drafting..." : draftedMessage ? "Redraft" : "Draft Message"}
+                  </button>
+                </div>
+                {messageError && (
+                  <p className="text-xs" style={{ color: "#f87171" }}>{messageError}</p>
+                )}
+                {draftedMessage && (
+                  <div className="mt-2">
+                    <textarea
+                      value={draftedMessage}
+                      onChange={(e) => setDraftedMessage(e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 text-sm"
+                      style={inputStyle}
+                    />
+                    <button
+                      onClick={() => navigator.clipboard.writeText(draftedMessage)}
+                      className="text-xs font-medium mt-2 hover:underline"
+                      style={{ color: "var(--color-primary-light)" }}
+                    >
+                      📋 Copy to Clipboard
+                    </button>
+                  </div>
+                )}
+              </div>
+
+
 
               <div className="mb-6">
                 <label className="text-sm font-medium" style={labelStyle}>Delivery Fee (₱)</label>

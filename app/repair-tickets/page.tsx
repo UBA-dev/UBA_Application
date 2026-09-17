@@ -35,6 +35,21 @@ type PartUsed = {
 
 type Status = "Pending" | "In Progress" | "Ready for Pickup" | "Paid" | "Cancelled";
 
+type DiagnosisResult = {
+  possibleCauses: string[];
+  suggestedPartsInStock: string[];
+  suggestedPartsToOrder: string[];
+  complexity: "Simple" | "Moderate" | "Complex";
+  estimatedHours: number;
+  diagnosticTip: string;
+};
+
+const COMPLEXITY_COLORS: Record<string, { bg: string; text: string }> = {
+  Simple: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80" },
+  Moderate: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
+  Complex: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
+};
+
 type RepairTicket = {
   id: string;
   customerName: string;
@@ -82,6 +97,31 @@ const cardStyle: React.CSSProperties = {
   borderColor: "var(--color-border)",
 };
 
+function daysSince(dateStr: string): number {
+  const created = new Date(dateStr).getTime();
+  if (isNaN(created)) return 0;
+  return Math.floor((Date.now() - created) / (1000 * 60 * 60 * 24));
+}
+
+function AgingBadge({ createdAt, warnAfterDays }: { createdAt: string; warnAfterDays: number }) {
+  const days = daysSince(createdAt);
+  const isOverdue = days >= warnAfterDays;
+  const label = days === 0 ? "Today" : days === 1 ? "1 day ago" : `${days} days ago`;
+  return (
+    <span
+      className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+      style={{
+        background: isOverdue ? "rgba(239, 68, 68, 0.15)" : "rgba(148, 163, 184, 0.15)",
+        color: isOverdue ? "#f87171" : "#94a3b8",
+      }}
+    >
+      {isOverdue ? "⏰ " : ""}{label}
+    </span>
+  );
+}
+
+
+
 export default function RepairTicketsPage() {
   const [tickets, setTickets] = useState<RepairTicket[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -97,12 +137,18 @@ export default function RepairTicketsPage() {
   const [deviceInfo, setDeviceInfo] = useState("");
   const [issueDescription, setIssueDescription] = useState("");
   const [savingTicket, setSavingTicket] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnosis, setDiagnosis] = useState<DiagnosisResult | null>(null);
+  const [diagnosisError, setDiagnosisError] = useState("");
 
   const [detail, setDetail] = useState<RepairTicket | null>(null);
   const [laborInput, setLaborInput] = useState("");
   const [savingLabor, setSavingLabor] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
   const [businessName, setBusinessName] = useState('');
+  const [draftingMessage, setDraftingMessage] = useState(false);
+  const [draftedMessage, setDraftedMessage] = useState("");
+  const [messageError, setMessageError] = useState("");
 
   useEffect(() => {
     let unsubTickets = () => {};
@@ -170,7 +216,48 @@ export default function RepairTicketsPage() {
     setCustomerPhone("");
     setDeviceInfo("");
     setIssueDescription("");
+    setDiagnosis(null);
+    setDiagnosisError("");
   };
+
+  const handleGetDiagnosis = async () => {
+    if (!deviceInfo.trim() || !issueDescription.trim()) {
+      setDiagnosisError("Please fill in the device and issue description first.");
+      return;
+    }
+    setDiagnosing(true);
+    setDiagnosisError("");
+    setDiagnosis(null);
+    try {
+      const res = await fetch("/api/diagnose-repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceInfo,
+          issueDescription,
+          inventoryItemNames: items.map((i) => i.name),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDiagnosisError(data.error || "Couldn't run diagnosis right now.");
+        return;
+      }
+      setDiagnosis(data);
+    } catch (err) {
+      console.error(err);
+      setDiagnosisError("Couldn't run diagnosis right now.");
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+
+  
+
+
+
+
 
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -191,6 +278,9 @@ export default function RepairTicketsPage() {
         salesRecorded: false,
       });
       resetNewForm();
+
+
+      
       setShowNewForm(false);
     } catch (err) {
       console.error(err);
@@ -222,6 +312,8 @@ export default function RepairTicketsPage() {
   const openDetail = (ticket: RepairTicket) => {
     setDetail(ticket);
     setLaborInput(String(ticket.laborPayment || 0));
+    setDraftedMessage("");
+    setMessageError("");
   };
 
   const partsCostOf = (ticket: RepairTicket) =>
@@ -366,6 +458,40 @@ export default function RepairTicketsPage() {
     }
   };
 
+
+  const handleDraftMessage = async () => {
+    if (!detail) return;
+    setDraftingMessage(true);
+    setMessageError("");
+    setDraftedMessage("");
+    try {
+      const res = await fetch("/api/generate-ticket-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketType: "repair",
+          customerName: detail.customerName,
+          statusLabel: `Repair status: ${detail.status}`,
+          details: detail.deviceInfo,
+          totalAmount: totalCostOf(detail),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessageError(data.error || "Couldn't draft a message right now.");
+        return;
+      }
+      setDraftedMessage(data.message);
+    } catch (err) {
+      console.error(err);
+      setMessageError("Couldn't draft a message right now.");
+    } finally {
+      setDraftingMessage(false);
+    }
+  };
+
+
+
   const handleDeleteTicket = async (ticket: RepairTicket) => {
     if (!uid) return;
     const confirmed = window.confirm(
@@ -495,7 +621,7 @@ export default function RepairTicketsPage() {
                   <p className="text-xs mb-3 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>
                     {ticket.issueDescription}
                   </p>
-                  <div className="flex justify-between items-center text-xs">
+                  <div className="flex justify-between items-center text-xs mb-2">
                     <span style={{ color: "var(--color-text-secondary)" }}>
                       {ticket.partsUsed?.length || 0} part(s)
                     </span>
@@ -503,6 +629,9 @@ export default function RepairTicketsPage() {
                       ₱{totalCostOf(ticket).toLocaleString()}
                     </span>
                   </div>
+                  {!isLocked(ticket.status) && (
+                    <AgingBadge createdAt={ticket.createdAt} warnAfterDays={5} />
+                  )}
                 </button>
               );
             })}
@@ -578,6 +707,79 @@ export default function RepairTicketsPage() {
                   placeholder="e.g. Won't turn on, no display"
                 />
               </div>
+
+              <button
+                type="button"
+                onClick={handleGetDiagnosis}
+                disabled={diagnosing}
+                className="w-full font-semibold py-2 text-sm disabled:opacity-50 hover:opacity-90"
+                style={{
+                  background: "var(--color-surface)",
+                  color: "var(--color-primary-light)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-primary)",
+                }}
+              >
+                {diagnosing ? "Analyzing..." : "🤖 Get AI Diagnosis"}
+              </button>
+
+              {diagnosisError && (
+                <p className="text-sm p-2 rounded-lg" style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}>
+                  {diagnosisError}
+                </p>
+              )}
+
+              {diagnosis && (
+                <div className="p-3 space-y-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                      Diagnosis Summary
+                    </p>
+                    <span
+                      className="text-xs font-semibold px-2 py-1 rounded-full"
+                      style={{
+                        background: COMPLEXITY_COLORS[diagnosis.complexity]?.bg,
+                        color: COMPLEXITY_COLORS[diagnosis.complexity]?.text,
+                      }}
+                    >
+                      {diagnosis.complexity} · ~{diagnosis.estimatedHours}h
+                    </span>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-medium mb-1" style={labelStyle}>Possible Causes</p>
+                    <ul className="text-xs space-y-1" style={{ color: "var(--color-text-primary)" }}>
+                      {diagnosis.possibleCauses.map((c, i) => (
+                        <li key={i}>• {c}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {diagnosis.suggestedPartsInStock.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium mb-1" style={{ color: "#4ade80" }}>✓ Available in Inventory</p>
+                      <p className="text-xs" style={{ color: "var(--color-text-primary)" }}>
+                        {diagnosis.suggestedPartsInStock.join(", ")}
+                      </p>
+                    </div>
+                  )}
+
+                  {diagnosis.suggestedPartsToOrder.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium mb-1" style={{ color: "#facc15" }}>⚠️ May Need to Order</p>
+                      <p className="text-xs" style={{ color: "var(--color-text-primary)" }}>
+                        {diagnosis.suggestedPartsToOrder.join(", ")}
+                      </p>
+                    </div>
+                  )}
+
+                  <div>
+                    <p className="text-xs font-medium mb-1" style={labelStyle}>💡 Tip</p>
+                    <p className="text-xs" style={{ color: "var(--color-text-primary)" }}>{diagnosis.diagnosticTip}</p>
+                  </div>
+                </div>
+              )}
 
               <button
                 type="submit"
@@ -737,6 +939,44 @@ export default function RepairTicketsPage() {
                   </div>
                 )}
               </div>
+
+                              {/* AI Customer Message Drafter */}
+              <div className="mb-6 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-medium" style={labelStyle}>🤖 Message to Customer</p>
+                  <button
+                    onClick={handleDraftMessage}
+                    disabled={draftingMessage}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+                    style={{ background: "var(--gradient-accent)", color: "#fff" }}
+                  >
+                    {draftingMessage ? "Drafting..." : draftedMessage ? "Redraft" : "Draft Message"}
+                  </button>
+                </div>
+                {messageError && (
+                  <p className="text-xs" style={{ color: "#f87171" }}>{messageError}</p>
+                )}
+                {draftedMessage && (
+                  <div className="mt-2">
+                    <textarea
+                      value={draftedMessage}
+                      onChange={(e) => setDraftedMessage(e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 text-sm"
+                      style={inputStyle}
+                    />
+                    <button
+                      onClick={() => navigator.clipboard.writeText(draftedMessage)}
+                      className="text-xs font-medium mt-2 hover:underline"
+                      style={{ color: "var(--color-primary-light)" }}
+                    >
+                      📋 Copy to Clipboard
+                    </button>
+                  </div>
+                )}
+              </div>
+
+
 
               {/* Labor payment */}
               <div className="mb-6">

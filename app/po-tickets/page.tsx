@@ -137,12 +137,40 @@ const cardStyle: React.CSSProperties = {
   borderColor: "var(--color-border)",
 };
 
+
+function daysSince(dateStr: string): number {
+  const created = new Date(dateStr).getTime();
+  if (isNaN(created)) return 0;
+  return Math.floor((Date.now() - created) / (1000 * 60 * 60 * 24));
+}
+
+function AgingBadge({ createdAt, warnAfterDays }: { createdAt: string; warnAfterDays: number }) {
+  const days = daysSince(createdAt);
+  const isOverdue = days >= warnAfterDays;
+  const label = days === 0 ? "Today" : days === 1 ? "1 day ago" : `${days} days ago`;
+  return (
+    <span
+      className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+      style={{
+        background: isOverdue ? "rgba(239, 68, 68, 0.15)" : "rgba(148, 163, 184, 0.15)",
+        color: isOverdue ? "#f87171" : "#94a3b8",
+      }}
+    >
+      {isOverdue ? "⏰ " : ""}{label}
+    </span>
+  );
+}
+
+
+
+
 export default function POTicketsPage() {
   const [tickets, setTickets] = useState<PurchaseOrder[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [uid, setUid] = useState<string | null>(null);
   const router = useRouter();
 
+  const [statusFilter, setStatusFilter] = useState<"All" | FulfillmentStatus>("All");
   const [searchText, setSearchText] = useState("");
 
   const [showNewForm, setShowNewForm] = useState(false);
@@ -165,6 +193,9 @@ export default function POTicketsPage() {
   const [savingDetails, setSavingDetails] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
   const [businessName, setBusinessName] = useState("");
+  const [draftingMessage, setDraftingMessage] = useState(false);
+  const [draftedMessage, setDraftedMessage] = useState("");
+  const [messageError, setMessageError] = useState("");
 
   useEffect(() => {
     let unsubTickets = () => {};
@@ -219,14 +250,17 @@ export default function POTicketsPage() {
   }, [items, itemSearchText]);
   const filteredTickets = useMemo(() => {
     const searchLower = searchText.toLowerCase().trim();
-    if (!searchLower) return tickets;
-    return tickets.filter(
-      (t) =>
+    return tickets.filter((t) => {
+      const matchesStatus = statusFilter === "All" || t.fulfillmentStatus === statusFilter;
+      if (!matchesStatus) return false;
+      if (!searchLower) return true;
+      return (
         t.buyerName.toLowerCase().includes(searchLower) ||
         t.poNumber.toLowerCase().includes(searchLower) ||
         t.prNumber.toLowerCase().includes(searchLower)
-    );
-  }, [tickets, searchText]);
+      );
+    });
+  }, [tickets, statusFilter, searchText]);
 
   const addNewItem = (item: InventoryItem) => {
     if (item.stock <= 0) return;
@@ -311,6 +345,39 @@ export default function POTicketsPage() {
     setEditPoDate(ticket.poDate ? ticket.poDate.slice(0, 10) : "");
     setEditDueDate(ticket.dueDate ? ticket.dueDate.slice(0, 10) : "");
     setEditPrNumber(ticket.prNumber || "");
+    setDraftedMessage("");
+    setMessageError("");
+  };
+
+  const handleDraftMessage = async () => {
+    if (!detail) return;
+    setDraftingMessage(true);
+    setMessageError("");
+    setDraftedMessage("");
+    try {
+      const res = await fetch("/api/generate-ticket-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketType: "purchase order",
+          customerName: detail.buyerName,
+          statusLabel: `Payment: ${detail.paymentStatus}, Fulfillment: ${detail.fulfillmentStatus}`,
+          details: `PO No. ${detail.poNumber}`,
+          totalAmount: itemsCostOf(detail),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessageError(data.error || "Couldn't draft a message right now.");
+        return;
+      }
+      setDraftedMessage(data.message);
+    } catch (err) {
+      console.error(err);
+      setMessageError("Couldn't draft a message right now.");
+    } finally {
+      setDraftingMessage(false);
+    }
   };
 
   const handleSaveDetails = async () => {
@@ -474,7 +541,7 @@ export default function POTicketsPage() {
           </button>
         </div>
 
-        <div className="mb-6">
+        <div className="mb-4">
           <input
             type="text"
             value={searchText}
@@ -483,6 +550,28 @@ export default function POTicketsPage() {
             className="w-full px-4 py-2"
             style={inputStyle}
           />
+        </div>
+
+        <div className="flex flex-wrap gap-2 mb-6">
+          {(["All", "Pending", "Fulfilled", "Cancelled"] as const).map((s) => {
+            const isActive = statusFilter === s;
+            return (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s as "All" | FulfillmentStatus)}
+                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                style={{
+                  background: isActive ? "var(--color-primary)" : "var(--color-surface)",
+                  color: isActive ? "#fff" : "var(--color-text-secondary)",
+                  boxShadow: isActive ? "var(--glow-shadow)" : "none",
+                  borderWidth: isActive ? 0 : "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                {s}
+              </button>
+            );
+          })}
         </div>
 
         {filteredTickets.length === 0 ? (
@@ -510,10 +599,13 @@ export default function POTicketsPage() {
                       </span>
                     </div>
                   </div>
-                  <div className="flex justify-between items-center text-xs mt-2">
+                  <div className="flex justify-between items-center text-xs mt-2 mb-2">
                     <span style={{ color: "var(--color-text-secondary)" }}>{ticket.items?.length || 0} item(s)</span>
                     <span className="font-semibold" style={{ color: "var(--color-primary-light)" }}>₱{itemsCostOf(ticket).toLocaleString()}</span>
                   </div>
+                  {!isLocked(ticket.fulfillmentStatus) && (
+                    <AgingBadge createdAt={ticket.createdAt} warnAfterDays={7} />
+                  )}
                 </button>
               );
             })}
@@ -724,6 +816,44 @@ export default function POTicketsPage() {
                   )}
                 </div>
               </div>
+
+
+                            {/* AI Customer Message Drafter */}
+              <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-medium" style={labelStyle}>🤖 Message to Buyer</p>
+                  <button
+                    onClick={handleDraftMessage}
+                    disabled={draftingMessage}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+                    style={{ background: "var(--gradient-accent)", color: "#fff" }}
+                  >
+                    {draftingMessage ? "Drafting..." : draftedMessage ? "Redraft" : "Draft Message"}
+                  </button>
+                </div>
+                {messageError && (
+                  <p className="text-xs" style={{ color: "#f87171" }}>{messageError}</p>
+                )}
+                {draftedMessage && (
+                  <div className="mt-2">
+                    <textarea
+                      value={draftedMessage}
+                      onChange={(e) => setDraftedMessage(e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 text-sm"
+                      style={inputStyle}
+                    />
+                    <button
+                      onClick={() => navigator.clipboard.writeText(draftedMessage)}
+                      className="text-xs font-medium mt-2 hover:underline"
+                      style={{ color: "var(--color-primary-light)" }}
+                    >
+                      📋 Copy to Clipboard
+                    </button>
+                  </div>
+                )}
+              </div>
+
 
               <div className="mb-6">
                 <p className="text-sm font-medium mb-2" style={labelStyle}>Item No. / Unit / Description / Qty</p>
