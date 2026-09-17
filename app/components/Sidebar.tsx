@@ -7,18 +7,17 @@ import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 
-const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean }[] = [
+const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "🏠" },
   { href: "/inventory", label: "Inventory", icon: "📦" },
-  { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️" },
-  { href: "/delivery-tickets", label: "Delivery Tickets", icon: "🚚" },
-  { href: "/po-tickets", label: "P.O. / Purchase Order", icon: "📋" },
+  { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️", featureKey: "repairTickets" },
+  { href: "/delivery-tickets", label: "Delivery Tickets", icon: "🚚", featureKey: "deliveryTickets" },
+  { href: "/po-tickets", label: "P.O. / Purchase Order", icon: "📋", featureKey: "poTickets" },
   { href: "/sales", label: "Sales & Expenses", icon: "💰" },
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
   { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
 ];
-
 interface LowStockItem {
   id: string;
   name: string;
@@ -80,6 +79,8 @@ export default function Sidebar() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [planId, setPlanId] = useState<string | null>(null);
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
+  const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
+  const [featuresLoaded, setFeaturesLoaded] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -97,6 +98,8 @@ export default function Sidebar() {
         setLogoUrl(null);
         return;
       }
+      console.log("DEBUG — user.uid:", user.uid);
+      console.log("DEBUG — ADMIN_UID from env:", ADMIN_UID);
       setIsAdmin(user.uid === ADMIN_UID);
       try {
         const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
@@ -107,9 +110,12 @@ export default function Sidebar() {
           setLogoUrl(data.logoUrl || null);
           setPlanId(data.planId || null);
           setSubscriptionStatus(data.subscriptionStatus || "trial");
+          setEnabledFeatures(data.enabledFeatures || {});
         }
       } catch (err) {
         console.error("Error fetching tenant data:", err);
+      } finally {
+        setFeaturesLoaded(true);
       }
     });
 
@@ -224,7 +230,14 @@ export default function Sidebar() {
     }
   };
 
-  const navItems = baseNavItems.filter((item) => !item.adminOnly || isAdmin);
+  const navItems = baseNavItems.filter((item) => {
+    if (item.adminOnly && !isAdmin) return false;
+    // Hide feature-gated items until we've actually confirmed their state —
+    // prevents a flash where all items briefly show before Firestore replies.
+    if (item.featureKey && !featuresLoaded) return false;
+    if (item.featureKey && enabledFeatures[item.featureKey] === false) return false;
+    return true;
+  });
 
   const planLabel: { text: string; bg: string; color: string } = (() => {
     if (subscriptionStatus === "active" && planId) {

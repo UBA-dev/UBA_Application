@@ -17,6 +17,7 @@ import {
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
+import PhoneNumberInput from "../components/PhoneNumberInput";
 
 type InventoryItem = {
   id: string;
@@ -151,7 +152,13 @@ export default function DeliveryTicketsPage() {
       setUid(user.uid);
 
       getDoc(doc(db, "tenants", user.uid)).then((snap) => {
-        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          if (data.enabledFeatures?.deliveryTickets === false) {
+            router.push("/dashboard");
+          }
+        }
       });
 
       const ticketQuery = query(
@@ -520,7 +527,9 @@ export default function DeliveryTicketsPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>Contact Number</label>
-                <input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter contact number" />
+                <div className="mt-1">
+                  <PhoneNumberInput value={customerPhone} onChange={setCustomerPhone} inputStyle={inputStyle} />
+                </div>
               </div>
 
               <div>

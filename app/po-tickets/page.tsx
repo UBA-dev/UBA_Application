@@ -17,6 +17,8 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
+import PhoneNumberInput from "../components/PhoneNumberInput";
 
 type InventoryItem = {
   id: string;
@@ -202,6 +204,7 @@ export default function POTicketsPage() {
   const [editPrNumber, setEditPrNumber] = useState("");
   const [savingDetails, setSavingDetails] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
+  const [businessName, setBusinessName] = useState("");
   const [computingReorder, setComputingReorder] = useState(false);
   const [reorderSuggestions, setReorderSuggestions] = useState<ReorderSuggestion[] | null>(null);
   const [reorderSummary, setReorderSummary] = useState("");
@@ -223,6 +226,16 @@ export default function POTicketsPage() {
         return;
       }
       setUid(user.uid);
+
+      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          if (data.enabledFeatures?.poTickets === false) {
+            router.push("/dashboard");
+          }
+        }
+      });
 
       const ticketQuery = query(
         collection(db, "tenants", user.uid, "poTickets"),
@@ -786,19 +799,39 @@ export default function POTicketsPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>Contact No.</label>
-                <input required value={buyerContact} onChange={(e) => setBuyerContact(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter contact number" />
+                <div className="mt-1">
+                  <PhoneNumberInput value={buyerContact} onChange={setBuyerContact} inputStyle={inputStyle} required />
+                </div>
               </div>
-
               <div>
                 <label className="text-sm" style={labelStyle}>PR No.</label>
-                <input value={prNumber} onChange={(e) => setPrNumber(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter PR number (optional)" />
+                <input
+                  value={prNumber}
+                  onChange={(e) => setPrNumber(e.target.value.replace(/[^0-9-]/g, ""))}
+                  inputMode="numeric"
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="Numbers only, e.g. 2026-045"
+                />
               </div>
+
+
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-sm" style={labelStyle}>PO No.</label>
-                  <input required value={poNumber} onChange={(e) => setPoNumber(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="e.g. 559-2026" />
+                  <input
+                    required
+                    value={poNumber}
+                    onChange={(e) => setPoNumber(e.target.value.replace(/[^0-9-]/g, ""))}
+                    inputMode="numeric"
+                    className="w-full mt-1 px-3 py-2"
+                    style={inputStyle}
+                    placeholder="Numbers only, e.g. 559-2026"
+                  />
                 </div>
+
+
                 <div>
                   <label className="text-sm" style={labelStyle}>PO Date</label>
                   <input required type="date" value={poDate} onChange={(e) => setPoDate(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} />
@@ -913,11 +946,23 @@ export default function POTicketsPage() {
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <div>
                     <label className="text-[11px]" style={labelStyle}>PO No.</label>
-                    <input value={editPoNumber} onChange={(e) => setEditPoNumber(e.target.value)} className="w-full mt-1 px-2 py-1.5 text-xs" style={inputStyle} />
+                    <input
+                      value={editPoNumber}
+                      onChange={(e) => setEditPoNumber(e.target.value.replace(/[^0-9-]/g, ""))}
+                      inputMode="numeric"
+                      className="w-full mt-1 px-2 py-1.5 text-xs"
+                      style={inputStyle}
+                    />
                   </div>
                   <div>
                     <label className="text-[11px]" style={labelStyle}>PR No.</label>
-                    <input value={editPrNumber} onChange={(e) => setEditPrNumber(e.target.value)} className="w-full mt-1 px-2 py-1.5 text-xs" style={inputStyle} />
+                    <input
+                      value={editPrNumber}
+                      onChange={(e) => setEditPrNumber(e.target.value.replace(/[^0-9-]/g, ""))}
+                      inputMode="numeric"
+                      className="w-full mt-1 px-2 py-1.5 text-xs"
+                      style={inputStyle}
+                    />
                   </div>
                   <div>
                     <label className="text-[11px]" style={labelStyle}>PO Date</label>

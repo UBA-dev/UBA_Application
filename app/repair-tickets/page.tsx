@@ -17,6 +17,7 @@ import {
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
+import PhoneNumberInput from "../components/PhoneNumberInput";
 
 type InventoryItem = {
   id: string;
@@ -69,6 +70,7 @@ type RepairTicket = {
   createdAt: string;
   updatedAt: string;
   salesRecorded?: boolean;
+  diagnosis?: DiagnosisResult | null;
 };
 
 const STATUS_FLOW: Status[] = ["Pending", "In Progress", "Ready for Pickup", "Paid"];
@@ -145,6 +147,8 @@ export default function RepairTicketsPage() {
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosis, setDiagnosis] = useState<DiagnosisResult | null>(null);
   const [diagnosisError, setDiagnosisError] = useState("");
+  const [detailDiagnosing, setDetailDiagnosing] = useState(false);
+  const [detailDiagnosisError, setDetailDiagnosisError] = useState("");
 
   const [detail, setDetail] = useState<RepairTicket | null>(null);
   const [laborInput, setLaborInput] = useState("");
@@ -208,7 +212,13 @@ export default function RepairTicketsPage() {
       setUid(user.uid);
 
       getDoc(doc(db, "tenants", user.uid)).then((snap) => {
-        if (snap.exists()) setBusinessName(snap.data().businessName || "");
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          if (data.enabledFeatures?.repairTickets === false) {
+            router.push("/dashboard");
+          }
+        }
       });
 
       const ticketQuery = query(
@@ -296,6 +306,42 @@ export default function RepairTicketsPage() {
     }
   };
 
+
+
+  const handleRediagnoseTicket = async () => {
+    if (!uid || !detail) return;
+    setDetailDiagnosing(true);
+    setDetailDiagnosisError("");
+    try {
+      const res = await fetch("/api/diagnose-repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceInfo: detail.deviceInfo,
+          issueDescription: detail.issueDescription,
+          inventoryItemNames: items.map((i) => i.name),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDetailDiagnosisError(data.error || "Couldn't run diagnosis right now.");
+        return;
+      }
+      await updateDoc(doc(db, "tenants", uid, "repairTickets", detail.id), {
+        diagnosis: data,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error(err);
+      setDetailDiagnosisError("Couldn't run diagnosis right now.");
+    } finally {
+      setDetailDiagnosing(false);
+    }
+  };
+
+
+
+
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uid) return;
@@ -313,6 +359,7 @@ export default function RepairTicketsPage() {
         createdAt: now,
         updatedAt: now,
         salesRecorded: false,
+        diagnosis: diagnosis || null,
       });
       resetNewForm();
       setShowNewForm(false);
@@ -760,13 +807,9 @@ export default function RepairTicketsPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>Contact Number</label>
-                <input
-                  value={customerPhone}
-                  onChange={(e) => setCustomerPhone(e.target.value)}
-                  className="w-full mt-1 px-3 py-2"
-                  style={inputStyle}
-                  placeholder="e.g. 09171234567"
-                />
+                <div className="mt-1">
+                  <PhoneNumberInput value={customerPhone} onChange={setCustomerPhone} inputStyle={inputStyle} />
+                </div>
               </div>
 
               <div>
@@ -919,6 +962,67 @@ export default function RepairTicketsPage() {
                 <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
                   {detail.issueDescription}
                 </p>
+              </div>
+
+              {/* Saved AI Diagnosis — persisted on the ticket, no need to re-run every time */}
+              <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                    🤖 AI Diagnosis
+                  </p>
+                  <button
+                    onClick={handleRediagnoseTicket}
+                    disabled={detailDiagnosing}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+                    style={{ background: "var(--gradient-accent)", color: "#fff" }}
+                  >
+                    {detailDiagnosing ? "Analyzing..." : detail.diagnosis ? "Re-run" : "Run Diagnosis"}
+                  </button>
+                </div>
+                {detailDiagnosisError && (
+                  <p className="text-xs" style={{ color: "#f87171" }}>{detailDiagnosisError}</p>
+                )}
+                {detail.diagnosis ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-medium" style={labelStyle}>Complexity</p>
+                      <span
+                        className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                        style={{
+                          background: COMPLEXITY_COLORS[detail.diagnosis.complexity]?.bg,
+                          color: COMPLEXITY_COLORS[detail.diagnosis.complexity]?.text,
+                        }}
+                      >
+                        {detail.diagnosis.complexity} · ~{detail.diagnosis.estimatedHours}h
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium mb-1" style={labelStyle}>Possible Causes</p>
+                      <ul className="text-xs space-y-1" style={{ color: "var(--color-text-primary)" }}>
+                        {detail.diagnosis.possibleCauses.map((c, i) => (
+                          <li key={i}>• {c}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    {detail.diagnosis.suggestedPartsInStock.length > 0 && (
+                      <p className="text-xs" style={{ color: "#4ade80" }}>
+                        ✓ In stock: {detail.diagnosis.suggestedPartsInStock.join(", ")}
+                      </p>
+                    )}
+                    {detail.diagnosis.suggestedPartsToOrder.length > 0 && (
+                      <p className="text-xs" style={{ color: "#facc15" }}>
+                        ⚠️ May need to order: {detail.diagnosis.suggestedPartsToOrder.join(", ")}
+                      </p>
+                    )}
+                    <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                      💡 {detail.diagnosis.diagnosticTip}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                    No diagnosis run yet for this ticket.
+                  </p>
+                )}
               </div>
 
               {/* Status flow */}
