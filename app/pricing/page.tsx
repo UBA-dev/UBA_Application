@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "@/app/lib/firebase";
 import TestPayButton from "@/app/components/TestPayButton";
@@ -61,6 +62,7 @@ const PLANS: Plan[] = [
 ];
 
 export default function PricingPage() {
+  const router = useRouter();
   const [step, setStep] = useState<"select" | "checkout">("select");
   const [selectedPlanId, setSelectedPlanId] = useState<string>("pro");
   const [currentPlanId, setCurrentPlanId] = useState<string | null>(null);
@@ -103,6 +105,16 @@ export default function PricingPage() {
       style={{ background: "var(--color-bg-primary)" }}
     >
       <div className="w-full max-w-4xl">
+        {step === "select" && (
+          <button
+            onClick={() => router.back()}
+            className="text-xs font-medium mb-6 hover:opacity-80 inline-flex items-center gap-1"
+            style={{ color: "var(--color-text-secondary)" }}
+          >
+            ← Back
+          </button>
+        )}
+
         <div className="text-center mb-8">
           <h1
             className="text-2xl font-bold mb-2"
