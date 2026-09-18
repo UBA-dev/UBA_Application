@@ -6,6 +6,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "./lib/firebase";
 import Link from "next/link";
 import { Fraunces } from "next/font/google";
+import InstallButton from "./components/InstallButton";
 
 const fraunces = Fraunces({
   subsets: ["latin"],
@@ -122,9 +123,11 @@ export default function RootPage() {
             <a href="#pricing" className="hover:opacity-80 transition">Pricing</a>
           </nav>
           <div className="flex items-center gap-3">
+            <InstallButton /> 
             <Link href="/login" className="text-sm hidden sm:inline" style={{ color: "var(--lp-text-secondary)" }}>
               Log in
             </Link>
+            
             <Link
               href="/signup"
               className="text-sm font-semibold px-4 py-2 rounded-lg text-white transition hover:opacity-90"
