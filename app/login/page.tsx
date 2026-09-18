@@ -2,18 +2,47 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signInWithCustomToken } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Link from "next/link";
 
 export default function LoginPage() {
+  const [mode, setMode] = useState<"owner" | "staff">("owner");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+
+  const [shopCode, setShopCode] = useState("");
+  const [staffUsername, setStaffUsername] = useState("");
+  const [staffPin, setStaffPin] = useState("");
+
+  const handleStaffLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/staff-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shopCode, username: staffUsername, pin: staffPin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Login failed. Please try again.");
+        return;
+      }
+      await signInWithCustomToken(auth, data.token);
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
     const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +134,31 @@ export default function LoginPage() {
             Sign in to resume command of your business.
           </p>
 
+          {/* Owner / Staff mode toggle */}
+          <div
+            className="flex mb-6 p-1 rounded-lg"
+            style={{ background: "rgba(59, 130, 246, 0.08)" }}
+          >
+            {(["owner", "staff"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  setMode(m);
+                  setError("");
+                }}
+                className="flex-1 py-2 text-sm font-semibold rounded-md transition"
+                style={{
+                  background: mode === m ? "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)" : "transparent",
+                  color: mode === m ? "#fff" : "#8b9bc4",
+                }}
+              >
+                {m === "owner" ? "Owner" : "Staff"}
+              </button>
+            ))}
+          </div>
+
+          {mode === "owner" ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
@@ -182,6 +236,81 @@ export default function LoginPage() {
                 : "> system ready // awaiting input"}
             </p>
           </form>
+          ) : (
+          <form onSubmit={handleStaffLogin} className="space-y-4">
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                Shop Code
+              </label>
+              <input
+                required
+                value={shopCode}
+                onChange={(e) => setShopCode(e.target.value.toUpperCase())}
+                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input uppercase"
+                style={{ color: "#e8edf9" }}
+                placeholder="e.g. A7B2K9"
+                maxLength={10}
+              />
+            </div>
+
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                Username
+              </label>
+              <input
+                required
+                value={staffUsername}
+                onChange={(e) => setStaffUsername(e.target.value)}
+                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
+                style={{ color: "#e8edf9" }}
+                placeholder="Your username"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                PIN
+              </label>
+              <input
+                required
+                type="password"
+                inputMode="numeric"
+                value={staffPin}
+                onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
+                style={{ color: "#e8edf9" }}
+                placeholder="4-6 digit PIN"
+              />
+            </div>
+
+            {error && (
+              <p
+                className="text-xs px-3 py-2 rounded-lg"
+                style={{
+                  color: "#f87171",
+                  background: "rgba(239, 68, 68, 0.1)",
+                  border: "1px solid rgba(239, 68, 68, 0.25)",
+                }}
+              >
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
+              style={{
+                background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
+                color: "#fff",
+                borderRadius: "0.75rem",
+                boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
+              }}
+            >
+              {loading ? "Verifying..." : "Clock In"}
+            </button>
+          </form>
+          )}
 
           <p className="text-sm text-center mt-6" style={{ color: "#8b9bc4" }}>
             Don't have an account?{" "}

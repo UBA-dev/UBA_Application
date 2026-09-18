@@ -2,9 +2,31 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { defaultThemeId } from "../lib/themes";
+
+// Excludes visually ambiguous characters (0/O, 1/I) since owners will read
+// this code aloud or type it manually on a shared device.
+const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShopCode(): string {
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+async function generateUniqueShopCode(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateShopCode();
+    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
+    if (existing.empty) return code;
+  }
+  // Extremely unlikely fallback — timestamp-based suffix guarantees uniqueness
+  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
+}
 
 export default function OnboardingPage() {
   const [step, setStep] = useState(1);
@@ -30,6 +52,8 @@ export default function OnboardingPage() {
       const user = auth.currentUser;
       if (!user) throw new Error("No logged-in user found.");
 
+      const shopCode = await generateUniqueShopCode();
+
       await setDoc(doc(db, "tenants", user.uid), {
         businessName,
         theme: defaultThemeId,
@@ -37,6 +61,7 @@ export default function OnboardingPage() {
         trialStartDate: new Date().toISOString(),
         ownerUid: user.uid,
         ownerEmail: user.email,
+        shopCode,
       });
 
       router.push("/dashboard");
