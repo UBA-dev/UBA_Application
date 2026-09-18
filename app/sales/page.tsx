@@ -8,6 +8,11 @@ import {
   onSnapshot,
   query,
   orderBy,
+  doc,
+  updateDoc,
+  deleteDoc,
+  increment,
+  getDocs,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import Sidebar from "../components/Sidebar";
@@ -117,6 +122,24 @@ export default function SalesExpensesPage() {
   );
   const [savingExpense, setSavingExpense] = useState(false);
 
+  // ---- Sale editing/deleting ----
+  const [editingSale, setEditingSale] = useState<SaleRecord | null>(null);
+  const [editSaleItemName, setEditSaleItemName] = useState("");
+  const [editSaleQuantity, setEditSaleQuantity] = useState("");
+  const [editSalePrice, setEditSalePrice] = useState("");
+  const [editSaleProfit, setEditSaleProfit] = useState("");
+  const [editSaleDate, setEditSaleDate] = useState("");
+  const [savingSaleEdit, setSavingSaleEdit] = useState(false);
+  const [deletingSaleId, setDeletingSaleId] = useState<string | null>(null);
+
+  // ---- Expense editing/deleting ----
+  const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
+  const [editExpDescription, setEditExpDescription] = useState("");
+  const [editExpAmount, setEditExpAmount] = useState("");
+  const [editExpDate, setEditExpDate] = useState("");
+  const [savingExpenseEdit, setSavingExpenseEdit] = useState(false);
+  const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
+
   useEffect(() => {
     let unsubSales = () => {};
     let unsubExpenses = () => {};
@@ -202,6 +225,126 @@ export default function SalesExpensesPage() {
       setSavingExpense(false);
     }
   };
+
+
+
+    // ---- Sale editing ----
+  const openEditSale = (sale: SaleRecord) => {
+    setEditingSale(sale);
+    setEditSaleItemName(sale.itemName);
+    setEditSaleQuantity(String(sale.quantity));
+    setEditSalePrice(String(sale.price));
+    setEditSaleProfit(String(sale.profit ?? 0));
+    setEditSaleDate(new Date(sale.date).toISOString().slice(0, 16));
+  };
+
+  const handleSaveSaleEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uid || !editingSale) return;
+    setSavingSaleEdit(true);
+    try {
+      const quantity = Number(editSaleQuantity) || 0;
+      const price = Number(editSalePrice) || 0;
+      await updateDoc(doc(db, "tenants", uid, "sales", editingSale.id), {
+        itemName: editSaleItemName,
+        quantity,
+        price,
+        total: quantity * price,
+        profit: Number(editSaleProfit) || 0,
+        date: new Date(editSaleDate).toISOString(),
+      });
+      setEditingSale(null);
+    } catch (err) {
+      console.error("Failed to update sale:", err);
+      window.alert("Something went wrong updating this sale. Please try again.");
+    } finally {
+      setSavingSaleEdit(false);
+    }
+  };
+
+  // A sale is only eligible for auto-restock if it's a plain item/bundle sale
+  // (not a Repair/Delivery/P.O. ticket, which already manages its own stock).
+  const isTicketDerivedSale = (itemName: string) =>
+    itemName.startsWith("Repair:") || itemName.startsWith("Delivery:") || itemName.startsWith("P.O.");
+
+  const handleDeleteSale = async (sale: SaleRecord) => {
+    if (!uid) return;
+
+    const fromTicket = isTicketDerivedSale(sale.itemName);
+    const confirmMessage = fromTicket
+      ? `Delete this sale record ("${sale.itemName}")? This is linked to a ticket, so inventory stock will NOT be automatically adjusted. This cannot be undone.`
+      : `Delete this sale record ("${sale.itemName}")? If a matching item is found in your inventory, ${sale.quantity} unit(s) will be added back to its stock. This cannot be undone.`;
+
+    const confirmed = window.confirm(confirmMessage);
+    if (!confirmed) return;
+
+    setDeletingSaleId(sale.id);
+    try {
+      if (!fromTicket) {
+        // Best-effort restock: matched by exact item name, since sale records
+        // don't store the original itemId. Bundle sales ("Name (Bundle)")
+        // won't match a single inventory item and are safely skipped.
+        const invSnap = await getDocs(collection(db, "tenants", uid, "inventory"));
+        const match = invSnap.docs.find((d) => d.data().name === sale.itemName);
+        if (match) {
+          await updateDoc(doc(db, "tenants", uid, "inventory", match.id), {
+            stock: increment(sale.quantity),
+          });
+        }
+      }
+      await deleteDoc(doc(db, "tenants", uid, "sales", sale.id));
+    } catch (err) {
+      console.error("Failed to delete sale:", err);
+      window.alert("Something went wrong deleting this sale. Please try again.");
+    } finally {
+      setDeletingSaleId(null);
+    }
+  };
+
+  // ---- Expense editing ----
+  const openEditExpense = (expense: ExpenseRecord) => {
+    setEditingExpense(expense);
+    setEditExpDescription(expense.description);
+    setEditExpAmount(String(expense.amount));
+    setEditExpDate(new Date(expense.date).toISOString().slice(0, 10));
+  };
+
+  const handleSaveExpenseEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uid || !editingExpense) return;
+    setSavingExpenseEdit(true);
+    try {
+      await updateDoc(doc(db, "tenants", uid, "expenses", editingExpense.id), {
+        description: editExpDescription,
+        amount: Number(editExpAmount) || 0,
+        date: new Date(editExpDate + "T12:00:00").toISOString(),
+      });
+      setEditingExpense(null);
+    } catch (err) {
+      console.error("Failed to update expense:", err);
+      window.alert("Something went wrong updating this expense. Please try again.");
+    } finally {
+      setSavingExpenseEdit(false);
+    }
+  };
+
+  const handleDeleteExpense = async (expense: ExpenseRecord) => {
+    if (!uid) return;
+    const confirmed = window.confirm(`Delete this expense ("${expense.description}")? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingExpenseId(expense.id);
+    try {
+      await deleteDoc(doc(db, "tenants", uid, "expenses", expense.id));
+    } catch (err) {
+      console.error("Failed to delete expense:", err);
+      window.alert("Something went wrong deleting this expense. Please try again.");
+    } finally {
+      setDeletingExpenseId(null);
+    }
+  };
+
+
 
   const handleDownload = () => {
     const rows: string[] = [];
@@ -381,6 +524,7 @@ export default function SalesExpensesPage() {
                     <th className="px-4 py-2">Total</th>
                     <th className="px-4 py-2">Profit</th>
                     <th className="px-4 py-2">Date</th>
+                    <th className="px-4 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -404,6 +548,25 @@ export default function SalesExpensesPage() {
                       <td className="px-4 py-3 text-xs" style={{ color: "var(--color-text-secondary)" }}>
                         {new Date(sale.date).toLocaleString()}
                       </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => openEditSale(sale)}
+                            className="text-xs font-medium hover:underline"
+                            style={{ color: "var(--color-primary-light)" }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteSale(sale)}
+                            disabled={deletingSaleId === sale.id}
+                            className="text-xs font-medium hover:underline disabled:opacity-50"
+                            style={{ color: "#f87171" }}
+                          >
+                            {deletingSaleId === sale.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -425,6 +588,9 @@ export default function SalesExpensesPage() {
                     <td className="px-4 py-2" style={{ color: "#4ade80" }}>
                       ₱{totalSalesProfit.toLocaleString()}
                     </td>
+                    <td></td>
+
+
                     <td></td>
                   </tr>
                 </tfoot>
@@ -472,6 +638,7 @@ export default function SalesExpensesPage() {
                     <th className="px-4 py-2">Description</th>
                     <th className="px-4 py-2">Amount</th>
                     <th className="px-4 py-2">Date</th>
+                    <th className="px-4 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -488,6 +655,25 @@ export default function SalesExpensesPage() {
                       </td>
                       <td className="px-4 py-3 text-xs" style={{ color: "var(--color-text-secondary)" }}>
                         {new Date(exp.date).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => openEditExpense(exp)}
+                            className="text-xs font-medium hover:underline"
+                            style={{ color: "var(--color-primary-light)" }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteExpense(exp)}
+                            disabled={deletingExpenseId === exp.id}
+                            className="text-xs font-medium hover:underline disabled:opacity-50"
+                            style={{ color: "#f87171" }}
+                          >
+                            {deletingExpenseId === exp.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -508,12 +694,196 @@ export default function SalesExpensesPage() {
                       -₱{totalExpenses.toLocaleString()}
                     </td>
                     <td></td>
+                    <td></td>
                   </tr>
                 </tfoot>
               </table>
             </div>
           )}
         </div>
+
+
+                  {/* Edit Sale modal */}
+        {editingSale && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <form
+              onSubmit={handleSaveSaleEdit}
+              className="w-full max-w-md p-6 space-y-4"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <div className="flex justify-between items-center">
+                <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>
+                  Edit Sale
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditingSale(null)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Item Name</label>
+                <input
+                  required
+                  value={editSaleItemName}
+                  onChange={(e) => setEditSaleItemName(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm" style={labelStyle}>Quantity</label>
+                  <input
+                    required
+                    type="number"
+                    step="any"
+                    value={editSaleQuantity}
+                    onChange={(e) => setEditSaleQuantity(e.target.value)}
+                    className="w-full mt-1 px-3 py-2"
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm" style={labelStyle}>Price per Unit (₱)</label>
+                  <input
+                    required
+                    type="number"
+                    step="any"
+                    value={editSalePrice}
+                    onChange={(e) => setEditSalePrice(e.target.value)}
+                    className="w-full mt-1 px-3 py-2"
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Profit (₱)</label>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={editSaleProfit}
+                  onChange={(e) => setEditSaleProfit(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Date & Time</label>
+                <input
+                  required
+                  type="datetime-local"
+                  value={editSaleDate}
+                  onChange={(e) => setEditSaleDate(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
+
+              <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                Total will be recalculated automatically as Quantity × Price.
+              </p>
+
+              <button
+                type="submit"
+                disabled={savingSaleEdit}
+                className="w-full font-semibold py-2.5 disabled:opacity-50 hover:opacity-90"
+                style={{
+                  background: "var(--gradient-accent)",
+                  color: "#fff",
+                  borderRadius: "var(--radius-button)",
+                  boxShadow: "var(--glow-shadow)",
+                }}
+              >
+                {savingSaleEdit ? "Saving..." : "Save Changes"}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* Edit Expense modal */}
+        {editingExpense && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <form
+              onSubmit={handleSaveExpenseEdit}
+              className="w-full max-w-md p-6 space-y-4"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <div className="flex justify-between items-center">
+                <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>
+                  Edit Expense
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditingExpense(null)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Description</label>
+                <input
+                  required
+                  value={editExpDescription}
+                  onChange={(e) => setEditExpDescription(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Amount (₱)</label>
+                <input
+                  required
+                  type="number"
+                  value={editExpAmount}
+                  onChange={(e) => setEditExpAmount(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div>
+                <label className="text-sm" style={labelStyle}>Date</label>
+                <input
+                  required
+                  type="date"
+                  value={editExpDate}
+                  onChange={(e) => setEditExpDate(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={savingExpenseEdit}
+                className="w-full font-semibold py-2.5 disabled:opacity-50 hover:opacity-90"
+                style={{
+                  background: "var(--gradient-accent)",
+                  color: "#fff",
+                  borderRadius: "var(--radius-button)",
+                  boxShadow: "var(--glow-shadow)",
+                }}
+              >
+                {savingExpenseEdit ? "Saving..." : "Save Changes"}
+              </button>
+            </form>
+          </div>
+        )}
+
+
 
         {/* Add Expense modal */}
         {showExpenseForm && (

@@ -8,6 +8,7 @@ import Sidebar from "../components/Sidebar";
 import ThemeSwitcher from "../components/ThemeSwitcher";
 import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
 import ReorderSummary from "../components/ReorderSummary";
+import HelpSupport from "../components/HelpSupport";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
 
@@ -208,6 +209,22 @@ export default function SettingsPage() {
               UBA automatically identifies items that need restocking, organized by supplier.
             </p>
             <ReorderSummary />
+          </section>
+
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Help &amp; Support
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              May tanong? Basahin ang FAQ, mag-chat sa AI support, o direktang i-message ang developer.
+            </p>
+            <HelpSupport />
           </section>
         </main>
       </div>
