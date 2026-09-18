@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { auth } from "../lib/firebase";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 
 export default function UbaAssistant() {
   const [uid, setUid] = useState<string | null>(null);
+  const [aiAllowed, setAiAllowed] = useState<boolean | null>(null); // null = still checking
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
   const [input, setInput] = useState("");
@@ -12,8 +15,21 @@ export default function UbaAssistant() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      setUid(user ? user.uid : null);
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        setUid(null);
+        setAiAllowed(null);
+        return;
+      }
+      setUid(user.uid);
+      try {
+        const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
+        const tenant = tenantSnap.exists() ? tenantSnap.data() : null;
+        setAiAllowed(hasFeatureAccess(tenant, "aiFeatures"));
+      } catch (err) {
+        console.error("Failed to check AI access:", err);
+        setAiAllowed(false);
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -28,7 +44,9 @@ export default function UbaAssistant() {
       setMessages([
         {
           role: "assistant",
-          content: "Hi, I'm UBA Assistant. Ask me anything about your shop — inventory, sales, repair tickets, or where to source parts.",
+          content: aiAllowed
+            ? "Hi, I'm UBA Assistant. Ask me anything about your shop — inventory, sales, repair tickets, or where to source parts."
+            : AI_LOCKED_MESSAGE,
         },
       ]);
     }
@@ -36,7 +54,7 @@ export default function UbaAssistant() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || sending || !uid) return;
+    if (!text || sending || !uid || !aiAllowed) return;
 
     const newMessages = [...messages, { role: "user", content: text }];
     setMessages(newMessages);
@@ -96,9 +114,9 @@ export default function UbaAssistant() {
           background: "var(--gradient-accent)",
           boxShadow: "var(--glow-shadow)",
         }}
-        title="UBA Assistant"
+        title={aiAllowed ? "UBA Assistant" : "UBA Assistant (naka-lock — Pro/Business feature)"}
       >
-        <span className="text-2xl">{open ? "×" : "🤖"}</span>
+        <span className="text-2xl">{open ? "×" : aiAllowed ? "🤖" : "🔒"}</span>
       </button>
 
       {/* Chat panel */}
@@ -117,7 +135,7 @@ export default function UbaAssistant() {
             className="px-4 py-3 flex items-center gap-2"
             style={{ background: "var(--color-bg-secondary)", borderBottom: "1px solid var(--color-border)" }}
           >
-            <span>🤖</span>
+            <span>{aiAllowed ? "🤖" : "🔒"}</span>
             <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
               UBA Assistant
             </p>
@@ -150,34 +168,46 @@ export default function UbaAssistant() {
             )}
           </div>
 
-          <div className="p-3 flex gap-2" style={{ borderTop: "1px solid var(--color-border)" }}>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask about your shop..."
-              className="flex-1 px-3 py-2 text-sm"
-              style={{
-                background: "var(--color-bg-secondary)",
-                color: "var(--color-text-primary)",
-                borderRadius: "var(--radius-button)",
-                borderWidth: "var(--border-width)",
-                borderColor: "var(--color-border)",
-              }}
-            />
-            <button
-              onClick={handleSend}
-              disabled={sending || !input.trim()}
-              className="px-4 py-2 text-sm font-semibold disabled:opacity-50"
-              style={{
-                background: "var(--gradient-accent)",
-                color: "#fff",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-              Send
-            </button>
-          </div>
+          {aiAllowed ? (
+            <div className="p-3 flex gap-2" style={{ borderTop: "1px solid var(--color-border)" }}>
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask about your shop..."
+                className="flex-1 px-3 py-2 text-sm"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              />
+              <button
+                onClick={handleSend}
+                disabled={sending || !input.trim()}
+                className="px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                style={{
+                  background: "var(--gradient-accent)",
+                  color: "#fff",
+                  borderRadius: "var(--radius-button)",
+                }}
+              >
+                Send
+              </button>
+            </div>
+          ) : (
+            <div className="p-3" style={{ borderTop: "1px solid var(--color-border)" }}>
+              <a
+                href="/settings"
+                className="block text-center px-4 py-2 text-sm font-semibold rounded-lg"
+                style={{ background: "var(--gradient-accent)", color: "#fff", borderRadius: "var(--radius-button)" }}
+              >
+                Mag-upgrade sa Settings
+              </a>
+            </div>
+          )}
         </div>
       )}
     </>

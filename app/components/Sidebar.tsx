@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
+import { hasFeatureAccess } from "../lib/subscription";
 
 const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "🏠" },
@@ -77,8 +78,10 @@ export default function Sidebar() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [planId, setPlanId] = useState<string | null>(null);
+  const [planId, setPlanId] = useState<string | undefined>(undefined);
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
+  const [nextPaymentDue, setNextPaymentDue] = useState<string | undefined>(undefined);
+  const [manuallyDeactivated, setManuallyDeactivated] = useState<boolean>(false);
   const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
   const [featuresLoaded, setFeaturesLoaded] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -98,8 +101,6 @@ export default function Sidebar() {
         setLogoUrl(null);
         return;
       }
-      console.log("DEBUG — user.uid:", user.uid);
-      console.log("DEBUG — ADMIN_UID from env:", ADMIN_UID);
       setIsAdmin(user.uid === ADMIN_UID);
       try {
         const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
@@ -108,8 +109,10 @@ export default function Sidebar() {
           setBusinessName(data.businessName || "");
           setNameDraft(data.businessName || "");
           setLogoUrl(data.logoUrl || null);
-          setPlanId(data.planId || null);
+          setPlanId(data.planId || undefined);
           setSubscriptionStatus(data.subscriptionStatus || "trial");
+          setNextPaymentDue(data.nextPaymentDue || undefined);
+          setManuallyDeactivated(!!data.manuallyDeactivated);
           setEnabledFeatures(data.enabledFeatures || {});
         }
       } catch (err) {
@@ -230,19 +233,54 @@ export default function Sidebar() {
     }
   };
 
-  const navItems = baseNavItems.filter((item) => {
-    if (item.adminOnly && !isAdmin) return false;
-    // Hide feature-gated items until we've actually confirmed their state —
-    // prevents a flash where all items briefly show before Firestore replies.
-    if (item.featureKey && !featuresLoaded) return false;
-    if (item.featureKey && enabledFeatures[item.featureKey] === false) return false;
-    return true;
-  });
+  // Iisang tenant object na ginagamit sa buong component para sa access checks
+  const tenantAccess = { subscriptionStatus, planId, nextPaymentDue, manuallyDeactivated };
+
+  // Ang Low Stock notification bell ay Pro/Business feature — i-suppress kung
+  // hindi entitled ang tenant, kahit meron talagang low-stock data sa likod.
+  const lowStockAllowed = featuresLoaded && hasFeatureAccess(tenantAccess, "lowStockAlerts");
+  const visibleNotification = lowStockAllowed ? notification : null;
+
+  const navItems = baseNavItems
+    .filter((item) => {
+      if (item.adminOnly && !isAdmin) return false;
+      // Hide feature-gated items until we've actually confirmed their state —
+      // prevents a flash where all items briefly show before Firestore replies.
+      if (item.featureKey && !featuresLoaded) return false;
+      // User's own on/off toggle (Settings > Modules) — kung pinatay nila ito
+      // dahil hindi naman nila ginagamit, itago talaga, hindi lang i-lock.
+      if (item.featureKey && enabledFeatures[item.featureKey] === false) return false;
+      return true;
+    })
+    .map((item) => {
+      // Plan-based entitlement: naka-toggle-ON pero baka hindi kasama sa
+      // plan nila (Basic) o expired/deactivated — ipakita pa rin pero naka-lock.
+      const locked = !!item.featureKey && !hasFeatureAccess(tenantAccess, item.featureKey);
+      return { ...item, locked };
+    });
+
+  // Buod na banner kapag may naka-lock na Pro/Business feature dahil sa plan
+  // o expiry — iisang mensahe lang, hindi na kailangang i-ulit per-item.
+  const hasLockedNavItem = navItems.some((item) => item.locked);
+  let lockBannerMessage: string | null = null;
+  if (manuallyDeactivated) {
+    lockBannerMessage = "🚫 Na-deactivate ang account mo. Makipag-ugnayan sa developer (Settings > Help & Support) para ma-restore.";
+  } else if (hasLockedNavItem) {
+    lockBannerMessage =
+      subscriptionStatus === "MONTHLY"
+        ? "⚠️ Naka-lock ang ilang features (hindi kasama sa Basic plan mo, o na-expire na). I-upgrade o mag-renew sa Settings."
+        : "⏳ Naka-lock ang ilang Pro/Business features (tapos na ang trial o Basic ka pa lang). Pumunta sa Settings para mag-upgrade.";
+  }
 
   const planLabel: { text: string; bg: string; color: string } = (() => {
-    if (subscriptionStatus === "active" && planId) {
+    if (subscriptionStatus === "MONTHLY" || subscriptionStatus === "LIFETIME") {
       const labels: Record<string, string> = { basic: "BASIC", pro: "PRO", business: "BUSINESS" };
-      return { text: labels[planId] || planId.toUpperCase(), bg: "rgba(74, 222, 128, 0.15)", color: "#4ade80" };
+      const planText = planId ? labels[planId] || planId.toUpperCase() : "";
+      return {
+        text: subscriptionStatus === "LIFETIME" ? `${planText} · LIFETIME`.trim() : planText || "PAID",
+        bg: "rgba(74, 222, 128, 0.15)",
+        color: "#4ade80",
+      };
     }
     return { text: "FREE TRIAL", bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
   })();
@@ -283,7 +321,7 @@ export default function Sidebar() {
 
         {/* TOP RIGHT CORNER: Notification Icon */}
         <div className="flex items-center gap-2">
-          {notification && notification.count > 0 &&  (
+          {visibleNotification && visibleNotification.count > 0 && (
             <button
               onClick={() => setShowNotifModal(true)}
               className="relative text-lg"
@@ -291,7 +329,7 @@ export default function Sidebar() {
             >
               🔔
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                {notification.count}
+                {visibleNotification.count}
               </span>
             </button>
           )}
@@ -326,21 +364,41 @@ export default function Sidebar() {
               </button>
             </div>
 
+            {lockBannerMessage && (
+              <div
+                className="mb-4 p-3 rounded-lg text-xs leading-snug"
+                style={{
+                  background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
+                  color: manuallyDeactivated ? "#f87171" : "#facc15",
+                }}
+              >
+                {lockBannerMessage}
+              </div>
+            )}
+
             <nav className="space-y-1 flex-1">
               {navItems.map((item) => {
-                const isActive = pathname === item.href;
-                if (item.disabled) {
+                if (item.locked) {
                   return (
-                    <div
+                    <button
                       key={item.href}
-                      className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm opacity-40"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        router.push("/settings");
+                      }}
+                      title="Naka-lock — pumunta sa Settings para mag-upgrade"
+                      className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded-lg text-sm font-medium opacity-60"
                       style={{ color: "var(--color-text-secondary)" }}
                     >
-                      <span>{item.icon}</span>
-                      <span>{item.label}</span>
-                    </div>
+                      <span className="flex items-center gap-3">
+                        <span>{item.icon}</span>
+                        <span>{item.label}</span>
+                      </span>
+                      <span>🔒</span>
+                    </button>
                   );
                 }
+                const isActive = pathname === item.href;
                 return (
                   <Link
                     key={item.href}
@@ -484,8 +542,24 @@ export default function Sidebar() {
           )}
         </div>
 
+        {/* Lock / Renew Banner */}
+        {!collapsed && lockBannerMessage && (
+          <button
+            onClick={() => router.push("/settings")}
+            className="mb-3 w-full p-2.5 rounded-lg text-left text-[11px] leading-snug transition hover:opacity-90"
+            style={{
+              background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
+              color: manuallyDeactivated ? "#f87171" : "#facc15",
+              borderWidth: "1px",
+              borderColor: manuallyDeactivated ? "rgba(239,68,68,0.3)" : "rgba(250,204,21,0.3)",
+            }}
+          >
+            {lockBannerMessage}
+          </button>
+        )}
+
         {/* Low Stock Alert Button */}
-        {notification && notification.count > 0 && (
+        {visibleNotification && visibleNotification.count > 0 && (
           <button
             onClick={() => setShowNotifModal(true)}
             className="mb-4 w-full p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20 transition flex items-center justify-between text-xs font-semibold"
@@ -494,7 +568,7 @@ export default function Sidebar() {
               🔔 {!collapsed && "Reorder Alerts"}
             </span>
             <span className="bg-red-500 text-white px-1.5 py-0.5 rounded-full text-[10px] font-bold">
-              {notification.count}
+              {visibleNotification.count}
             </span>
           </button>
         )}
@@ -503,6 +577,27 @@ export default function Sidebar() {
         <nav className="space-y-1">
           {navItems.map((item) => {
             const isActive = pathname === item.href;
+
+            if (item.locked) {
+              return (
+                <button
+                  key={item.href}
+                  onClick={() => router.push("/settings")}
+                  title={collapsed ? `${item.label} (naka-lock)` : "Naka-lock — i-click para mag-upgrade"}
+                  className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition opacity-50 ${
+                    collapsed ? "justify-center" : "justify-between"
+                  }`}
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  <span className="flex items-center gap-3">
+                    <span>{item.icon}</span>
+                    {!collapsed && <span>{item.label}</span>}
+                  </span>
+                  {!collapsed && <span>🔒</span>}
+                </button>
+              );
+            }
+
             return (
               <Link
                 key={item.href}
@@ -538,7 +633,7 @@ export default function Sidebar() {
       </aside>
 
       {/* Low Stock Modal */}
-      {showNotifModal && notification && (
+      {showNotifModal && visibleNotification && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div
             className="w-full max-w-lg rounded-xl p-5 shadow-2xl border space-y-4"
@@ -558,10 +653,10 @@ export default function Sidebar() {
               </button>
             </div>
 
-            <p className="text-xs text-gray-400">{notification.message}</p>
+            <p className="text-xs text-gray-400">{visibleNotification.message}</p>
 
             <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-              {notification.items.map((item) => (
+              {visibleNotification.items.map((item) => (
                 <div
                   key={item.id}
                   className="p-3 rounded-lg border text-xs flex items-center justify-between"

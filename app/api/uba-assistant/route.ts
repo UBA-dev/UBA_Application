@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
 
 // In-memory cache para sa identical prompt queries
 const responseCache = new Map<string, { reply: string; timestamp: number }>();
@@ -29,6 +31,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Authentication required. Please log in to continue." },
         { status: 401 }
+      );
+    }
+
+    // --- 0. Server-side plan/subscription check (HINDI dapat basta pagkatiwalaan
+    // ang client) — kailangang Pro/Business plan pa rin, at hindi expired/deactivated.
+    try {
+      const tenantSnap = await adminDb.collection("tenants").doc(userId).get();
+      const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+      if (!hasFeatureAccess(tenant, "aiFeatures")) {
+        return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
+      }
+    } catch (accessErr) {
+      console.error("uba-assistant access check failed:", accessErr);
+      return NextResponse.json(
+        { error: "Unable to verify your access right now. Please try again shortly." },
+        { status: 500 }
       );
     }
 
