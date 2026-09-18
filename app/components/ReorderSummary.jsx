@@ -7,17 +7,56 @@ import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
 
 function computeSuggestedQty(stock, threshold) {
-  // Restock enough to comfortably clear the low-stock zone, not just barely meet it
   const target = threshold * 2;
   return Math.max(target - stock, threshold);
 }
 
+// Detects which kind of link this is so we know HOW to open it —
+// messaging apps can be pre-filled with a message, plain websites cannot.
+function detectLinkType(link) {
+  if (!link) return null;
+  const lower = link.toLowerCase();
+  if (lower.includes("wa.me") || lower.includes("whatsapp.com")) return "whatsapp";
+  if (lower.includes("m.me") || lower.includes("messenger.com") || lower.includes("facebook.com")) return "messenger";
+  if (lower.includes("viber.com") || lower.startsWith("viber:")) return "viber";
+  return "website";
+}
+
+function buildOrderMessage(itemsToOrder) {
+  const lines = itemsToOrder.map((i) => `- ${i.name} x${i.suggestedQty}`);
+  return `Hi! I'd like to order the following:\n${lines.join("\n")}\n\nThank you!`;
+}
+
+// Builds the actual URL to open — for messaging apps, appends a pre-filled
+// message. For regular websites, we can't inject text, so it opens as-is.
+function buildOrderUrl(link, itemsToOrder) {
+  const type = detectLinkType(link);
+  const message = buildOrderMessage(itemsToOrder);
+  const encoded = encodeURIComponent(message);
+
+  if (type === "whatsapp") {
+    // wa.me links accept a `text` query param that pre-fills the chat box
+    const base = link.includes("?") ? `${link}&text=${encoded}` : `${link}?text=${encoded}`;
+    return base;
+  }
+  if (type === "messenger") {
+    // Messenger/Facebook links don't support pre-filled text via URL —
+    // opens the chat, message still needs to be pasted manually.
+    return link;
+  }
+  if (type === "viber") {
+    return link;
+  }
+  return link;
+}
+
 export default function ReorderSummary() {
   const [items, setItems] = useState([]);
+  const [orderingKey, setOrderingKey] = useState(null);
   const { themeId } = useTheme();
   const theme = getTheme(themeId);
 
-   useEffect(() => {
+  useEffect(() => {
     let unsubInv = () => {};
 
     const unsubscribeAuth = auth.onAuthStateChanged((user) => {
@@ -51,8 +90,53 @@ export default function ReorderSummary() {
     return acc;
   }, {});
 
+  // Opens the message-composer if we can pre-fill it, otherwise copies the
+  // order text to the clipboard so the owner can paste it manually.
+  const handleOrderNow = async (item) => {
+    if (!item.supplierLink) {
+      window.alert(`No supplier link saved for "${item.name}". Add one in Inventory first.`);
+      return;
+    }
+    const url = buildOrderUrl(item.supplierLink, [item]);
+    const type = detectLinkType(item.supplierLink);
+
+    if (type === "messenger" || type === "viber") {
+      try {
+        await navigator.clipboard.writeText(buildOrderMessage([item]));
+        window.alert("Order message copied to clipboard — paste it once the chat opens.");
+      } catch {
+        // Clipboard can fail silently in some browsers — not critical, order link still opens.
+      }
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const handleOrderAllFromSupplier = async (supplierItems) => {
+    const withLinks = supplierItems.filter((i) => i.supplierLink);
+    if (withLinks.length === 0) {
+      window.alert("None of these items have a supplier link saved yet.");
+      return;
+    }
+
+    // Use the first available link for this supplier group — assumes items
+    // from the same supplier share the same ordering channel.
+    const primaryLink = withLinks[0].supplierLink;
+    const url = buildOrderUrl(primaryLink, withLinks);
+    const type = detectLinkType(primaryLink);
+
+    if (type === "messenger" || type === "viber") {
+      try {
+        await navigator.clipboard.writeText(buildOrderMessage(withLinks));
+        window.alert("Combined order message copied to clipboard — paste it once the chat opens.");
+      } catch {
+        // Non-critical — order link still opens below.
+      }
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
   const handleDownload = () => {
-        const lines = [
+    const lines = [
       `REORDER SUMMARY`,
       `Generated: ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`,
       "",
@@ -80,17 +164,18 @@ export default function ReorderSummary() {
     URL.revokeObjectURL(url);
   };
 
-    if (lowStockItems.length === 0) {
+  if (lowStockItems.length === 0) {
     return (
       <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
         All items are sufficiently stocked. No reorders needed at this time.
       </p>
     );
   }
+
   return (
     <div>
       <div className="flex justify-between items-center mb-3 gap-3">
-                <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
+        <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
           {lowStockItems.length} item{lowStockItems.length !== 1 ? "s" : ""} require reordering, sorted by priority.
         </p>
         <button
@@ -107,42 +192,77 @@ export default function ReorderSummary() {
         </button>
       </div>
 
-      <div className="space-y-4">
-        {Object.entries(groupedBySupplier).map(([supplier, supplierItems]) => (
-          <div key={supplier}>
-            <p
-              className="text-xs font-semibold uppercase tracking-wide mb-2"
-              style={{ color: theme.colors.primaryLight }}
-            >
-              {supplier}
-            </p>
-            <div className="space-y-1.5">
-              {supplierItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex justify-between items-center px-3 py-2 text-sm"
-                  style={{
-                    background: theme.colors.bgSecondary,
-                    borderRadius: theme.radiusButton,
-                  }}
+      <div className="space-y-5">
+        {Object.entries(groupedBySupplier).map(([supplier, supplierItems]) => {
+          const hasAnyLink = supplierItems.some((i) => i.supplierLink);
+          return (
+            <div key={supplier}>
+              <div className="flex justify-between items-center mb-2 gap-2">
+                <p
+                  className="text-xs font-semibold uppercase tracking-wide"
+                  style={{ color: theme.colors.primaryLight }}
                 >
-                  <span style={{ color: theme.colors.textPrimary }}>{item.name}</span>
-                  <span className="flex items-center gap-3 flex-shrink-0">
-                    <span style={{ color: theme.colors.textSecondary }}>
-                      Stock: {item.stock}
+                  {supplier}
+                </p>
+                {hasAnyLink && supplierItems.length > 1 && (
+                  <button
+                    onClick={() => handleOrderAllFromSupplier(supplierItems)}
+                    className="text-xs font-semibold px-3 py-1.5 hover:opacity-90 flex-shrink-0"
+                    style={{
+                      background: theme.colors.surface,
+                      color: theme.colors.primaryLight,
+                      borderRadius: theme.radiusButton,
+                      borderWidth: "1px",
+                      borderColor: theme.colors.primary,
+                    }}
+                  >
+                    🛒 Order All from {supplier}
+                  </button>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                {supplierItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex justify-between items-center px-3 py-2 text-sm gap-2"
+                    style={{
+                      background: theme.colors.bgSecondary,
+                      borderRadius: theme.radiusButton,
+                    }}
+                  >
+                    <span style={{ color: theme.colors.textPrimary }} className="truncate">
+                      {item.name}
                     </span>
-                                        <span
-                      className="font-semibold px-2 py-0.5 rounded-full"
-                      style={{ background: theme.colors.primary, color: "#fff" }}
-                    >
-                      Reorder {item.suggestedQty}
+                    <span className="flex items-center gap-2 flex-shrink-0">
+                      <span style={{ color: theme.colors.textSecondary }} className="hidden sm:inline">
+                        Stock: {item.stock}
+                      </span>
+                      <span
+                        className="font-semibold px-2 py-0.5 rounded-full"
+                        style={{ background: theme.colors.primary, color: "#fff" }}
+                      >
+                        Reorder {item.suggestedQty}
+                      </span>
+                      {item.supplierLink && (
+                        <button
+                          onClick={() => handleOrderNow(item)}
+                          className="text-xs font-semibold px-2.5 py-1 hover:opacity-90"
+                          style={{
+                            background: theme.accentGradient,
+                            color: "#fff",
+                            borderRadius: theme.radiusButton,
+                          }}
+                        >
+                          Order Now
+                        </button>
+                      )}
                     </span>
-                  </span>
-                </div>
-              ))}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
