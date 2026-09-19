@@ -14,6 +14,7 @@ import {
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import { useOfflineSync } from "../lib/useOfflineSync";
@@ -101,7 +102,7 @@ export default function PosPage() {
     let unsubInv = () => {};
     let unsubBundles = () => {};
 
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubInv();
       unsubBundles();
 
@@ -109,9 +110,12 @@ export default function PosPage() {
         router.push("/login");
         return;
       }
-      setUid(user.uid);
 
-      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+      const session = await getSessionInfo(user);
+      const tenantId = session.tenantId;
+      setUid(tenantId);
+
+      getDoc(doc(db, "tenants", tenantId)).then((snap) => {
         if (snap.exists()) {
           const data = snap.data();
           setBusinessName(data.businessName || "");
@@ -119,12 +123,12 @@ export default function PosPage() {
         }
       });
 
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
       });
 
-      const bundleQuery = query(collection(db, "tenants", user.uid, "bundles"), orderBy("name"));
+      const bundleQuery = query(collection(db, "tenants", tenantId, "bundles"), orderBy("name"));
       unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
         setBundles(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]);
       });

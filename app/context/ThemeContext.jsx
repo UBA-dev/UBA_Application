@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import { getTheme, defaultThemeId } from "../lib/themes";
 
 const ThemeContext = createContext(null);
@@ -42,7 +43,8 @@ export function ThemeProvider({ children }) {
         setLoaded(true);
         return;
       }
-      const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
+      const session = await getSessionInfo(user);
+      const tenantSnap = await getDoc(doc(db, "tenants", session.tenantId));
       const tenantData = tenantSnap.exists() ? tenantSnap.data() : null;
       const theme = getTheme(tenantData?.theme || defaultThemeId);
       setThemeId(theme.id);

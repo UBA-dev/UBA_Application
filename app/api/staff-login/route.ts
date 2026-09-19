@@ -53,13 +53,33 @@ export async function POST(req: NextRequest) {
     }
 
     const staffUid = `staff_${staffDoc.id}`;
-    const customToken = await getAuth().createCustomToken(staffUid, {
+    const claims = {
       isStaff: true,
       tenantId,
       role: staffData.role,
       staffId: staffDoc.id,
       staffName: staffData.name,
-    });
+    };
+
+    // Custom claims passed only to createCustomToken() are transient — they
+    // vanish the moment Firebase silently refreshes the ID token (which
+    // happens on page reload or roughly every hour). Persisting them via
+    // setCustomUserClaims attaches them to the Auth user record itself, so
+    // every future token for this staff account carries them automatically.
+    try {
+      await getAuth().setCustomUserClaims(staffUid, claims);
+    } catch (err: any) {
+      if (err.code === "auth/user-not-found") {
+        // First-ever login for this staff account — the Auth user doesn't
+        // exist yet. Create it, then attach the claims.
+        await getAuth().createUser({ uid: staffUid });
+        await getAuth().setCustomUserClaims(staffUid, claims);
+      } else {
+        throw err;
+      }
+    }
+
+    const customToken = await getAuth().createCustomToken(staffUid, claims);
 
     return NextResponse.json({ token: customToken, businessName, staffName: staffData.name, role: staffData.role });
   } catch (err: any) {

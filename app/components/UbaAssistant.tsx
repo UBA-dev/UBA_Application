@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 
 export default function UbaAssistant() {
@@ -21,9 +22,10 @@ export default function UbaAssistant() {
         setAiAllowed(null);
         return;
       }
-      setUid(user.uid);
       try {
-        const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
+        const session = await getSessionInfo(user);
+        setUid(session.tenantId);
+        const tenantSnap = await getDoc(doc(db, "tenants", session.tenantId));
         const tenant = tenantSnap.exists() ? tenantSnap.data() : null;
         setAiAllowed(hasFeatureAccess(tenant, "aiFeatures"));
       } catch (err) {

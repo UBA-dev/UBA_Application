@@ -6,10 +6,11 @@ import { useEffect, useRef, useState } from "react";
 import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo, type SessionInfo } from "../lib/staffAuth";
 import { hasFeatureAccess } from "../lib/subscription";
 
-const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string }[] = [
-  { href: "/dashboard", label: "Dashboard", icon: "🏠" },
+const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string; hideForRoles?: string[] }[] = [
+  { href: "/dashboard", label: "Dashboard", icon: "🏠", hideForRoles: ["cashier"] },
   { href: "/inventory", label: "Inventory", icon: "📦" },
   { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️", featureKey: "repairTickets" },
   { href: "/delivery-tickets", label: "Delivery Tickets", icon: "🚚", featureKey: "deliveryTickets" },
@@ -78,11 +79,12 @@ export default function Sidebar() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [planId, setPlanId] = useState<string | undefined>(undefined);
-  const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
   const [nextPaymentDue, setNextPaymentDue] = useState<string | undefined>(undefined);
   const [manuallyDeactivated, setManuallyDeactivated] = useState<boolean>(false);
+  const [planId, setPlanId] = useState<string | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
   const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
+  const [session, setSession] = useState<SessionInfo | null>(null);
   const [featuresLoaded, setFeaturesLoaded] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -99,11 +101,16 @@ export default function Sidebar() {
         setIsAdmin(false);
         setBusinessName("");
         setLogoUrl(null);
+        setSession(null);
         return;
       }
+
+      const sessionInfo = await getSessionInfo(user);
+      setSession(sessionInfo);
       setIsAdmin(user.uid === ADMIN_UID);
+
       try {
-        const tenantSnap = await getDoc(doc(db, "tenants", user.uid));
+        const tenantSnap = await getDoc(doc(db, "tenants", sessionInfo.tenantId));
         if (tenantSnap.exists()) {
           const data = tenantSnap.data();
           setBusinessName(data.businessName || "");
@@ -128,7 +135,7 @@ export default function Sidebar() {
   useEffect(() => {
     let unsubInv = () => {};
 
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubInv();
 
       if (!user) {
@@ -136,7 +143,8 @@ export default function Sidebar() {
         return;
       }
 
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      const sessionInfo = await getSessionInfo(user);
+      const invQuery = query(collection(db, "tenants", sessionInfo.tenantId, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(
         invQuery,
         (snapshot) => {
@@ -183,15 +191,14 @@ export default function Sidebar() {
   }, []);
 
   const saveBusinessName = async () => {
-    const user = auth.currentUser;
-    if (!user || !nameDraft.trim()) {
+    if (!session || session.isStaff || !nameDraft.trim()) {
       setNameDraft(businessName);
       setEditingName(false);
       return;
     }
     const trimmed = nameDraft.trim();
     try {
-      await updateDoc(doc(db, "tenants", user.uid), { businessName: trimmed });
+      await updateDoc(doc(db, "tenants", session.tenantId), { businessName: trimmed });
       setBusinessName(trimmed);
     } catch (err) {
       console.error("Failed to update business name:", err);
@@ -207,14 +214,13 @@ export default function Sidebar() {
 
   const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    const user = auth.currentUser;
-    if (!file || !user) return;
+    if (!file || !session || session.isStaff) return;
 
     setUploading(true);
     setUploadError("");
     try {
       const base64 = await resizeImageToBase64(file);
-      await updateDoc(doc(db, "tenants", user.uid), { logoUrl: base64 });
+      await updateDoc(doc(db, "tenants", session.tenantId), { logoUrl: base64 });
       setLogoUrl(base64);
     } catch (err) {
       console.error("Logo upload failed:", err);
@@ -364,7 +370,7 @@ export default function Sidebar() {
               </button>
             </div>
 
-            {lockBannerMessage && (
+            {lockBannerMessage && !session?.isStaff && (
               <div
                 className="mb-4 p-3 rounded-lg text-xs leading-snug"
                 style={{
@@ -447,7 +453,7 @@ export default function Sidebar() {
                 className="text-xs font-semibold uppercase tracking-wide"
                 style={{ color: "var(--color-text-secondary)" }}
               >
-                My Shop
+                {session?.isStaff ? `${session.staffName} · ${session.role}` : "My Shop"}
               </p>
 
               <div className="flex items-center gap-1.5">
@@ -543,7 +549,7 @@ export default function Sidebar() {
         </div>
 
         {/* Lock / Renew Banner */}
-        {!collapsed && lockBannerMessage && (
+        {!collapsed && lockBannerMessage && !session?.isStaff && (
           <button
             onClick={() => router.push("/settings")}
             className="mb-3 w-full p-2.5 rounded-lg text-left text-[11px] leading-snug transition hover:opacity-90"

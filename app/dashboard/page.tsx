@@ -16,6 +16,7 @@ import {
 } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
@@ -107,6 +108,7 @@ function DashboardContent() {
   const [showPaymentBanner, setShowPaymentBanner] = useState(false);
   const searchParams = useSearchParams();
   const [uid, setUid] = useState<string | null>(null);
+  const [canTriggerAnalysis, setCanTriggerAnalysis] = useState(true);
   const [loading, setLoading] = useState(true);
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
@@ -141,8 +143,21 @@ function DashboardContent() {
         return;
       }
 
+      const session = await getSessionInfo(user);
 
-      const tenantDocRef = doc(db, "tenants", user.uid);
+      // Cashiers never see the Dashboard link in the Sidebar — but guard
+      // direct URL access too, since hiding a link isn't real protection.
+      if (session.role === "cashier") {
+        router.push("/pos");
+        return;
+      }
+      // At this point role is guaranteed to be "owner" or "secretary" —
+      // both can trigger analysis, so this is always true; kept explicit
+      // for readability and in case role permissions change later.
+      setCanTriggerAnalysis(true);
+
+      const tenantId = session.tenantId;
+      const tenantDocRef = doc(db, "tenants", tenantId);
       const initialSnap = await getDoc(tenantDocRef);
       if (initialSnap.exists()) {
         setTenant(initialSnap.data() as Tenant);
@@ -150,39 +165,37 @@ function DashboardContent() {
         router.push("/onboarding");
         return;
       }
-      setUid(user.uid);
+      setUid(tenantId);
       setLoading(false);
 
       unsubTenant = onSnapshot(tenantDocRef, (snap) => {
         if (snap.exists()) setTenant(snap.data() as Tenant);
       });
 
-
-
-      const salesQuery = query(collection(db, "tenants", user.uid, "sales"), orderBy("date", "desc"));
+      const salesQuery = query(collection(db, "tenants", tenantId, "sales"), orderBy("date", "desc"));
       unsubSales = onSnapshot(salesQuery, (snapshot) => {
         setSales(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as SaleRecord[]);
       });
 
-      const expenseQuery = query(collection(db, "tenants", user.uid, "expenses"), orderBy("date", "desc"));
+      const expenseQuery = query(collection(db, "tenants", tenantId, "expenses"), orderBy("date", "desc"));
       unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
         setExpenses(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as ExpenseRecord[]);
       });
 
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItemLite[]);
       });
 
       const ticketQuery = query(
-        collection(db, "tenants", user.uid, "repairTickets"),
+        collection(db, "tenants", tenantId, "repairTickets"),
         orderBy("createdAt", "desc")
       );
       unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
         setRepairTickets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicketLite[]);
       });
 
-      const taskQuery = query(collection(db, "tenants", user.uid, "aiTasks"), orderBy("createdAt", "desc"));
+      const taskQuery = query(collection(db, "tenants", tenantId, "aiTasks"), orderBy("createdAt", "desc"));
       unsubTasks = onSnapshot(taskQuery, (snapshot) => {
         const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as AITask[];
         setAiTasks(list);
@@ -661,7 +674,11 @@ function DashboardContent() {
                 </div>
 
                 
-                {!aiAccess.allowed ? (
+                {!canTriggerAnalysis ? (
+                  <p className="text-sm p-3 rounded-lg" style={{ color: "var(--color-text-secondary)" }}>
+                    Only the Owner or Secretary can run a new analysis.
+                  </p>
+                ) : !aiAccess.allowed ? (
                   <p className="text-sm p-3 rounded-lg" style={{ color: "#facc15", background: "rgba(250, 204, 21, 0.1)" }}>
                     {AI_LOCKED_MESSAGE}
                   </p>

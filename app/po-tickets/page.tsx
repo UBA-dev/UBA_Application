@@ -16,6 +16,7 @@ import {
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
@@ -217,7 +218,7 @@ export default function POTicketsPage() {
     let unsubTickets = () => {};
     let unsubInv = () => {};
 
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubTickets();
       unsubInv();
 
@@ -225,9 +226,12 @@ export default function POTicketsPage() {
         router.push("/login");
         return;
       }
-      setUid(user.uid);
 
-      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+      const session = await getSessionInfo(user);
+      const tenantId = session.tenantId;
+      setUid(tenantId);
+
+      getDoc(doc(db, "tenants", tenantId)).then((snap) => {
         if (snap.exists()) {
           const data = snap.data();
           setBusinessName(data.businessName || "");
@@ -238,14 +242,14 @@ export default function POTicketsPage() {
       });
 
       const ticketQuery = query(
-        collection(db, "tenants", user.uid, "poTickets"),
+        collection(db, "tenants", tenantId, "poTickets"),
         orderBy("createdAt", "desc")
       );
       unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
         setTickets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as PurchaseOrder[]);
       });
 
-      const invQuery = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(invQuery, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
       });

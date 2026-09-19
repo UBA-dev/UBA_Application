@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "./lib/firebase";
+import { getSessionInfo } from "./lib/staffAuth";
 import Link from "next/link";
 import { Fraunces } from "next/font/google";
-import InstallButton from "./components/InstallButton";
 
 const fraunces = Fraunces({
   subsets: ["latin"],
@@ -32,7 +32,7 @@ const features = [
     featured: true,
   },
   {
-    title: "An AI analyst that reads your numbers for you",
+    title: "AI Business Analyst",
     body: "Monthly breakdowns of your sales, expenses, and profit — with specific, actionable suggestions based on your shop's real data.",
   },
   {
@@ -75,6 +75,15 @@ export default function RootPage() {
       }
 
       setIsLoggedIn(true);
+
+      const session = await getSessionInfo(user);
+
+      if (session.isStaff) {
+        // Staff accounts have no email and never go through onboarding —
+        // route them straight in based on their role.
+        router.push(session.role === "cashier" ? "/pos" : "/dashboard");
+        return;
+      }
 
       await user.reload();
       if (!auth.currentUser?.emailVerified) {
@@ -123,11 +132,9 @@ export default function RootPage() {
             <a href="#pricing" className="hover:opacity-80 transition">Pricing</a>
           </nav>
           <div className="flex items-center gap-3">
-            <InstallButton /> 
             <Link href="/login" className="text-sm hidden sm:inline" style={{ color: "var(--lp-text-secondary)" }}>
               Log in
             </Link>
-            
             <Link
               href="/signup"
               className="text-sm font-semibold px-4 py-2 rounded-lg text-white transition hover:opacity-90"

@@ -19,6 +19,7 @@ export default function LoginPage() {
   const [shopCode, setShopCode] = useState("");
   const [staffUsername, setStaffUsername] = useState("");
   const [staffPin, setStaffPin] = useState("");
+  const [showStaffPin, setShowStaffPin] = useState(false);
 
   const handleStaffLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -244,6 +245,8 @@ export default function LoginPage() {
               </label>
               <input
                 required
+                autoComplete="off"
+                name="shop-code-field"
                 value={shopCode}
                 onChange={(e) => setShopCode(e.target.value.toUpperCase())}
                 className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input uppercase"
@@ -259,6 +262,8 @@ export default function LoginPage() {
               </label>
               <input
                 required
+                autoComplete="off"
+                name="staff-login-username-field"
                 value={staffUsername}
                 onChange={(e) => setStaffUsername(e.target.value)}
                 className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
@@ -271,16 +276,28 @@ export default function LoginPage() {
               <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
                 PIN
               </label>
-              <input
-                required
-                type="password"
-                inputMode="numeric"
-                value={staffPin}
-                onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
-                style={{ color: "#e8edf9" }}
-                placeholder="4-6 digit PIN"
-              />
+              <div className="relative mt-1">
+                <input
+                  required
+                  type={showStaffPin ? "text" : "password"}
+                  autoComplete="new-password"
+                  name="staff-login-pin-field"
+                  inputMode="numeric"
+                  value={staffPin}
+                  onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
+                  style={{ color: "#e8edf9" }}
+                  placeholder="4-6 digit PIN"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowStaffPin(!showStaffPin)}
+                  className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
+                  style={{ color: "#60a5fa" }}
+                >
+                  {showStaffPin ? "hide" : "show"}
+                </button>
+              </div>
             </div>
 
             {error && (

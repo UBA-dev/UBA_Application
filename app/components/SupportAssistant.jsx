@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { auth } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 
 export default function SupportAssistant() {
   const [uid, setUid] = useState(null);
@@ -11,8 +12,13 @@ export default function SupportAssistant() {
   const scrollRef = useRef(null);
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      setUid(user ? user.uid : null);
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        setUid(null);
+        return;
+      }
+      const session = await getSessionInfo(user);
+      setUid(session.tenantId);
     });
     return () => unsubscribe();
   }, []);

@@ -15,6 +15,7 @@ import {
   increment,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
@@ -327,7 +328,7 @@ export default function InventoryPage() {
     let unsubInv = () => {};
     let unsubBundles = () => {};
 
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubInv();
       unsubBundles();
 
@@ -335,9 +336,12 @@ export default function InventoryPage() {
         router.push("/login");
         return;
       }
-      setUid(user.uid);
 
-      getDoc(doc(db, "tenants", user.uid)).then((snap) => {
+      const session = await getSessionInfo(user);
+      const tenantId = session.tenantId;
+      setUid(tenantId);
+
+      getDoc(doc(db, "tenants", tenantId)).then((snap) => {
         if (snap.exists()) {
           const data = snap.data();
           setBusinessName(data.businessName || "");
@@ -345,7 +349,7 @@ export default function InventoryPage() {
         }
       });
       const invQuery = query(
-        collection(db, "tenants", user.uid, "inventory"),
+        collection(db, "tenants", tenantId, "inventory"),
         orderBy("name")
       );
       unsubInv = onSnapshot(invQuery, (snapshot) => {
@@ -355,7 +359,7 @@ export default function InventoryPage() {
       });
 
       const bundleQuery = query(
-        collection(db, "tenants", user.uid, "bundles"),
+        collection(db, "tenants", tenantId, "bundles"),
         orderBy("name")
       );
       unsubBundles = onSnapshot(bundleQuery, (snapshot) => {

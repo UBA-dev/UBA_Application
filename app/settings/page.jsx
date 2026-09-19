@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { doc, getDoc, updateDoc, collection, addDoc, onSnapshot, query, orderBy, updateDoc as updateDocFs } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, addDoc, deleteDoc, onSnapshot, query, orderBy, where, getDocs, updateDoc as updateDocFs } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import ThemeSwitcher from "../components/ThemeSwitcher";
 import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
@@ -11,6 +12,25 @@ import ReorderSummary from "../components/ReorderSummary";
 import HelpSupport from "../components/HelpSupport";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
+
+const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShopCode() {
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+async function generateUniqueShopCode() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateShopCode();
+    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
+    if (existing.empty) return code;
+  }
+  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
+}
 
 const ROLE_LABELS = { secretary: "Secretary", cashier: "Cashier" };
 
@@ -34,6 +54,16 @@ export default function SettingsPage() {
   const [newStaffRole, setNewStaffRole] = useState("cashier");
   const [savingStaff, setSavingStaff] = useState(false);
   const [staffError, setStaffError] = useState("");
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const [regeneratingCode, setRegeneratingCode] = useState(false);
+  const [editingStaff, setEditingStaff] = useState(null);
+  const [editStaffName, setEditStaffName] = useState("");
+  const [editStaffUsername, setEditStaffUsername] = useState("");
+  const [editStaffRole, setEditStaffRole] = useState("cashier");
+  const [editStaffNewPin, setEditStaffNewPin] = useState("");
+  const [savingStaffEdit, setSavingStaffEdit] = useState(false);
+  const [editStaffError, setEditStaffError] = useState("");
+  const [deletingStaffId, setDeletingStaffId] = useState(null);
   const router = useRouter();
   const { themeId } = useTheme();
   const theme = getTheme(themeId);
@@ -44,18 +74,31 @@ export default function SettingsPage() {
         router.push("/login");
         return;
       }
-      setUid(user.uid);
+
+      const session = await getSessionInfo(user);
+      const tenantId = session.tenantId;
+      setUid(tenantId);
+
       try {
-        const snap = await getDoc(doc(db, "tenants", user.uid));
+        const snap = await getDoc(doc(db, "tenants", tenantId));
         if (snap.exists()) {
           setEnabledFeatures(snap.data().enabledFeatures || {});
-          setShopCode(snap.data().shopCode || "");
+
+          // Backfill: accounts created before Shop Code existed won't have
+          // one saved yet. Generate and persist it the first time the
+          // Owner lands on Settings, so every business ends up with a code.
+          let code = snap.data().shopCode;
+          if (!code && !session.isStaff) {
+            code = await generateUniqueShopCode();
+            await updateDoc(doc(db, "tenants", tenantId), { shopCode: code });
+          }
+          setShopCode(code || "");
         }
       } catch (err) {
         console.error("Failed to load feature settings:", err);
       }
 
-      const staffQuery = query(collection(db, "tenants", user.uid, "staff"), orderBy("createdAt", "desc"));
+      const staffQuery = query(collection(db, "tenants", tenantId, "staff"), orderBy("createdAt", "desc"));
       onSnapshot(staffQuery, (snapshot) => {
         setStaffList(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
       });
@@ -104,6 +147,91 @@ export default function SettingsPage() {
     if (!uid) return;
     await updateDocFs(doc(db, "tenants", uid, "staff", staff.id), { active: staff.active === false });
   };
+
+
+  const handleRegenerateShopCode = async () => {
+    if (!uid) return;
+    const confirmed = window.confirm(
+      "Generate a new Shop Code? The current code will stop working immediately — you'll need to share the new one with your staff before they can log in again."
+    );
+    if (!confirmed) return;
+
+    setRegeneratingCode(true);
+    try {
+      const newCode = await generateUniqueShopCode();
+      await updateDoc(doc(db, "tenants", uid), { shopCode: newCode });
+      setShopCode(newCode);
+    } catch (err) {
+      console.error("Failed to regenerate shop code:", err);
+      window.alert("Something went wrong. Please try again.");
+    } finally {
+      setRegeneratingCode(false);
+    }
+  };
+
+
+
+    const openEditStaff = (staff) => {
+    setEditingStaff(staff);
+    setEditStaffName(staff.name);
+    setEditStaffUsername(staff.username);
+    setEditStaffRole(staff.role);
+    setEditStaffNewPin("");
+    setEditStaffError("");
+  };
+
+  const handleSaveStaffEdit = async (e) => {
+    e.preventDefault();
+    if (!uid || !editingStaff) return;
+    setSavingStaffEdit(true);
+    setEditStaffError("");
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/update-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          staffId: editingStaff.id,
+          name: editStaffName,
+          username: editStaffUsername,
+          role: editStaffRole,
+          newPin: editStaffNewPin || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEditStaffError(data.error || "Couldn't update this staff account.");
+        return;
+      }
+      setEditingStaff(null);
+    } catch (err) {
+      console.error(err);
+      setEditStaffError("Something went wrong. Please try again.");
+    } finally {
+      setSavingStaffEdit(false);
+    }
+  };
+
+  const handleDeleteStaff = async (staff) => {
+    if (!uid) return;
+    const confirmed = window.confirm(
+      `Remove "${staff.name}" (@${staff.username}) permanently? They will no longer be able to log in. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingStaffId(staff.id);
+    try {
+      await deleteDoc(doc(db, "tenants", uid, "staff", staff.id));
+    } catch (err) {
+      console.error("Failed to delete staff:", err);
+      window.alert("Something went wrong removing this staff account. Please try again.");
+    } finally {
+      setDeletingStaffId(null);
+    }
+  };
+
+
+
 
   // Defaults to enabled (true) when the field hasn't been set yet, so
   // existing tenants don't suddenly lose access to features they already use.
@@ -222,13 +350,27 @@ export default function SettingsPage() {
               >
                 {shopCode || "..."}
               </span>
-              <button
-                onClick={() => navigator.clipboard.writeText(shopCode)}
-                className="text-xs font-medium hover:underline"
-                style={{ color: theme.colors.textSecondary }}
-              >
-                📋 Copy
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(shopCode);
+                    setCopyFeedback(true);
+                    setTimeout(() => setCopyFeedback(false), 1500);
+                  }}
+                  className="text-xs font-medium hover:underline"
+                  style={{ color: theme.colors.textSecondary }}
+                >
+                  {copyFeedback ? "✓ Copied!" : "📋 Copy"}
+                </button>
+                <button
+                  onClick={handleRegenerateShopCode}
+                  disabled={regeneratingCode}
+                  className="text-xs font-medium hover:underline disabled:opacity-50"
+                  style={{ color: theme.colors.textSecondary }}
+                >
+                  {regeneratingCode ? "..." : "🔄 Regenerate"}
+                </button>
+              </div>
             </div>
 
             <div className="space-y-2 mb-4">
@@ -261,13 +403,30 @@ export default function SettingsPage() {
                         @{staff.username} {staff.active === false && "· Deactivated"}
                       </p>
                     </div>
-                    <button
-                      onClick={() => handleToggleStaffActive(staff)}
-                      className="text-xs font-medium hover:underline"
-                      style={{ color: staff.active === false ? "#4ade80" : "#f87171" }}
-                    >
-                      {staff.active === false ? "Reactivate" : "Deactivate"}
-                    </button>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <button
+                        onClick={() => openEditStaff(staff)}
+                        className="text-xs font-medium hover:underline"
+                        style={{ color: theme.colors.primaryLight }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleToggleStaffActive(staff)}
+                        className="text-xs font-medium hover:underline"
+                        style={{ color: staff.active === false ? "#4ade80" : "#facc15" }}
+                      >
+                        {staff.active === false ? "Reactivate" : "Deactivate"}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteStaff(staff)}
+                        disabled={deletingStaffId === staff.id}
+                        className="text-xs font-medium hover:underline disabled:opacity-50"
+                        style={{ color: "#f87171" }}
+                      >
+                        {deletingStaffId === staff.id ? "..." : "Delete"}
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
@@ -288,11 +447,14 @@ export default function SettingsPage() {
             ) : (
               <form
                 onSubmit={handleAddStaff}
+                autoComplete="off"
                 className="p-4 space-y-3"
                 style={{ background: theme.colors.bgSecondary, borderRadius: "12px" }}
               >
                 <input
                   required
+                  autoComplete="off"
+                  name="staff-full-name"
                   value={newStaffName}
                   onChange={(e) => setNewStaffName(e.target.value)}
                   placeholder="Full name"
@@ -307,6 +469,8 @@ export default function SettingsPage() {
                 />
                 <input
                   required
+                  autoComplete="off"
+                  name="staff-login-username"
                   value={newStaffUsername}
                   onChange={(e) => setNewStaffUsername(e.target.value)}
                   placeholder="Username (no spaces)"
@@ -322,6 +486,8 @@ export default function SettingsPage() {
                 <input
                   required
                   type="password"
+                  autoComplete="new-password"
+                  name="staff-access-pin"
                   inputMode="numeric"
                   value={newStaffPin}
                   onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
@@ -464,6 +630,119 @@ export default function SettingsPage() {
             <HelpSupport />
           </section>
         </main>
+
+        {editingStaff && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <form
+              onSubmit={handleSaveStaffEdit}
+              autoComplete="off"
+              className="w-full max-w-md p-6 space-y-3"
+              style={{
+                background: theme.colors.bgSecondary,
+                borderRadius: "16px",
+                borderWidth: "1px",
+                borderColor: theme.colors.border,
+              }}
+            >
+              <div className="flex justify-between items-center mb-1">
+                <p className="text-sm font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Edit Staff
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditingStaff(null)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: theme.colors.textSecondary }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <input
+                required
+                autoComplete="off"
+                name="edit-staff-name"
+                value={editStaffName}
+                onChange={(e) => setEditStaffName(e.target.value)}
+                placeholder="Full name"
+                className="w-full px-3 py-2 text-sm"
+                style={{
+                  background: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radiusButton,
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              />
+              <input
+                required
+                autoComplete="off"
+                name="edit-staff-username"
+                value={editStaffUsername}
+                onChange={(e) => setEditStaffUsername(e.target.value)}
+                placeholder="Username"
+                className="w-full px-3 py-2 text-sm"
+                style={{
+                  background: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radiusButton,
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              />
+              <select
+                value={editStaffRole}
+                onChange={(e) => setEditStaffRole(e.target.value)}
+                className="w-full px-3 py-2 text-sm"
+                style={{
+                  background: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radiusButton,
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              >
+                <option value="cashier">Cashier</option>
+                <option value="secretary">Secretary</option>
+              </select>
+              <div>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  name="edit-staff-new-pin"
+                  inputMode="numeric"
+                  value={editStaffNewPin}
+                  onChange={(e) => setEditStaffNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="New PIN (leave blank to keep current)"
+                  className="w-full px-3 py-2 text-sm"
+                  style={{
+                    background: theme.colors.surface,
+                    color: theme.colors.textPrimary,
+                    borderRadius: theme.radiusButton,
+                    borderWidth: "1px",
+                    borderColor: theme.colors.border,
+                  }}
+                />
+                <p className="text-[11px] mt-1" style={{ color: theme.colors.textSecondary }}>
+                  Only fill this in if you want to reset their PIN.
+                </p>
+              </div>
+
+              {editStaffError && (
+                <p className="text-xs" style={{ color: "#f87171" }}>{editStaffError}</p>
+              )}
+
+              <button
+                type="submit"
+                disabled={savingStaffEdit}
+                className="w-full text-sm font-semibold py-2.5 disabled:opacity-50"
+                style={{ background: theme.accentGradient, color: "#fff", borderRadius: theme.radiusButton }}
+              >
+                {savingStaffEdit ? "Saving..." : "Save Changes"}
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   );

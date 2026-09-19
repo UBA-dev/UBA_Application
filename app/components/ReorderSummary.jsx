@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
 
@@ -59,11 +60,12 @@ export default function ReorderSummary() {
   useEffect(() => {
     let unsubInv = () => {};
 
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubInv();
       if (!user) return;
 
-      const q = query(collection(db, "tenants", user.uid, "inventory"), orderBy("name"));
+      const session = await getSessionInfo(user);
+      const q = query(collection(db, "tenants", session.tenantId, "inventory"), orderBy("name"));
       unsubInv = onSnapshot(q, (snapshot) => {
         setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
       });

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { addDoc, collection, doc, getDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 
 const CATEGORIES = [
   { value: "feature", label: "💡 Feature Request" },
@@ -25,10 +26,11 @@ export default function SuggestionForm() {
         setUid(null);
         return;
       }
-      setUid(user.uid);
+      setUid(user.uid); // sarili mismong auth uid — kailangan ito para sa "uid" field sa feedback doc
       setEmail(user.email || "");
       try {
-        const snap = await getDoc(doc(db, "tenants", user.uid));
+        const session = await getSessionInfo(user);
+        const snap = await getDoc(doc(db, "tenants", session.tenantId));
         if (snap.exists()) {
           setBusinessName(snap.data().businessName || "");
         }

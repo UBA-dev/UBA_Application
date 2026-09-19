@@ -15,6 +15,7 @@ import {
   getDocs,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 
 type SaleRecord = {
@@ -144,7 +145,7 @@ export default function SalesExpensesPage() {
     let unsubSales = () => {};
     let unsubExpenses = () => {};
 
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubSales();
       unsubExpenses();
 
@@ -152,10 +153,13 @@ export default function SalesExpensesPage() {
         router.push("/login");
         return;
       }
-      setUid(user.uid);
+
+      const session = await getSessionInfo(user);
+      const tenantId = session.tenantId;
+      setUid(tenantId);
 
       const salesQuery = query(
-        collection(db, "tenants", user.uid, "sales"),
+        collection(db, "tenants", tenantId, "sales"),
         orderBy("date", "desc")
       );
       unsubSales = onSnapshot(salesQuery, (snapshot) => {
@@ -165,7 +169,7 @@ export default function SalesExpensesPage() {
       });
 
       const expenseQuery = query(
-        collection(db, "tenants", user.uid, "expenses"),
+        collection(db, "tenants", tenantId, "expenses"),
         orderBy("date", "desc")
       );
       unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
