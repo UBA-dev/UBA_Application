@@ -1,7 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "firebase-admin/auth";
+import type { DocumentReference } from "firebase-admin/firestore";
 import { adminDb } from "@/app/lib/firebaseAdmin";
 import bcrypt from "bcryptjs";
+import { createHash } from "crypto";
+
+const MAX_ATTEMPTS = 5;
+const LOCK_MINUTES = 15;
+
+// Dagdagan ang bilang ng maling subok. Kapag umabot sa limit, i-lock.
+async function recordFailedAttempt(ref: DocumentReference) {
+  await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const count = (snap.exists ? snap.data()?.count || 0 : 0) + 1;
+
+    if (count >= MAX_ATTEMPTS) {
+      tx.set(ref, { count: 0, lockedUntil: Date.now() + LOCK_MINUTES * 60 * 1000 });
+    } else {
+      tx.set(ref, { count, lockedUntil: 0 });
+    }
+  });
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,6 +47,24 @@ export async function POST(req: NextRequest) {
     const tenantId = tenantDoc.id;
     const businessName = tenantDoc.data().businessName || "";
 
+    // Ang bilang ng maling subok ay per shop + username. Binibilang kahit
+    // hindi totoong username, para pareho ang sagot at hindi mahulaan
+    // kung sino ang totoong staff.
+    const attemptKey = createHash("sha256")
+      .update(`${tenantId}:${normalizedUsername}`)
+      .digest("hex");
+    const attemptRef = adminDb.collection("loginAttempts").doc(attemptKey);
+
+    const attemptSnap = await attemptRef.get();
+    const lockedUntil: number = attemptSnap.exists ? attemptSnap.data()?.lockedUntil || 0 : 0;
+    if (lockedUntil > Date.now()) {
+      const minutesLeft = Math.ceil((lockedUntil - Date.now()) / 60000);
+      return NextResponse.json(
+        { error: `Too many wrong attempts. Please try again in ${minutesLeft} minute(s).` },
+        { status: 429 }
+      );
+    }
+
     const staffQuery = await adminDb
       .collection("tenants")
       .doc(tenantId)
@@ -37,6 +74,7 @@ export async function POST(req: NextRequest) {
       .get();
 
     if (staffQuery.empty) {
+      await recordFailedAttempt(attemptRef);
       return NextResponse.json({ error: "Invalid username or PIN." }, { status: 401 });
     }
 
@@ -49,8 +87,12 @@ export async function POST(req: NextRequest) {
 
     const pinMatches = await bcrypt.compare(pin, staffData.pinHash);
     if (!pinMatches) {
+      await recordFailedAttempt(attemptRef);
       return NextResponse.json({ error: "Invalid username or PIN." }, { status: 401 });
     }
+
+    // Tamang PIN: burahin ang bilang ng maling subok
+    await attemptRef.delete();
 
     const staffUid = `staff_${staffDoc.id}`;
     const claims = {

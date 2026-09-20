@@ -25,13 +25,34 @@ function generateShopCode() {
 }
 
 async function generateUniqueShopCode() {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = generateShopCode();
-    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
-    if (existing.empty) return code;
-  }
-  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
+  const user = auth.currentUser;
+  if (!user) throw new Error("No logged-in user found.");
+
+  const idToken = await user.getIdToken();
+  const res = await fetch("/api/generate-shop-code", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not generate a shop code.");
+  return data.shopCode;
 }
+
+
+async function revokeStaffSession(staffId) {
+  const user = auth.currentUser;
+  if (!user) return;
+
+  const idToken = await user.getIdToken();
+  const res = await fetch("/api/revoke-staff-session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ staffId }),
+  });
+  if (!res.ok) throw new Error("Could not revoke staff session.");
+}
+
+
 
 const ROLE_LABELS = { secretary: "Secretary", cashier: "Cashier" };
 
@@ -150,7 +171,16 @@ export default function SettingsPage() {
 
   const handleToggleStaffActive = async (staff) => {
     if (!uid) return;
+    const willDeactivate = staff.active !== false;
     await updateDocFs(doc(db, "tenants", uid, "staff", staff.id), { active: staff.active === false });
+    // Kapag dine-deactivate, bawiin agad ang session niya
+    if (willDeactivate) {
+      try {
+        await revokeStaffSession(staff.id);
+      } catch (err) {
+        console.error(err);
+      }
+    }
   };
 
 
@@ -226,6 +256,7 @@ export default function SettingsPage() {
 
     setDeletingStaffId(staff.id);
     try {
+      await revokeStaffSession(staff.id);
       await deleteDoc(doc(db, "tenants", uid, "staff", staff.id));
     } catch (err) {
       console.error("Failed to delete staff:", err);

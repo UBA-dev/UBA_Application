@@ -19,14 +19,19 @@ function generateShopCode(): string {
 }
 
 async function generateUniqueShopCode(): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = generateShopCode();
-    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
-    if (existing.empty) return code;
-  }
-  // Extremely unlikely fallback — timestamp-based suffix guarantees uniqueness
-  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
+  const user = auth.currentUser;
+  if (!user) throw new Error("No logged-in user found.");
+
+  const idToken = await user.getIdToken();
+  const res = await fetch("/api/generate-shop-code", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not generate a shop code.");
+  return data.shopCode;
 }
+
 
 export default function OnboardingPage() {
   const [step, setStep] = useState(1);

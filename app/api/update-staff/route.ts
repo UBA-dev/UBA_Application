@@ -59,6 +59,25 @@ export async function POST(req: NextRequest) {
     }
 
     await staffRef.update(updateData);
+    
+    // I-update ang claims (role at pangalan) at bawiin ang session, para
+    // tumalab ang bagong role pagka-login ulit ng staff
+    const staffUid = `staff_${staffId}`;
+    try {
+      await getAuth().setCustomUserClaims(staffUid, {
+        isStaff: true,
+        tenantId: decoded.uid,
+        role,
+        staffId,
+        staffName: name.trim(),
+      });
+      await getAuth().revokeRefreshTokens(staffUid);
+    } catch (err: any) {
+      // Kung hindi pa nakaka-login kailanman ang staff, wala pang Auth account. Ok lang.
+      if (err.code !== "auth/user-not-found") throw err;
+    }
+
+    
     return NextResponse.json({ success: true });
   } catch (err: any) {
     console.error("update-staff error:", err);
