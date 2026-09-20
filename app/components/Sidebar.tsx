@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy, where } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo, type SessionInfo } from "../lib/staffAuth";
 import { hasFeatureAccess } from "../lib/subscription";
+import { canAccessPage } from "../lib/permissions";
+
 
 const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string; hideForRoles?: string[] }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "🏠", hideForRoles: ["cashier"] },
@@ -19,6 +21,7 @@ const baseNavItems: { href: string; label: string; icon: string; disabled?: bool
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
   { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
+  { href: "/approvals", label: "Approvals", icon: "✅" },
 ];
 interface LowStockItem {
   id: string;
@@ -85,6 +88,7 @@ export default function Sidebar() {
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
   const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
   const [featuresLoaded, setFeaturesLoaded] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -190,6 +194,25 @@ export default function Sidebar() {
     };
   }, []);
 
+
+    useEffect(() => {
+    if (!session || session.role !== "owner") {
+      setPendingCount(0);
+      return;
+    }
+    const q = query(
+      collection(db, "tenants", session.tenantId, "approvals"),
+      where("status", "==", "pending")
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => setPendingCount(snap.size),
+      () => setPendingCount(0)
+    );
+    return () => unsub();
+  }, [session]);
+
+
   const saveBusinessName = async () => {
     if (!session || session.isStaff || !nameDraft.trim()) {
       setNameDraft(businessName);
@@ -252,6 +275,8 @@ export default function Sidebar() {
       if (item.adminOnly && !isAdmin) return false;
       // Hide feature-gated items until we've actually confirmed their state —
       // prevents a flash where all items briefly show before Firestore replies.
+      if (!session) return false;
+      if (!item.adminOnly && !canAccessPage(session.role, item.href)) return false;
       if (item.featureKey && !featuresLoaded) return false;
       // User's own on/off toggle (Settings > Modules) — kung pinatay nila ito
       // dahil hindi naman nila ginagamit, itago talaga, hindi lang i-lock.
@@ -259,10 +284,12 @@ export default function Sidebar() {
       return true;
     })
     .map((item) => {
-      // Plan-based entitlement: naka-toggle-ON pero baka hindi kasama sa
-      // plan nila (Basic) o expired/deactivated — ipakita pa rin pero naka-lock.
       const locked = !!item.featureKey && !hasFeatureAccess(tenantAccess, item.featureKey);
-      return { ...item, locked };
+      const label =
+        item.href === "/approvals" && pendingCount > 0
+          ? `${item.label} (${pendingCount})`
+          : item.label;
+      return { ...item, label, locked };
     });
 
   // Buod na banner kapag may naka-lock na Pro/Business feature dahil sa plan

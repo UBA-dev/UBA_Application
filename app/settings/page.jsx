@@ -12,6 +12,7 @@ import ReorderSummary from "../components/ReorderSummary";
 import HelpSupport from "../components/HelpSupport";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
+import { canAccessPage, homeFor } from "../lib/permissions";
 
 const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -76,6 +77,10 @@ export default function SettingsPage() {
       }
 
       const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 

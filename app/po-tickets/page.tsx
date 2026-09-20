@@ -20,6 +20,9 @@ import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
+import { canAccessPage, homeFor } from "../lib/permissions";
+
+
 
 type InventoryItem = {
   id: string;
@@ -228,6 +231,10 @@ export default function POTicketsPage() {
       }
 
       const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 

@@ -17,6 +17,8 @@ import {
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
+import { canAccessPage, homeFor } from "../lib/permissions";
+import { can, type Role } from "../lib/permissions";
 
 type SaleRecord = {
   id: string;
@@ -108,6 +110,9 @@ export default function SalesExpensesPage() {
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [uid, setUid] = useState<string | null>(null);
+  const [role, setRole] = useState<Role>("cashier");
+  const canEditSales = can(role, "sales.edit");
+  const canDeleteExpense = can(role, "expenses.delete");
   const router = useRouter();
 
   const [period, setPeriod] = useState<Period>("Day");
@@ -155,6 +160,11 @@ export default function SalesExpensesPage() {
       }
 
       const session = await getSessionInfo(user);
+      setRole(session.role);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -553,23 +563,26 @@ export default function SalesExpensesPage() {
                         {new Date(sale.date).toLocaleString()}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => openEditSale(sale)}
-                            className="text-xs font-medium hover:underline"
-                            style={{ color: "var(--color-primary-light)" }}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDeleteSale(sale)}
-                            disabled={deletingSaleId === sale.id}
-                            className="text-xs font-medium hover:underline disabled:opacity-50"
-                            style={{ color: "#f87171" }}
-                          >
-                            {deletingSaleId === sale.id ? "Deleting..." : "Delete"}
-                          </button>
-                        </div>
+                        
+                        {canEditSales && (
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => openEditSale(sale)}
+                              className="text-xs font-medium hover:underline"
+                              style={{ color: "var(--color-primary-light)" }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSale(sale)}
+                              disabled={deletingSaleId === sale.id}
+                              className="text-xs font-medium hover:underline disabled:opacity-50"
+                              style={{ color: "#f87171" }}
+                            >
+                              {deletingSaleId === sale.id ? "Deleting..." : "Delete"}
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -669,14 +682,16 @@ export default function SalesExpensesPage() {
                           >
                             Edit
                           </button>
-                          <button
-                            onClick={() => handleDeleteExpense(exp)}
-                            disabled={deletingExpenseId === exp.id}
-                            className="text-xs font-medium hover:underline disabled:opacity-50"
-                            style={{ color: "#f87171" }}
-                          >
-                            {deletingExpenseId === exp.id ? "Deleting..." : "Delete"}
-                          </button>
+                          {canDeleteExpense && (
+                            <button
+                              onClick={() => handleDeleteExpense(exp)}
+                              disabled={deletingExpenseId === exp.id}
+                              className="text-xs font-medium hover:underline disabled:opacity-50"
+                              style={{ color: "#f87171" }}
+                            >
+                              {deletingExpenseId === exp.id ? "Deleting..." : "Delete"}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

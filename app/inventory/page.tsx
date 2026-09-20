@@ -20,7 +20,7 @@ import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
-
+import { can, type Role } from "../lib/permissions";
 
 type InventoryItem = {
   id: string;
@@ -273,6 +273,12 @@ export default function InventoryPage() {
   const [sellMessage, setSellMessage] = useState("");
   const [selling, setSelling] = useState(false);
 
+
+  const [role, setRole] = useState<Role>("cashier"); // pinaka-limitado muna habang naglo-load
+  const canEditInventory = can(role, "inventory.editDetails");
+  const canDeleteInventory = can(role, "inventory.delete");
+  const [staffName, setStaffName] = useState("");
+  const canAddDirectly = can(role, "inventory.addItem");
   const [showItemForm, setShowItemForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -338,6 +344,8 @@ export default function InventoryPage() {
       }
 
       const session = await getSessionInfo(user);
+            setRole(session.role);
+                  setStaffName(session.staffName || "");
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -560,6 +568,63 @@ export default function InventoryPage() {
     setShowItemForm(true);
   };
 
+  // Para kay Secretary: ang bagong item at pagbabago ng presyo ay dumadaan
+  // muna kay Owner. Ang ibang detalye (pangalan, stock, photo, atbp.) ay diretso.
+  const saveAsSecretary = async (itemData: any) => {
+    if (!uid) return;
+
+    const approvalsRef = collection(db, "tenants", uid, "approvals");
+    const requester = {
+      status: "pending",
+      requestedByUid: auth.currentUser?.uid || "",
+      requestedByName: staffName || "Secretary",
+      requestedAt: new Date().toISOString(),
+    };
+
+    // 1) BAGONG ITEM: hindi papasok sa inventory, hihintayin muna ang OK ni Owner
+    if (!editingItemId) {
+      await addDoc(approvalsRef, {
+        ...requester,
+        type: "new_item",
+        itemName: itemData.name,
+        itemData,
+      });
+      alert("Naipadala na kay Owner ang bagong item. Papasok ito sa Inventory kapag na-approve.");
+      return;
+    }
+
+    // 2) EDIT NG EXISTING NA ITEM
+    const current = items.find((i) => i.id === editingItemId);
+    if (!current) return;
+
+    const { sellingPrice, unitCost, ...otherFields } = itemData;
+
+    // Tingnan kung may nagbago sa presyo o puhunan
+    const changes: Record<string, { from: number; to: number }> = {};
+    if (sellingPrice !== (current.sellingPrice || 0)) {
+      changes.sellingPrice = { from: current.sellingPrice || 0, to: sellingPrice };
+    }
+    if (unitCost !== (current.unitCost || 0)) {
+      changes.unitCost = { from: current.unitCost || 0, to: unitCost };
+    }
+
+    // Ang ibang detalye ay diretso nang isave
+    await updateDoc(doc(db, "tenants", uid, "inventory", editingItemId), otherFields);
+
+    // Ang presyo ay hihintayin ang OK ni Owner. Ang lumang presyo
+    // ang patuloy na gagamitin hangga't hindi pa na-approve.
+    if (Object.keys(changes).length > 0) {
+      await addDoc(approvalsRef, {
+        ...requester,
+        type: "price_change",
+        itemId: editingItemId,
+        itemName: itemData.name,
+        changes,
+      });
+      alert("Naipadala na kay Owner ang bagong presyo. Ang lumang presyo muna ang gagamitin hangga't hindi pa na-approve.");
+    }
+  };
+
   const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uid) return;
@@ -583,7 +648,9 @@ export default function InventoryPage() {
     };
 
     try {
-      if (editingItemId) {
+      if (role === "secretary") {
+        await saveAsSecretary(itemData);
+      } else if (editingItemId) {
         await updateDoc(doc(db, "tenants", uid, "inventory", editingItemId), itemData);
       } else {
         await addDoc(collection(db, "tenants", uid, "inventory"), {
@@ -595,6 +662,7 @@ export default function InventoryPage() {
       setShowItemForm(false);
     } catch (err) {
       console.error(err);
+      alert("Hindi na-save. Subukan ulit.");
     } finally {
       setSavingItem(false);
     }
@@ -1163,6 +1231,7 @@ export default function InventoryPage() {
               Manage your items and stock levels
             </p>
           </div>
+          {canEditInventory && (
           <div className="flex flex-wrap gap-2">
             <button
               onClick={handleDownloadInventory}
@@ -1180,21 +1249,23 @@ export default function InventoryPage() {
               <span className="sm:hidden">⬇️ Backup</span>
               <span className="hidden sm:inline">⬇️ Download Inventory</span>
             </button>
-            <button
-              onClick={openScanModal}
-              className="font-semibold px-4 py-2 text-sm transition hover:opacity-90"
-              style={{
-                background: "var(--color-surface)",
-                color: "var(--color-primary-light)",
-                borderRadius: "var(--radius-button)",
-                borderWidth: "var(--border-width)",
-                borderColor: "var(--color-primary)",
-                boxShadow: "var(--glow-shadow)",
-              }}
-            >
-              <span className="sm:hidden">🔍 Scanner</span>
-              <span className="hidden sm:inline">🔍 UBA Scanner</span>
-            </button>
+                        {canAddDirectly && (
+              <button
+                onClick={openScanModal}
+                className="font-semibold px-4 py-2 text-sm transition hover:opacity-90"
+                style={{
+                  background: "var(--color-surface)",
+                  color: "var(--color-primary-light)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-primary)",
+                  boxShadow: "var(--glow-shadow)",
+                }}
+              >
+                <span className="sm:hidden">🔍 Scanner</span>
+                <span className="hidden sm:inline">🔍 UBA Scanner</span>
+              </button>
+            )}
 
             
             <button
@@ -1210,24 +1281,28 @@ export default function InventoryPage() {
               <span className="sm:hidden">+ Add</span>
               <span className="hidden sm:inline">+ Add Item</span>
             </button>
-            <button
-              onClick={openAddBundleForm}
-              disabled={items.length === 0}
-              title={items.length === 0 ? "Add inventory items first" : ""}
-              className="font-semibold px-4 py-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition hover:opacity-90"
-              style={{
-                background: "var(--color-surface)",
-                color: "var(--color-text-primary)",
-                borderRadius: "var(--radius-button)",
-                borderWidth: "var(--border-width)",
-                borderColor: "var(--color-border)",
-              }}
-            >
-              <span className="sm:hidden">🧩 Bundle</span>
-              <span className="hidden sm:inline">🧩 New Bundle</span>
-            </button>
+            {canAddDirectly && (
+              <button
+                onClick={openAddBundleForm}
+                disabled={items.length === 0}
+                title={items.length === 0 ? "Add inventory items first" : ""}
+                className="font-semibold px-4 py-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition hover:opacity-90"
+                style={{
+                  background: "var(--color-surface)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                <span className="sm:hidden">🧩 Bundle</span>
+                <span className="hidden sm:inline">🧩 New Bundle</span>
+              </button>
+            )}
           </div>
+          )}
         </div>
+        
 
         <div className="mb-4">
           <input
@@ -1394,29 +1469,33 @@ export default function InventoryPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => openSellPanel(card)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#4ade80" }}
-                            >
-                              Sell
-                            </button>
-                            <button
-                              onClick={() => openEditItemForm(item)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "var(--color-primary-light)" }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDeleteItem(item.id, item.name)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#f87171" }}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {canEditInventory && (
+                            <div className="flex gap-3">
+                              <button
+                                onClick={() => openSellPanel(card)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "#4ade80" }}
+                              >
+                                Sell
+                              </button>
+                              <button
+                                onClick={() => openEditItemForm(item)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "var(--color-primary-light)" }}
+                              >
+                                Edit
+                              </button>
+                              {canDeleteInventory && (
+                                <button
+                                  onClick={() => handleDeleteItem(item.id, item.name)}
+                                  className="text-xs font-medium hover:underline"
+                                  style={{ color: "#f87171" }}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -1466,22 +1545,26 @@ export default function InventoryPage() {
                           ₱{bundle.price.toLocaleString()}
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => openSellPanel(card)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#4ade80" }}
-                            >
-                              Sell
-                            </button>
-                            <button
-                              onClick={() => handleDeleteBundle(bundle.id, bundle.name)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#f87171" }}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {canEditInventory && (
+                            <div className="flex gap-3">
+                              <button
+                                onClick={() => openSellPanel(card)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "#4ade80" }}
+                              >
+                                Sell
+                              </button>
+                              {canDeleteInventory && (
+                                <button
+                                  onClick={() => handleDeleteBundle(bundle.id, bundle.name)}
+                                  className="text-xs font-medium hover:underline"
+                                  style={{ color: "#f87171" }}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
