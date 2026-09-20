@@ -79,6 +79,8 @@ app/
         route.ts
       webhook/
         route.ts
+  approvals/
+    page.tsx
   components/
     GraphStyleSwitcher.jsx
     HelpSupport.jsx
@@ -105,6 +107,7 @@ app/
     firebase.js
     firebaseAdmin.ts
     offlineQueue.ts
+    permissions.ts
     receipt.ts
     staffAuth.ts
     subscription.js
@@ -935,6 +938,344 @@ export async function POST(request: Request) {
     console.error("Xendit Webhook Error:", error);
     return NextResponse.json({ error: "Webhook error" }, { status: 500 });
   }
+}
+</file>
+
+<file path="app/approvals/page.tsx">
+"use client";
+
+// Ilagay ang file na ito sa: app/approvals/page.tsx
+// Owner lang ang makakapasok dito.
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  collection,
+  onSnapshot,
+  query,
+  orderBy,
+  limit,
+  doc,
+  getDoc,
+  writeBatch,
+} from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
+import { canAccessPage, homeFor } from "../lib/permissions";
+import Sidebar from "../components/Sidebar";
+
+type Approval = {
+  id: string;
+  type: "new_item" | "price_change";
+  status: "pending" | "approved" | "rejected";
+  itemId?: string;
+  itemName: string;
+  itemData?: Record<string, any>;
+  changes?: Record<string, { from: number; to: number }>;
+  requestedByName: string;
+  requestedAt: string;
+  reviewedAt?: string;
+};
+
+// Ito lang ang mga field na papayagan nating makapasok sa inventory.
+// Kahit may magdagdag ng kakaibang field sa request, hindi ito isasama.
+const ITEM_FIELDS = [
+  "name",
+  "description",
+  "category",
+  "subCategory",
+  "stock",
+  "unit",
+  "threshold",
+  "unitCost",
+  "sellingPrice",
+  "supplierName",
+  "supplierLink",
+  "serialNumbers",
+  "photoUrl",
+  "barcode",
+];
+
+// Sa price change, ito lang ang pwedeng baguhin ng approval.
+const PRICE_FIELDS = ["sellingPrice", "unitCost"];
+
+const FIELD_LABELS: Record<string, string> = {
+  sellingPrice: "Selling Price",
+  unitCost: "Unit Cost",
+};
+
+const peso = (n: any) => `₱${Number(n || 0).toLocaleString()}`;
+
+export default function ApprovalsPage() {
+  const router = useRouter();
+  const [uid, setUid] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let unsubApprovals = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
+      unsubApprovals();
+
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const session = await getSessionInfo(user);
+      if (!canAccessPage(session.role, "/approvals")) {
+        router.push(homeFor(session.role));
+        return;
+      }
+
+      setUid(session.tenantId);
+
+      const q = query(
+        collection(db, "tenants", session.tenantId, "approvals"),
+        orderBy("requestedAt", "desc"),
+        limit(100)
+      );
+      unsubApprovals = onSnapshot(
+        q,
+        (snapshot) => {
+          setApprovals(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Approval[]);
+          setLoading(false);
+        },
+        (err) => {
+          console.error("Approvals listener error:", err);
+          setLoading(false);
+        }
+      );
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubApprovals();
+    };
+  }, [router]);
+
+  const handleApprove = async (a: Approval) => {
+    if (!uid) return;
+    setBusyId(a.id);
+
+    try {
+      const batch = writeBatch(db);
+      const approvalRef = doc(db, "tenants", uid, "approvals", a.id);
+
+      if (a.type === "new_item" && a.itemData) {
+        // Kopyahin lang ang mga pinapayagang field
+        const cleanData: Record<string, any> = {};
+        for (const field of ITEM_FIELDS) {
+          if (a.itemData[field] !== undefined) cleanData[field] = a.itemData[field];
+        }
+        const newItemRef = doc(collection(db, "tenants", uid, "inventory"));
+        batch.set(newItemRef, { ...cleanData, createdAt: new Date().toISOString() });
+      } else if (a.type === "price_change" && a.itemId && a.changes) {
+        const itemRef = doc(db, "tenants", uid, "inventory", a.itemId);
+        const itemSnap = await getDoc(itemRef);
+
+        if (!itemSnap.exists()) {
+          alert("Wala na sa inventory ang item na ito, kaya hindi na ito ma-approve. I-reject na lang.");
+          setBusyId(null);
+          return;
+        }
+
+        const updates: Record<string, number> = {};
+        for (const [field, change] of Object.entries(a.changes)) {
+          const value = Number(change.to);
+          if (PRICE_FIELDS.includes(field) && Number.isFinite(value) && value >= 0) {
+            updates[field] = value;
+          }
+        }
+        if (Object.keys(updates).length === 0) {
+          alert("Walang valid na pagbabago sa request na ito.");
+          setBusyId(null);
+          return;
+        }
+        batch.update(itemRef, updates);
+      }
+
+      batch.update(approvalRef, {
+        status: "approved",
+        reviewedAt: new Date().toISOString(),
+      });
+
+      // Sabay na mase-save ang lahat, o wala talaga.
+      await batch.commit();
+    } catch (err) {
+      console.error(err);
+      alert("Hindi na-approve. Subukan ulit.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleReject = async (a: Approval) => {
+    if (!uid) return;
+    const confirmed = window.confirm(`I-reject ang request para sa "${a.itemName}"?`);
+    if (!confirmed) return;
+
+    setBusyId(a.id);
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "tenants", uid, "approvals", a.id), {
+        status: "rejected",
+        reviewedAt: new Date().toISOString(),
+      });
+      await batch.commit();
+    } catch (err) {
+      console.error(err);
+      alert("Hindi na-reject. Subukan ulit.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const pending = approvals.filter((a) => a.status === "pending");
+  const reviewed = approvals.filter((a) => a.status !== "pending").slice(0, 15);
+
+  const cardStyle = {
+    background: "var(--color-surface)",
+    borderRadius: "var(--radius-card)",
+    borderWidth: "var(--border-width)",
+    borderColor: "var(--color-border)",
+  } as const;
+
+  return (
+    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+      <Sidebar />
+      <main className="flex-1 p-6">
+        <h1
+          className="text-xl font-bold"
+          style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+        >
+          Approvals
+        </h1>
+        <p className="text-sm mb-6" style={{ color: "var(--color-text-secondary)" }}>
+          Mga bagong item at pagbabago ng presyo na hinihintay ang OK mo.
+        </p>
+
+        {loading ? (
+          <p style={{ color: "var(--color-text-secondary)" }}>Loading...</p>
+        ) : pending.length === 0 ? (
+          <div className="p-6 text-sm" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
+            Walang naghihintay na approval. 🎉
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {pending.map((a) => (
+              <div key={a.id} className="p-4" style={cardStyle}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <span
+                      className="text-xs px-2 py-0.5 rounded-full"
+                      style={{ background: "var(--color-secondary)", color: "#fff" }}
+                    >
+                      {a.type === "new_item" ? "Bagong Item" : "Pagbabago ng Presyo"}
+                    </span>
+                    <p
+                      className="font-semibold mt-2"
+                      style={{ color: "var(--color-text-primary)" }}
+                    >
+                      {a.itemName}
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                      Hiniling ni {a.requestedByName} · {new Date(a.requestedAt).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleApprove(a)}
+                      disabled={busyId === a.id}
+                      className="font-semibold px-4 py-2 text-sm disabled:opacity-50"
+                      style={{
+                        background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                        color: "#fff",
+                        borderRadius: "var(--radius-button)",
+                      }}
+                    >
+                      {busyId === a.id ? "Sandali..." : "✅ Approve"}
+                    </button>
+                    <button
+                      onClick={() => handleReject(a)}
+                      disabled={busyId === a.id}
+                      className="font-semibold px-4 py-2 text-sm disabled:opacity-50"
+                      style={{
+                        background: "rgba(239, 68, 68, 0.15)",
+                        color: "#f87171",
+                        borderRadius: "var(--radius-button)",
+                      }}
+                    >
+                      ❌ Reject
+                    </button>
+                  </div>
+                </div>
+
+                {/* Detalye ng hiling */}
+                <div
+                  className="mt-3 text-sm grid gap-1"
+                  style={{ color: "var(--color-text-primary)" }}
+                >
+                  {a.type === "new_item" && a.itemData && (
+                    <>
+                      <p>Category: {a.itemData.category || "—"}</p>
+                      <p>
+                        Stock: {a.itemData.stock} {a.itemData.unit || "Piece"}
+                      </p>
+                      <p>Unit Cost: {peso(a.itemData.unitCost)}</p>
+                      <p>Selling Price: {peso(a.itemData.sellingPrice)}</p>
+                      {a.itemData.supplierName && <p>Supplier: {a.itemData.supplierName}</p>}
+                    </>
+                  )}
+
+                  {a.type === "price_change" &&
+                    a.changes &&
+                    Object.entries(a.changes).map(([field, change]) => (
+                      <p key={field}>
+                        {FIELD_LABELS[field] || field}: {peso(change.from)} →{" "}
+                        <strong>{peso(change.to)}</strong>
+                      </p>
+                    ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {reviewed.length > 0 && (
+          <div className="mt-8">
+            <h2
+              className="text-sm font-semibold mb-2"
+              style={{ color: "var(--color-text-secondary)" }}
+            >
+              Kamakailang na-review
+            </h2>
+            <div className="p-4 flex flex-col gap-2" style={cardStyle}>
+              {reviewed.map((a) => (
+                <div key={a.id} className="flex flex-wrap justify-between gap-2 text-sm">
+                  <span style={{ color: "var(--color-text-primary)" }}>
+                    {a.itemName}{" "}
+                    <span className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                      ({a.type === "new_item" ? "Bagong Item" : "Presyo"} · {a.requestedByName})
+                    </span>
+                  </span>
+                  <span
+                    className="text-xs font-medium"
+                    style={{ color: a.status === "approved" ? "#4ade80" : "#f87171" }}
+                  >
+                    {a.status === "approved" ? "Approved" : "Rejected"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
 }
 </file>
 
@@ -1857,6 +2198,88 @@ export async function removeQueuedAction(id: number): Promise<void> {
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
+}
+</file>
+
+<file path="app/lib/permissions.ts">
+// app/lib/permissions.ts
+//
+// ISANG LUGAR LANG kung saan nakasulat kung sino ang may power sa ano.
+// Kapag gusto mong baguhin ang rules sa future, dito lang ang edit.
+
+export type Role = "owner" | "secretary" | "cashier";
+
+// ─────────────────────────────────────────────
+// 1) PAGE ACCESS — sino ang pwedeng pumasok sa bawat page
+// ─────────────────────────────────────────────
+// Kapag ang page ay WALA sa listahan, Owner lang ang pwede
+// (mas ligtas na "bawal muna" kaysa "pwede lahat").
+export const PAGE_ACCESS: Record<string, Role[]> = {
+  "/dashboard": ["owner", "secretary"],
+  "/inventory": ["owner", "secretary", "cashier"],
+  "/pos": ["owner", "secretary", "cashier"],
+  "/repair-tickets": ["owner", "secretary"],
+  "/delivery-tickets": ["owner", "secretary"],
+  "/po-tickets": ["owner", "secretary"],
+  "/sales": ["owner", "secretary"],
+  "/settings": ["owner"],
+  "/approvals": ["owner"],
+};
+
+export function canAccessPage(role: Role, path: string): boolean {
+  const allowed = PAGE_ACCESS[path] ?? ["owner"];
+  return allowed.includes(role);
+}
+
+// Kung pumasok sa page na bawal sa kanya, saan siya ibabalik?
+export function homeFor(role: Role): string {
+  return role === "cashier" ? "/pos" : "/dashboard";
+}
+
+// ─────────────────────────────────────────────
+// 2) ACTIONS — ano ang pwede nilang gawin loob ng page
+// ─────────────────────────────────────────────
+export type Action =
+  | "inventory.addItem"          // direktang mag-add ng item (kasama ang Scanner at Bundle)
+  | "inventory.requestAddItem"   // mag-add pero kailangan ng approval ni Owner
+  | "inventory.editPrice"        // direktang baguhin ang selling price / unit cost
+  | "inventory.requestPrice"     // baguhin ang price pero kailangan ng approval
+  | "inventory.editDetails"      // pangalan, category, stock, photo, supplier
+  | "inventory.delete"
+  | "inventory.seeCost"          // makita ang Unit Cost (puhunan)
+  | "sales.view"
+  | "sales.edit"                 // mag-edit / mag-delete ng sales
+  | "expenses.add"
+  | "expenses.edit"
+  | "expenses.delete"
+  | "tickets.manage"
+  | "tickets.delete"
+  | "pos.sell"
+  | "staff.manage"
+  | "approvals.review";
+
+const ACTION_ACCESS: Record<Action, Role[]> = {
+  "inventory.addItem": ["owner"],
+  "inventory.requestAddItem": ["secretary"],
+  "inventory.editPrice": ["owner"],
+  "inventory.requestPrice": ["secretary"],
+  "inventory.editDetails": ["owner", "secretary"],
+  "inventory.delete": ["owner"],
+  "inventory.seeCost": ["owner", "secretary"],
+  "sales.view": ["owner", "secretary"],
+  "sales.edit": ["owner"],
+  "expenses.add": ["owner", "secretary"],
+  "expenses.edit": ["owner", "secretary"],
+  "expenses.delete": ["owner"],
+  "tickets.manage": ["owner", "secretary"],
+  "tickets.delete": ["owner"],
+  "pos.sell": ["owner", "secretary", "cashier"],
+  "staff.manage": ["owner"],
+  "approvals.review": ["owner"],
+};
+
+export function can(role: Role, action: Action): boolean {
+  return ACTION_ACCESS[action].includes(role);
 }
 </file>
 
@@ -5947,6 +6370,653 @@ ${JSON.stringify(trimmedContext)}`;
 }
 </file>
 
+<file path="app/login/page.tsx">
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { signInWithEmailAndPassword, signInWithCustomToken } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import Link from "next/link";
+
+export default function LoginPage() {
+  const [mode, setMode] = useState<"owner" | "staff">("owner");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
+  const [shopCode, setShopCode] = useState("");
+  const [staffUsername, setStaffUsername] = useState("");
+  const [staffPin, setStaffPin] = useState("");
+  const [showStaffPin, setShowStaffPin] = useState(false);
+
+  const handleStaffLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/staff-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shopCode, username: staffUsername, pin: staffPin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Login failed. Please try again.");
+        return;
+      }
+      await signInWithCustomToken(auth, data.token);
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+    const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+
+      await user.reload();
+      if (!auth.currentUser?.emailVerified) {
+        router.push("/verify-email");
+        return;
+      }
+
+      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
+
+      if (tenantDoc.exists()) {
+        router.push("/dashboard");
+      } else {
+        router.push("/onboarding");
+      }
+    } catch (err: any) {
+      setError("Invalid email or password. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      className="min-h-screen relative flex items-center justify-center overflow-hidden px-4"
+      style={{ background: "var(--color-bg-primary, #0a0e1a)" }}
+    >
+      {/* Ambient backdrop: radial glow + grid */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59,130,246,0.18) 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="absolute inset-0 pointer-events-none opacity-[0.25]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(59,130,246,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.15) 1px, transparent 1px)",
+          backgroundSize: "42px 42px",
+        }}
+      />
+
+      <div className="relative z-10 w-full max-w-md">
+        <div
+          className="relative p-8"
+          style={{
+            background: "rgba(20, 29, 51, 0.7)",
+            backdropFilter: "blur(10px)",
+            border: "1px solid rgba(59, 130, 246, 0.25)",
+            borderRadius: "1rem",
+            boxShadow:
+              "0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15)",
+          }}
+        >
+          <span className="uba-corner uba-corner-tl" />
+          <span className="uba-corner uba-corner-tr" />
+          <span className="uba-corner uba-corner-bl" />
+          <span className="uba-corner uba-corner-br" />
+          <div className="uba-scanline" />
+
+          <p
+            className="text-xs font-mono tracking-[0.15em] mb-3"
+            style={{ color: "#60a5fa" }}
+          >
+            UBA SYSTEM // ACCESS TERMINAL
+          </p>
+
+          <h1
+            className="text-2xl font-bold mb-1"
+            style={{
+              color: "#e8edf9",
+              fontFamily: "var(--font-heading, inherit)",
+              textShadow: "0 0 18px rgba(59,130,246,0.5)",
+            }}
+          >
+            Re-enter the System
+          </h1>
+          <p className="text-sm mb-6" style={{ color: "#8b9bc4" }}>
+            Sign in to resume command of your business.
+          </p>
+
+          {/* Owner / Staff mode toggle */}
+          <div
+            className="flex mb-6 p-1 rounded-lg"
+            style={{ background: "rgba(59, 130, 246, 0.08)" }}
+          >
+            {(["owner", "staff"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  setMode(m);
+                  setError("");
+                }}
+                className="flex-1 py-2 text-sm font-semibold rounded-md transition"
+                style={{
+                  background: mode === m ? "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)" : "transparent",
+                  color: mode === m ? "#fff" : "#8b9bc4",
+                }}
+              >
+                {m === "owner" ? "Owner" : "Staff"}
+              </button>
+            ))}
+          </div>
+
+          {mode === "owner" ? (
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                Email
+              </label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
+                style={{ color: "#e8edf9" }}
+                placeholder="you@example.com"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                Password
+              </label>
+              <div className="relative mt-1">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
+                  style={{ color: "#e8edf9" }}
+                  placeholder="Enter your password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
+                  style={{ color: "#60a5fa" }}
+                >
+                  {showPassword ? "hide" : "show"}
+                </button>
+              </div>
+            </div>
+
+            {error && (
+              <p
+                className="text-xs px-3 py-2 rounded-lg"
+                style={{
+                  color: "#f87171",
+                  background: "rgba(239, 68, 68, 0.1)",
+                  border: "1px solid rgba(239, 68, 68, 0.25)",
+                }}
+              >
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
+              style={{
+                background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
+                color: "#fff",
+                borderRadius: "0.75rem",
+                boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
+              }}
+            >
+              {loading ? "Verifying..." : "Log In"}
+            </button>
+
+            <p
+              className="text-[11px] font-mono text-center pt-1 tracking-wide"
+              style={{ color: "#54608a" }}
+            >
+              {loading
+                ? "> verifying credentials..."
+                : "> system ready // awaiting input"}
+            </p>
+          </form>
+          ) : (
+          <form onSubmit={handleStaffLogin} className="space-y-4">
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                Shop Code
+              </label>
+              <input
+                required
+                autoComplete="off"
+                name="shop-code-field"
+                value={shopCode}
+                onChange={(e) => setShopCode(e.target.value.toUpperCase())}
+                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input uppercase"
+                style={{ color: "#e8edf9" }}
+                placeholder="e.g. A7B2K9"
+                maxLength={10}
+              />
+            </div>
+
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                Username
+              </label>
+              <input
+                required
+                autoComplete="off"
+                name="staff-login-username-field"
+                value={staffUsername}
+                onChange={(e) => setStaffUsername(e.target.value)}
+                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
+                style={{ color: "#e8edf9" }}
+                placeholder="Your username"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
+                PIN
+              </label>
+              <div className="relative mt-1">
+                <input
+                  required
+                  type={showStaffPin ? "text" : "password"}
+                  autoComplete="new-password"
+                  name="staff-login-pin-field"
+                  inputMode="numeric"
+                  value={staffPin}
+                  onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
+                  style={{ color: "#e8edf9" }}
+                  placeholder="4-6 digit PIN"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowStaffPin(!showStaffPin)}
+                  className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
+                  style={{ color: "#60a5fa" }}
+                >
+                  {showStaffPin ? "hide" : "show"}
+                </button>
+              </div>
+            </div>
+
+            {error && (
+              <p
+                className="text-xs px-3 py-2 rounded-lg"
+                style={{
+                  color: "#f87171",
+                  background: "rgba(239, 68, 68, 0.1)",
+                  border: "1px solid rgba(239, 68, 68, 0.25)",
+                }}
+              >
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
+              style={{
+                background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
+                color: "#fff",
+                borderRadius: "0.75rem",
+                boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
+              }}
+            >
+              {loading ? "Verifying..." : "Clock In"}
+            </button>
+          </form>
+          )}
+
+          <p className="text-sm text-center mt-6" style={{ color: "#8b9bc4" }}>
+            Don't have an account?{" "}
+            <Link href="/signup" className="font-medium hover:opacity-80" style={{ color: "#60a5fa" }}>
+              Sign Up
+            </Link>
+          </p>
+        </div>
+      </div>
+
+      <style jsx>{`
+        .uba-input {
+          border: none;
+          border-bottom: 1px solid rgba(59, 130, 246, 0.25);
+          border-radius: 0;
+          transition: border-color 0.2s ease;
+        }
+        .uba-input:focus {
+          border-bottom-color: #60a5fa;
+        }
+        .uba-corner {
+          position: absolute;
+          width: 18px;
+          height: 18px;
+          border-color: #60a5fa;
+          opacity: 0.8;
+        }
+        .uba-corner-tl { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; border-top-left-radius: 4px; }
+        .uba-corner-tr { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; border-top-right-radius: 4px; }
+        .uba-corner-bl { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; border-bottom-left-radius: 4px; }
+        .uba-corner-br { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; border-bottom-right-radius: 4px; }
+        .uba-scanline {
+          position: absolute;
+          left: 0; right: 0;
+          height: 2px;
+          background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.6), transparent);
+          top: 0;
+          animation: uba-scan 4s linear infinite;
+          pointer-events: none;
+        }
+        @keyframes uba-scan {
+          0% { top: 0%; }
+          100% { top: 100%; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .uba-scanline { animation: none; }
+        }
+      `}</style>
+    </div>
+  );
+}
+</file>
+
+<file path="app/onboarding/page.tsx">
+"use client";
+
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { defaultThemeId } from "../lib/themes";
+
+// Excludes visually ambiguous characters (0/O, 1/I) since owners will read
+// this code aloud or type it manually on a shared device.
+const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShopCode(): string {
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+async function generateUniqueShopCode(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateShopCode();
+    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
+    if (existing.empty) return code;
+  }
+  // Extremely unlikely fallback — timestamp-based suffix guarantees uniqueness
+  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
+}
+
+export default function OnboardingPage() {
+  const [step, setStep] = useState(1);
+  const [businessName, setBusinessName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const router = useRouter();
+
+  // Protect this page: if nobody is logged in, send them back to sign up
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (!user) {
+        router.push("/signup");
+      }
+    });
+    return () => unsubscribe();
+  }, [router]);
+
+  const handleFinish = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("No logged-in user found.");
+
+      const shopCode = await generateUniqueShopCode();
+
+      await setDoc(doc(db, "tenants", user.uid), {
+        businessName,
+        theme: defaultThemeId,
+        subscriptionStatus: "TRIAL",
+        trialStartDate: new Date().toISOString(),
+        ownerUid: user.uid,
+        ownerEmail: user.email,
+        shopCode,
+      });
+
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8">
+        {/* Progress dots */}
+        <div className="flex justify-center gap-2 mb-6">
+          {[1, 2].map((s) => (
+            <div
+              key={s}
+              className={`h-2 w-8 rounded-full ${
+                s <= step ? "bg-blue-600" : "bg-gray-200"
+              }`}
+            />
+          ))}
+        </div>
+
+        {/* Step 1: Business Name */}
+        {step === 1 && (
+          <div>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">
+              What's your business name?
+            </h1>
+            <p className="text-sm text-gray-500 mb-4">
+              This will appear on your dashboard and receipts.
+            </p>
+            <input
+              type="text"
+              value={businessName}
+              onChange={(e) => setBusinessName(e.target.value)}
+              placeholder="Enter your business name"
+              className="w-full px-4 py-2 border rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 mb-6"
+            />
+            <button
+              disabled={!businessName.trim()}
+              onClick={() => setStep(2)}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        )}
+
+        {/* Step 2: Confirm */}
+        {step === 2 && (
+          <div className="text-center">
+            <h1 className="text-xl font-bold text-gray-800 mb-2">
+              You're all set, {businessName}!
+            </h1>
+            <p className="text-sm text-gray-500 mb-6">
+              Let's start managing your business smarter.
+            </p>
+
+            {error && (
+              <p className="text-sm text-red-500 bg-red-50 p-2 rounded-lg mb-4">
+                {error}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setStep(1)}
+                className="flex-1 border border-gray-300 text-gray-600 font-semibold py-2 rounded-lg"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleFinish}
+                disabled={loading}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-50"
+              >
+                {loading ? "Setting up..." : "Get Started"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/layout.tsx">
+import type { Metadata, Viewport } from "next";
+import { Geist, Geist_Mono, Orbitron, Cinzel, Inter } from "next/font/google";
+import "./globals.css";
+import { ThemeProvider } from "./context/ThemeContext";
+import UbaAssistant from "./components/UbaAssistant";
+
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+const orbitron = Orbitron({
+  variable: "--font-orbitron",
+  subsets: ["latin"],
+  weight: ["500", "700", "900"],
+});
+
+const cinzel = Cinzel({
+  variable: "--font-cinzel",
+  subsets: ["latin"],
+  weight: ["500", "700", "900"],
+});
+
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "UBA — Universal Business Assistant",
+  description: "Your all-in-one business management assistant.",
+  manifest: "/manifest.json",
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: "/icon-192.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#8b5cf6",
+};
+
+export default function RootLayout({ children }: LayoutProps<"/">) {
+
+
+  return (
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} ${orbitron.variable} ${cinzel.variable} ${inter.variable} h-full antialiased`}
+    >
+        <body className="min-h-full flex flex-col">
+        <ThemeProvider>
+          {children}
+          <UbaAssistant />
+        </ThemeProvider>
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+, "../page.tsx"  ],
+  "exclude": ["node_modules" ,"app/sw.ts"]
+}
+</file>
+
 <file path="app/delivery-tickets/page.tsx">
 "use client";
 
@@ -5969,6 +7039,7 @@ import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
+import { canAccessPage, homeFor } from "../lib/permissions";
 
 type InventoryItem = {
   id: string;
@@ -6102,6 +7173,10 @@ export default function DeliveryTicketsPage() {
       }
 
       const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -6695,545 +7770,6 @@ export default function DeliveryTicketsPage() {
 }
 </file>
 
-<file path="app/login/page.tsx">
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { signInWithEmailAndPassword, signInWithCustomToken } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import Link from "next/link";
-
-export default function LoginPage() {
-  const [mode, setMode] = useState<"owner" | "staff">("owner");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const router = useRouter();
-
-  const [shopCode, setShopCode] = useState("");
-  const [staffUsername, setStaffUsername] = useState("");
-  const [staffPin, setStaffPin] = useState("");
-  const [showStaffPin, setShowStaffPin] = useState(false);
-
-  const handleStaffLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/staff-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shopCode, username: staffUsername, pin: staffPin }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Login failed. Please try again.");
-        return;
-      }
-      await signInWithCustomToken(auth, data.token);
-      router.push("/dashboard");
-    } catch (err: any) {
-      setError("Something went wrong. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-    const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-
-      await user.reload();
-      if (!auth.currentUser?.emailVerified) {
-        router.push("/verify-email");
-        return;
-      }
-
-      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
-
-      if (tenantDoc.exists()) {
-        router.push("/dashboard");
-      } else {
-        router.push("/onboarding");
-      }
-    } catch (err: any) {
-      setError("Invalid email or password. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div
-      className="min-h-screen relative flex items-center justify-center overflow-hidden px-4"
-      style={{ background: "var(--color-bg-primary, #0a0e1a)" }}
-    >
-      {/* Ambient backdrop: radial glow + grid */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(59,130,246,0.18) 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="absolute inset-0 pointer-events-none opacity-[0.25]"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(59,130,246,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.15) 1px, transparent 1px)",
-          backgroundSize: "42px 42px",
-        }}
-      />
-
-      <div className="relative z-10 w-full max-w-md">
-        <div
-          className="relative p-8"
-          style={{
-            background: "rgba(20, 29, 51, 0.7)",
-            backdropFilter: "blur(10px)",
-            border: "1px solid rgba(59, 130, 246, 0.25)",
-            borderRadius: "1rem",
-            boxShadow:
-              "0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.15)",
-          }}
-        >
-          <span className="uba-corner uba-corner-tl" />
-          <span className="uba-corner uba-corner-tr" />
-          <span className="uba-corner uba-corner-bl" />
-          <span className="uba-corner uba-corner-br" />
-          <div className="uba-scanline" />
-
-          <p
-            className="text-xs font-mono tracking-[0.15em] mb-3"
-            style={{ color: "#60a5fa" }}
-          >
-            UBA SYSTEM // ACCESS TERMINAL
-          </p>
-
-          <h1
-            className="text-2xl font-bold mb-1"
-            style={{
-              color: "#e8edf9",
-              fontFamily: "var(--font-heading, inherit)",
-              textShadow: "0 0 18px rgba(59,130,246,0.5)",
-            }}
-          >
-            Re-enter the System
-          </h1>
-          <p className="text-sm mb-6" style={{ color: "#8b9bc4" }}>
-            Sign in to resume command of your business.
-          </p>
-
-          {/* Owner / Staff mode toggle */}
-          <div
-            className="flex mb-6 p-1 rounded-lg"
-            style={{ background: "rgba(59, 130, 246, 0.08)" }}
-          >
-            {(["owner", "staff"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => {
-                  setMode(m);
-                  setError("");
-                }}
-                className="flex-1 py-2 text-sm font-semibold rounded-md transition"
-                style={{
-                  background: mode === m ? "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)" : "transparent",
-                  color: mode === m ? "#fff" : "#8b9bc4",
-                }}
-              >
-                {m === "owner" ? "Owner" : "Staff"}
-              </button>
-            ))}
-          </div>
-
-          {mode === "owner" ? (
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                Email
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
-                style={{ color: "#e8edf9" }}
-                placeholder="you@example.com"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                Password
-              </label>
-              <div className="relative mt-1">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
-                  style={{ color: "#e8edf9" }}
-                  placeholder="Enter your password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
-                  style={{ color: "#60a5fa" }}
-                >
-                  {showPassword ? "hide" : "show"}
-                </button>
-              </div>
-            </div>
-
-            {error && (
-              <p
-                className="text-xs px-3 py-2 rounded-lg"
-                style={{
-                  color: "#f87171",
-                  background: "rgba(239, 68, 68, 0.1)",
-                  border: "1px solid rgba(239, 68, 68, 0.25)",
-                }}
-              >
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
-              style={{
-                background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
-                color: "#fff",
-                borderRadius: "0.75rem",
-                boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
-              }}
-            >
-              {loading ? "Verifying..." : "Log In"}
-            </button>
-
-            <p
-              className="text-[11px] font-mono text-center pt-1 tracking-wide"
-              style={{ color: "#54608a" }}
-            >
-              {loading
-                ? "> verifying credentials..."
-                : "> system ready // awaiting input"}
-            </p>
-          </form>
-          ) : (
-          <form onSubmit={handleStaffLogin} className="space-y-4">
-            <div>
-              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                Shop Code
-              </label>
-              <input
-                required
-                autoComplete="off"
-                name="shop-code-field"
-                value={shopCode}
-                onChange={(e) => setShopCode(e.target.value.toUpperCase())}
-                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input uppercase"
-                style={{ color: "#e8edf9" }}
-                placeholder="e.g. A7B2K9"
-                maxLength={10}
-              />
-            </div>
-
-            <div>
-              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                Username
-              </label>
-              <input
-                required
-                autoComplete="off"
-                name="staff-login-username-field"
-                value={staffUsername}
-                onChange={(e) => setStaffUsername(e.target.value)}
-                className="w-full mt-1 px-3 py-2.5 bg-transparent focus:outline-none uba-input"
-                style={{ color: "#e8edf9" }}
-                placeholder="Your username"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs tracking-wide" style={{ color: "#8b9bc4" }}>
-                PIN
-              </label>
-              <div className="relative mt-1">
-                <input
-                  required
-                  type={showStaffPin ? "text" : "password"}
-                  autoComplete="new-password"
-                  name="staff-login-pin-field"
-                  inputMode="numeric"
-                  value={staffPin}
-                  onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  className="w-full px-3 py-2.5 pr-14 bg-transparent focus:outline-none uba-input"
-                  style={{ color: "#e8edf9" }}
-                  placeholder="4-6 digit PIN"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowStaffPin(!showStaffPin)}
-                  className="absolute right-0 top-1/2 -translate-y-1/2 text-xs font-medium hover:opacity-80"
-                  style={{ color: "#60a5fa" }}
-                >
-                  {showStaffPin ? "hide" : "show"}
-                </button>
-              </div>
-            </div>
-
-            {error && (
-              <p
-                className="text-xs px-3 py-2 rounded-lg"
-                style={{
-                  color: "#f87171",
-                  background: "rgba(239, 68, 68, 0.1)",
-                  border: "1px solid rgba(239, 68, 68, 0.25)",
-                }}
-              >
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full font-semibold py-2.5 mt-2 disabled:opacity-50 hover:opacity-90 transition"
-              style={{
-                background: "linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)",
-                color: "#fff",
-                borderRadius: "0.75rem",
-                boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
-              }}
-            >
-              {loading ? "Verifying..." : "Clock In"}
-            </button>
-          </form>
-          )}
-
-          <p className="text-sm text-center mt-6" style={{ color: "#8b9bc4" }}>
-            Don't have an account?{" "}
-            <Link href="/signup" className="font-medium hover:opacity-80" style={{ color: "#60a5fa" }}>
-              Sign Up
-            </Link>
-          </p>
-        </div>
-      </div>
-
-      <style jsx>{`
-        .uba-input {
-          border: none;
-          border-bottom: 1px solid rgba(59, 130, 246, 0.25);
-          border-radius: 0;
-          transition: border-color 0.2s ease;
-        }
-        .uba-input:focus {
-          border-bottom-color: #60a5fa;
-        }
-        .uba-corner {
-          position: absolute;
-          width: 18px;
-          height: 18px;
-          border-color: #60a5fa;
-          opacity: 0.8;
-        }
-        .uba-corner-tl { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; border-top-left-radius: 4px; }
-        .uba-corner-tr { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; border-top-right-radius: 4px; }
-        .uba-corner-bl { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; border-bottom-left-radius: 4px; }
-        .uba-corner-br { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; border-bottom-right-radius: 4px; }
-        .uba-scanline {
-          position: absolute;
-          left: 0; right: 0;
-          height: 2px;
-          background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.6), transparent);
-          top: 0;
-          animation: uba-scan 4s linear infinite;
-          pointer-events: none;
-        }
-        @keyframes uba-scan {
-          0% { top: 0%; }
-          100% { top: 100%; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .uba-scanline { animation: none; }
-        }
-      `}</style>
-    </div>
-  );
-}
-</file>
-
-<file path="app/onboarding/page.tsx">
-"use client";
-
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { defaultThemeId } from "../lib/themes";
-
-// Excludes visually ambiguous characters (0/O, 1/I) since owners will read
-// this code aloud or type it manually on a shared device.
-const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateShopCode(): string {
-  let code = "";
-  for (let i = 0; i < 6; i++) {
-    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
-  }
-  return code;
-}
-
-async function generateUniqueShopCode(): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = generateShopCode();
-    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
-    if (existing.empty) return code;
-  }
-  // Extremely unlikely fallback — timestamp-based suffix guarantees uniqueness
-  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
-}
-
-export default function OnboardingPage() {
-  const [step, setStep] = useState(1);
-  const [businessName, setBusinessName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const router = useRouter();
-
-  // Protect this page: if nobody is logged in, send them back to sign up
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      if (!user) {
-        router.push("/signup");
-      }
-    });
-    return () => unsubscribe();
-  }, [router]);
-
-  const handleFinish = async () => {
-    setError("");
-    setLoading(true);
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error("No logged-in user found.");
-
-      const shopCode = await generateUniqueShopCode();
-
-      await setDoc(doc(db, "tenants", user.uid), {
-        businessName,
-        theme: defaultThemeId,
-        subscriptionStatus: "TRIAL",
-        trialStartDate: new Date().toISOString(),
-        ownerUid: user.uid,
-        ownerEmail: user.email,
-        shopCode,
-      });
-
-      router.push("/dashboard");
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8">
-        {/* Progress dots */}
-        <div className="flex justify-center gap-2 mb-6">
-          {[1, 2].map((s) => (
-            <div
-              key={s}
-              className={`h-2 w-8 rounded-full ${
-                s <= step ? "bg-blue-600" : "bg-gray-200"
-              }`}
-            />
-          ))}
-        </div>
-
-        {/* Step 1: Business Name */}
-        {step === 1 && (
-          <div>
-            <h1 className="text-xl font-bold text-gray-800 mb-2">
-              What's your business name?
-            </h1>
-            <p className="text-sm text-gray-500 mb-4">
-              This will appear on your dashboard and receipts.
-            </p>
-            <input
-              type="text"
-              value={businessName}
-              onChange={(e) => setBusinessName(e.target.value)}
-              placeholder="Enter your business name"
-              className="w-full px-4 py-2 border rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 mb-6"
-            />
-            <button
-              disabled={!businessName.trim()}
-              onClick={() => setStep(2)}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
-        )}
-
-        {/* Step 2: Confirm */}
-        {step === 2 && (
-          <div className="text-center">
-            <h1 className="text-xl font-bold text-gray-800 mb-2">
-              You're all set, {businessName}!
-            </h1>
-            <p className="text-sm text-gray-500 mb-6">
-              Let's start managing your business smarter.
-            </p>
-
-            {error && (
-              <p className="text-sm text-red-500 bg-red-50 p-2 rounded-lg mb-4">
-                {error}
-              </p>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => setStep(1)}
-                className="flex-1 border border-gray-300 text-gray-600 font-semibold py-2 rounded-lg"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleFinish}
-                disabled={loading}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-50"
-              >
-                {loading ? "Setting up..." : "Get Started"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="app/sales/page.tsx">
 "use client";
 
@@ -7254,6 +7790,8 @@ import {
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
+import { canAccessPage, homeFor } from "../lib/permissions";
+import { can, type Role } from "../lib/permissions";
 
 type SaleRecord = {
   id: string;
@@ -7345,6 +7883,9 @@ export default function SalesExpensesPage() {
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [uid, setUid] = useState<string | null>(null);
+  const [role, setRole] = useState<Role>("cashier");
+  const canEditSales = can(role, "sales.edit");
+  const canDeleteExpense = can(role, "expenses.delete");
   const router = useRouter();
 
   const [period, setPeriod] = useState<Period>("Day");
@@ -7392,6 +7933,11 @@ export default function SalesExpensesPage() {
       }
 
       const session = await getSessionInfo(user);
+      setRole(session.role);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -7790,23 +8336,26 @@ export default function SalesExpensesPage() {
                         {new Date(sale.date).toLocaleString()}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => openEditSale(sale)}
-                            className="text-xs font-medium hover:underline"
-                            style={{ color: "var(--color-primary-light)" }}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDeleteSale(sale)}
-                            disabled={deletingSaleId === sale.id}
-                            className="text-xs font-medium hover:underline disabled:opacity-50"
-                            style={{ color: "#f87171" }}
-                          >
-                            {deletingSaleId === sale.id ? "Deleting..." : "Delete"}
-                          </button>
-                        </div>
+                        
+                        {canEditSales && (
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => openEditSale(sale)}
+                              className="text-xs font-medium hover:underline"
+                              style={{ color: "var(--color-primary-light)" }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSale(sale)}
+                              disabled={deletingSaleId === sale.id}
+                              className="text-xs font-medium hover:underline disabled:opacity-50"
+                              style={{ color: "#f87171" }}
+                            >
+                              {deletingSaleId === sale.id ? "Deleting..." : "Delete"}
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -7906,14 +8455,16 @@ export default function SalesExpensesPage() {
                           >
                             Edit
                           </button>
-                          <button
-                            onClick={() => handleDeleteExpense(exp)}
-                            disabled={deletingExpenseId === exp.id}
-                            className="text-xs font-medium hover:underline disabled:opacity-50"
-                            style={{ color: "#f87171" }}
-                          >
-                            {deletingExpenseId === exp.id ? "Deleting..." : "Delete"}
-                          </button>
+                          {canDeleteExpense && (
+                            <button
+                              onClick={() => handleDeleteExpense(exp)}
+                              disabled={deletingExpenseId === exp.id}
+                              className="text-xs font-medium hover:underline disabled:opacity-50"
+                              style={{ color: "#f87171" }}
+                            >
+                              {deletingExpenseId === exp.id ? "Deleting..." : "Delete"}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -8209,114 +8760,6 @@ export default function SalesExpensesPage() {
       </main>
     </div>
   );
-}
-</file>
-
-<file path="app/layout.tsx">
-import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Orbitron, Cinzel, Inter } from "next/font/google";
-import "./globals.css";
-import { ThemeProvider } from "./context/ThemeContext";
-import UbaAssistant from "./components/UbaAssistant";
-
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-const orbitron = Orbitron({
-  variable: "--font-orbitron",
-  subsets: ["latin"],
-  weight: ["500", "700", "900"],
-});
-
-const cinzel = Cinzel({
-  variable: "--font-cinzel",
-  subsets: ["latin"],
-  weight: ["500", "700", "900"],
-});
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-});
-
-export const metadata: Metadata = {
-  title: "UBA — Universal Business Assistant",
-  description: "Your all-in-one business management assistant.",
-  manifest: "/manifest.json",
-  icons: {
-    icon: [
-      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
-    ],
-    apple: "/icon-192.png",
-  },
-};
-
-export const viewport: Viewport = {
-  themeColor: "#8b5cf6",
-};
-
-export default function RootLayout({ children }: LayoutProps<"/">) {
-
-
-  return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${orbitron.variable} ${cinzel.variable} ${inter.variable} h-full antialiased`}
-    >
-        <body className="min-h-full flex flex-col">
-        <ThemeProvider>
-          {children}
-          <UbaAssistant />
-        </ThemeProvider>
-      </body>
-    </html>
-  );
-}
-</file>
-
-<file path="tsconfig.json">
-{
-  "compilerOptions": {
-    "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "react-jsx",
-    "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
-    "paths": {
-      "@/*": ["./*"]
-    }
-  },
-  "include": [
-    "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
-    "**/*.mts"
-, "../page.tsx"  ],
-  "exclude": ["node_modules" ,"app/sw.ts"]
 }
 </file>
 
@@ -8843,6 +9286,722 @@ export default function RootPage() {
 }
 </file>
 
+<file path="app/pos/page.tsx">
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import {
+  collection,
+  addDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  doc,
+  getDoc,
+  updateDoc,
+  increment,
+} from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
+import Sidebar from "../components/Sidebar";
+import { printReceipt } from "../lib/receipt";
+import { useOfflineSync } from "../lib/useOfflineSync";
+
+type InventoryItem = {
+  id: string;
+  name: string;
+  category: string;
+  stock: number;
+  unit: string;
+  unitCost: number;
+  sellingPrice: number;
+};
+
+type BundleComponent = { itemId: string; itemName: string; quantity: number };
+type Bundle = {
+  id: string;
+  name: string;
+  category: string;
+  components: BundleComponent[];
+  price: number;
+};
+
+type CartLine =
+  | { lineId: string; kind: "item"; refId: string; name: string; unit: string; unitPrice: number; unitCost: number; quantity: number; maxStock: number }
+  | { lineId: string; kind: "bundle"; refId: string; name: string; unitPrice: number; quantity: number; components: BundleComponent[]; maxBundleStock: number };
+
+const cardStyle: React.CSSProperties = {
+  background: "var(--color-surface)",
+  borderRadius: "var(--radius-card)",
+  borderWidth: "var(--border-width)",
+  borderColor: "var(--color-border)",
+};
+
+const inputStyle: React.CSSProperties = {
+  background: "var(--color-bg-secondary)",
+  color: "var(--color-text-primary)",
+  borderColor: "var(--color-border)",
+  borderRadius: "var(--radius-button)",
+  borderWidth: "var(--border-width)",
+};
+
+type QueuedSalePayload = {
+  uid: string;
+  saleRecords: { itemName: string; quantity: number; price: number; total: number; profit: number; date: string }[];
+  stockDeltas: { itemId: string; qty: number }[];
+};
+
+export default function PosPage() {
+  const [uid, setUid] = useState<string | null>(null);
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [bundles, setBundles] = useState<Bundle[]>([]);
+  const router = useRouter();
+
+  const [searchText, setSearchText] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
+
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cashReceived, setCashReceived] = useState("");
+  const [processing, setProcessing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [receiptLines, setReceiptLines] = useState<CartLine[] | null>(null);
+  const [receiptChange, setReceiptChange] = useState(0);
+  const [businessName, setBusinessName] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
+  // Processes one queued offline sale by replaying the exact Firestore writes
+  // that would have happened had the device been online at checkout time.
+  const processPosSale = async (payload: QueuedSalePayload) => {
+    for (const record of payload.saleRecords) {
+      await addDoc(collection(db, "tenants", payload.uid, "sales"), record);
+    }
+    for (const delta of payload.stockDeltas) {
+      await updateDoc(doc(db, "tenants", payload.uid, "inventory", delta.itemId), {
+        stock: increment(-delta.qty),
+      });
+    }
+  };
+
+  const { isOnline, pendingCount, syncing, enqueue, syncNow } = useOfflineSync({
+    pos_sale: processPosSale,
+  });
+
+  useEffect(() => {
+    let unsubInv = () => {};
+    let unsubBundles = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
+      unsubInv();
+      unsubBundles();
+
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const session = await getSessionInfo(user);
+      const tenantId = session.tenantId;
+      setUid(tenantId);
+
+      getDoc(doc(db, "tenants", tenantId)).then((snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setBusinessName(data.businessName || "");
+          setLogoUrl(data.logoUrl || null);
+        }
+      });
+
+      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
+        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
+      });
+
+      const bundleQuery = query(collection(db, "tenants", tenantId, "bundles"), orderBy("name"));
+      unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
+        setBundles(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]);
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubInv();
+      unsubBundles();
+    };
+  }, [router]);
+
+  const categories = useMemo(() => {
+    const all = [...items.map((i) => i.category), ...bundles.map((b) => b.category)];
+    return ["All", ...Array.from(new Set(all.filter(Boolean))).sort()];
+  }, [items, bundles]);
+
+  const filteredProducts = useMemo(() => {
+    const searchLower = searchText.toLowerCase().trim();
+    const itemCards = items
+      .filter((i) => selectedCategory === "All" || i.category === selectedCategory)
+      .filter((i) => !searchLower || i.name.toLowerCase().includes(searchLower))
+      .map((i) => ({ kind: "item" as const, data: i }));
+    const bundleCards = bundles
+      .filter((b) => selectedCategory === "All" || b.category === selectedCategory)
+      .filter((b) => !searchLower || b.name.toLowerCase().includes(searchLower))
+      .map((b) => ({ kind: "bundle" as const, data: b }));
+    return [...itemCards, ...bundleCards];
+  }, [items, bundles, selectedCategory, searchText]);
+
+  // Cash-in-hand quantity available per underlying inventory item, accounting for
+  // both direct item lines AND bundle component consumption already in the cart.
+  const stockRemaining = useMemo(() => {
+    const remaining = new Map(items.map((i) => [i.id, i.stock]));
+    cart.forEach((line) => {
+      if (line.kind === "item") {
+        remaining.set(line.refId, (remaining.get(line.refId) || 0) - line.quantity);
+      } else {
+        line.components.forEach((c) => {
+          remaining.set(c.itemId, (remaining.get(c.itemId) || 0) - c.quantity * line.quantity);
+        });
+      }
+    });
+    return remaining;
+  }, [items, cart]);
+
+  const addItemToCart = (item: InventoryItem) => {
+    setErrorMessage("");
+    const existing = cart.find((l) => l.kind === "item" && l.refId === item.id);
+    const currentRemaining = stockRemaining.get(item.id) ?? item.stock;
+    if (currentRemaining <= 0) {
+      setErrorMessage(`No more stock available for "${item.name}".`);
+      return;
+    }
+    if (existing) {
+      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
+    } else {
+      setCart([
+        ...cart,
+        {
+          lineId: `item-${item.id}`,
+          kind: "item",
+          refId: item.id,
+          name: item.name,
+          unit: item.unit || "Piece",
+          unitPrice: item.sellingPrice,
+          unitCost: item.unitCost || 0,
+          quantity: 1,
+          maxStock: item.stock,
+        },
+      ]);
+    }
+  };
+
+  const addBundleToCart = (bundle: Bundle) => {
+    setErrorMessage("");
+    // Check every component has enough remaining stock for one more bundle unit
+    const insufficient = bundle.components.find((c) => (stockRemaining.get(c.itemId) ?? 0) < c.quantity);
+    if (insufficient) {
+      setErrorMessage(`Not enough stock of "${insufficient.itemName}" for this bundle.`);
+      return;
+    }
+    const existing = cart.find((l) => l.kind === "bundle" && l.refId === bundle.id);
+    if (existing) {
+      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
+    } else {
+      setCart([
+        ...cart,
+        {
+          lineId: `bundle-${bundle.id}`,
+          kind: "bundle",
+          refId: bundle.id,
+          name: bundle.name,
+          unitPrice: bundle.price,
+          quantity: 1,
+          components: bundle.components,
+          maxBundleStock: 0,
+        },
+      ]);
+    }
+  };
+
+  const updateQuantity = (lineId: string, delta: number) => {
+    setErrorMessage("");
+    setCart((prev) => {
+      const line = prev.find((l) => l.lineId === lineId);
+      if (!line) return prev;
+      const newQty = line.quantity + delta;
+      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
+      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
+    });
+  };
+
+  const setExactQuantity = (lineId: string, valueStr: string) => {
+    setErrorMessage("");
+    const newQty = Number(valueStr);
+    if (isNaN(newQty)) return;
+    setCart((prev) => {
+      const line = prev.find((l) => l.lineId === lineId);
+      if (!line) return prev;
+      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
+      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
+    });
+  };
+
+  const removeLine = (lineId: string) => {
+    setCart(cart.filter((l) => l.lineId !== lineId));
+  };
+
+  const cartTotal = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0), [cart]);
+  const change = Number(cashReceived || 0) - cartTotal;
+
+  const handleCompleteSale = async () => {
+    if (!uid || cart.length === 0) return;
+    if (Number(cashReceived) < cartTotal) {
+      setErrorMessage("Cash received is less than the total amount due.");
+      return;
+    }
+
+    setProcessing(true);
+    setErrorMessage("");
+
+    try {
+      // Build the sale records + stock deltas once, regardless of connection status.
+      const saleRecords: QueuedSalePayload["saleRecords"] = [];
+      const stockDeltas: QueuedSalePayload["stockDeltas"] = [];
+      const nowIso = new Date().toISOString();
+
+      for (const line of cart) {
+        if (line.kind === "item") {
+          const total = line.unitPrice * line.quantity;
+          const profit = total - line.unitCost * line.quantity;
+          saleRecords.push({
+            itemName: line.name,
+            quantity: line.quantity,
+            price: line.unitPrice,
+            total,
+            profit,
+            date: nowIso,
+          });
+          stockDeltas.push({ itemId: line.refId, qty: line.quantity });
+        } else {
+          let totalCost = 0;
+          for (const comp of line.components) {
+            const invItem = items.find((i) => i.id === comp.itemId);
+            totalCost += (invItem?.unitCost || 0) * comp.quantity * line.quantity;
+          }
+          const total = line.unitPrice * line.quantity;
+          const profit = total - totalCost;
+          saleRecords.push({
+            itemName: `${line.name} (Bundle)`,
+            quantity: line.quantity,
+            price: line.unitPrice,
+            total,
+            profit,
+            date: nowIso,
+          });
+          for (const comp of line.components) {
+            stockDeltas.push({ itemId: comp.itemId, qty: comp.quantity * line.quantity });
+          }
+        }
+      }
+
+      if (isOnline) {
+        // Write straight to Firestore as before.
+        for (const record of saleRecords) {
+          await addDoc(collection(db, "tenants", uid, "sales"), { ...record, serialNumberUsed: null });
+        }
+        for (const delta of stockDeltas) {
+          await updateDoc(doc(db, "tenants", uid, "inventory", delta.itemId), {
+            stock: increment(-delta.qty),
+          });
+        }
+      } else {
+        // Queue the sale locally, then reflect the stock change immediately
+        // on this device so the next transaction sees accurate stock.
+        await enqueue("pos_sale", { uid, saleRecords, stockDeltas });
+        setItems((prev) =>
+          prev.map((item) => {
+            const totalDeducted = stockDeltas
+              .filter((d) => d.itemId === item.id)
+              .reduce((sum, d) => sum + d.qty, 0);
+            return totalDeducted > 0 ? { ...item, stock: item.stock - totalDeducted } : item;
+          })
+        );
+      }
+
+      setReceiptLines(cart);
+      setReceiptChange(change);
+      setCart([]);
+      setCashReceived("");
+    } catch (err) {
+      console.error(err);
+      setErrorMessage("Something went wrong while completing the sale. Please try again.");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+
+  return (
+    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+      <Sidebar />
+      <main className="flex-1 p-6 flex flex-col lg:flex-row gap-6">
+        {/* Product picker */}
+        <div className="flex-1">
+          {(!isOnline || pendingCount > 0) && (
+            <div
+              className="flex items-center justify-between gap-3 px-4 py-2.5 mb-4 text-sm font-medium"
+              style={{
+                background: isOnline ? "rgba(250, 204, 21, 0.1)" : "rgba(239, 68, 68, 0.1)",
+                color: isOnline ? "#facc15" : "#f87171",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+              <span>
+                {isOnline
+                  ? `🟡 ${pendingCount} sale(s) waiting to sync`
+                  : "🔴 Offline — sales are being saved on this device"}
+              </span>
+              {isOnline && pendingCount > 0 && (
+                <button
+                  onClick={() => syncNow()}
+                  disabled={syncing}
+                  className="text-xs font-bold px-3 py-1 rounded-full hover:opacity-80 disabled:opacity-50"
+                  style={{ background: "rgba(250, 204, 21, 0.2)" }}
+                >
+                  {syncing ? "Syncing..." : "Sync Now"}
+                </button>
+              )}
+            </div>
+          )}
+          <h1
+            className="text-xl font-bold mb-1"
+            style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+          >
+            Point of Sale
+          </h1>
+          <p className="text-sm mb-4" style={{ color: "var(--color-text-secondary)" }}>
+            Tap items to add them to the cart
+          </p>
+
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Search products..."
+            className="w-full px-4 py-2 mb-3"
+            style={inputStyle}
+          />
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            {categories.map((cat) => {
+              const isActive = selectedCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className="px-3 py-1 rounded-full text-xs font-medium transition"
+                  style={{
+                    background: isActive ? "var(--color-primary)" : "var(--color-surface)",
+                    color: isActive ? "#fff" : "var(--color-text-secondary)",
+                    borderWidth: isActive ? 0 : "var(--border-width)",
+                    borderColor: "var(--color-border)",
+                  }}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {filteredProducts.map((p) => {
+              if (p.kind === "item") {
+                const remaining = stockRemaining.get(p.data.id) ?? p.data.stock;
+                const outOfStock = remaining <= 0;
+                return (
+                  <button
+                    key={`item-${p.data.id}`}
+                    onClick={() => addItemToCart(p.data)}
+                    disabled={outOfStock}
+                    className="p-3 text-left transition hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
+                    style={cardStyle}
+                  >
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                      {p.data.name}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                      Stock: {remaining} {p.data.unit || "Piece"}
+                    </p>
+                    <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
+                      ₱{p.data.sellingPrice.toLocaleString()}
+                    </p>
+                  </button>
+                );
+              }
+              return (
+                <button
+                  key={`bundle-${p.data.id}`}
+                  onClick={() => addBundleToCart(p.data)}
+                  className="p-3 text-left transition hover:opacity-90"
+                  style={{ ...cardStyle, background: "var(--color-surface-glass)" }}
+                >
+                  <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                    {p.data.name}{" "}
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded-full"
+                      style={{ background: "var(--color-secondary)", color: "#fff" }}
+                    >
+                      Bundle
+                    </span>
+                  </p>
+                  <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                    {p.data.components.length} parts
+                  </p>
+                  <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
+                    ₱{p.data.price.toLocaleString()}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Cart / Checkout panel */}
+        <div className="w-full lg:w-96 flex-shrink-0 flex">
+          <div className="p-4 flex flex-col w-full" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+            <p
+              className="text-sm font-semibold mb-3"
+              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+            >
+              🛒 Cart
+            </p>
+
+            {cart.length === 0 ? (
+                <p className="text-sm py-6 text-center" style={{ color: "var(--color-text-secondary)" }}>
+                No items in cart yet
+              </p>
+            ) : (
+              <div className="space-y-2 mb-4 max-h-72 overflow-y-auto">
+                {cart.map((line) => (
+                  <div
+                    key={line.lineId}
+                    className="flex justify-between items-center px-2 py-2 rounded-lg text-sm"
+                    style={{ background: "var(--color-bg-secondary)" }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="truncate" style={{ color: "var(--color-text-primary)" }}>
+                        {line.name}
+                      </p>
+                      <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                        ₱{line.unitPrice.toLocaleString()} × {line.quantity}
+                        {line.kind === "item" && line.unit !== "Piece" ? ` ${line.unit}` : ""}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {line.kind === "item" && line.unit !== "Piece" ? (
+                        <input
+                          type="number"
+                          step="any"
+                          min={0.01}
+                          value={line.quantity}
+                          onChange={(e) => setExactQuantity(line.lineId, e.target.value)}
+                          className="w-16 px-2 py-1 text-center"
+                          style={inputStyle}
+                        />
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => updateQuantity(line.lineId, -1)}
+                            className="w-6 h-6 rounded-full font-bold"
+                            style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                          >
+                            −
+                          </button>
+                          <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
+                            {line.quantity}
+                          </span>
+                          <button
+                            onClick={() => updateQuantity(line.lineId, 1)}
+                            className="w-6 h-6 rounded-full font-bold"
+                            style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                          >
+                            +
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={() => removeLine(line.lineId)}
+                        className="ml-1 text-xs"
+                        style={{ color: "#f87171" }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div
+              className="flex justify-between items-center py-3 mb-3"
+              style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
+            >
+              <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                Total
+              </span>
+              <span
+                className="text-xl font-bold"
+                style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+              >
+                ₱{cartTotal.toLocaleString()}
+              </span>
+            </div>
+
+            <label className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+              Cash Received (₱)
+            </label>
+            <input
+              type="number"
+              value={cashReceived}
+              onChange={(e) => setCashReceived(e.target.value)}
+              className="w-full mt-1 mb-3 px-3 py-2"
+              style={inputStyle}
+              placeholder="0"
+            />
+
+            <div
+              className="flex justify-between items-center px-4 py-3 mb-4"
+              style={{
+                background: change >= 0 ? "var(--gradient-accent)" : "rgba(239, 68, 68, 0.15)",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+                <span
+                className="text-sm font-medium"
+                style={{ color: change >= 0 ? "#fff" : "#f87171" }}
+              >
+                {change >= 0 ? "Change" : "Insufficient"}
+              </span>
+              <span
+                className="text-lg font-bold"
+                style={{ color: change >= 0 ? "#fff" : "#f87171", fontFamily: "var(--font-heading)" }}
+              >
+                ₱{Math.abs(change).toLocaleString()}
+              </span>
+            </div>
+
+            {errorMessage && (
+              <p
+                className="text-sm p-2 rounded-lg mb-3"
+                style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}
+              >
+                {errorMessage}
+              </p>
+            )}
+
+            <button
+              onClick={handleCompleteSale}
+              disabled={cart.length === 0 || processing}
+              className="w-full font-semibold py-3 disabled:opacity-50 hover:opacity-90"
+              style={{
+                background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                color: "#fff",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+              {processing ? "Processing..." : "✓ Complete Sale"}
+            </button>
+          </div>
+        </div>
+
+        {/* Receipt confirmation */}
+        {receiptLines && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+            <div
+              className="w-full max-w-sm p-6"
+              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
+            >
+              <p
+                className="text-lg font-bold mb-1 text-center"
+                style={{ color: "#4ade80", fontFamily: "var(--font-heading)" }}
+              >
+                ✓ Sale Complete
+              </p>
+              <p className="text-xs text-center mb-4" style={{ color: "var(--color-text-secondary)" }}>
+                {new Date().toLocaleString()}
+              </p>
+
+              <div className="space-y-1 mb-4">
+                {receiptLines.map((line) => (
+                  <div key={line.lineId} className="flex justify-between text-sm">
+                    <span style={{ color: "var(--color-text-primary)" }}>
+                      {line.name} × {line.quantity}
+                    </span>
+                    <span style={{ color: "var(--color-text-secondary)" }}>
+                      ₱{(line.unitPrice * line.quantity).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div
+                className="flex justify-between items-center py-2 mb-4"
+                style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
+              >
+                <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                  Change
+                </span>
+                <span className="text-lg font-bold" style={{ color: "var(--color-primary-light)" }}>
+                  ₱{receiptChange.toLocaleString()}
+                </span>
+              </div>
+
+                <button
+                onClick={() => {
+                  const total = receiptLines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+                  printReceipt({
+                    businessName,
+                    logoUrl,
+                    receiptTitle: "Sales Receipt",
+                    date: new Date(),
+                    lines: receiptLines.map((l) => ({
+                      label: `${l.name} × ${l.quantity}`,
+                      amount: l.unitPrice * l.quantity,
+                    })),
+                    total,
+                    cashReceived: total + receiptChange,
+                    change: receiptChange,
+                  });
+                }}
+                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
+                style={{
+                  background: "var(--color-bg-secondary)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                🖨️ Print Receipt
+              </button>
+
+              <button
+                onClick={() => setReceiptLines(null)}
+                className="w-full font-semibold py-2.5 hover:opacity-90"
+                style={{
+                  background: "var(--gradient-accent)",
+                  color: "#fff",
+                  borderRadius: "var(--radius-button)",
+                }}
+              >
+                New Transaction
+              </button>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+</file>
+
 <file path="app/po-tickets/page.tsx">
 "use client";
 
@@ -8866,6 +10025,9 @@ import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
+import { canAccessPage, homeFor } from "../lib/permissions";
+
+
 
 type InventoryItem = {
   id: string;
@@ -9074,6 +10236,10 @@ export default function POTicketsPage() {
       }
 
       const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -9969,722 +11135,6 @@ export default function POTicketsPage() {
 }
 </file>
 
-<file path="app/pos/page.tsx">
-"use client";
-
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  doc,
-  getDoc,
-  updateDoc,
-  increment,
-} from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { getSessionInfo } from "../lib/staffAuth";
-import Sidebar from "../components/Sidebar";
-import { printReceipt } from "../lib/receipt";
-import { useOfflineSync } from "../lib/useOfflineSync";
-
-type InventoryItem = {
-  id: string;
-  name: string;
-  category: string;
-  stock: number;
-  unit: string;
-  unitCost: number;
-  sellingPrice: number;
-};
-
-type BundleComponent = { itemId: string; itemName: string; quantity: number };
-type Bundle = {
-  id: string;
-  name: string;
-  category: string;
-  components: BundleComponent[];
-  price: number;
-};
-
-type CartLine =
-  | { lineId: string; kind: "item"; refId: string; name: string; unit: string; unitPrice: number; unitCost: number; quantity: number; maxStock: number }
-  | { lineId: string; kind: "bundle"; refId: string; name: string; unitPrice: number; quantity: number; components: BundleComponent[]; maxBundleStock: number };
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--color-surface)",
-  borderRadius: "var(--radius-card)",
-  borderWidth: "var(--border-width)",
-  borderColor: "var(--color-border)",
-};
-
-const inputStyle: React.CSSProperties = {
-  background: "var(--color-bg-secondary)",
-  color: "var(--color-text-primary)",
-  borderColor: "var(--color-border)",
-  borderRadius: "var(--radius-button)",
-  borderWidth: "var(--border-width)",
-};
-
-type QueuedSalePayload = {
-  uid: string;
-  saleRecords: { itemName: string; quantity: number; price: number; total: number; profit: number; date: string }[];
-  stockDeltas: { itemId: string; qty: number }[];
-};
-
-export default function PosPage() {
-  const [uid, setUid] = useState<string | null>(null);
-  const [items, setItems] = useState<InventoryItem[]>([]);
-  const [bundles, setBundles] = useState<Bundle[]>([]);
-  const router = useRouter();
-
-  const [searchText, setSearchText] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState("All");
-
-  const [cart, setCart] = useState<CartLine[]>([]);
-  const [cashReceived, setCashReceived] = useState("");
-  const [processing, setProcessing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [receiptLines, setReceiptLines] = useState<CartLine[] | null>(null);
-  const [receiptChange, setReceiptChange] = useState(0);
-  const [businessName, setBusinessName] = useState("");
-  const [logoUrl, setLogoUrl] = useState<string | null>(null);
-
-  // Processes one queued offline sale by replaying the exact Firestore writes
-  // that would have happened had the device been online at checkout time.
-  const processPosSale = async (payload: QueuedSalePayload) => {
-    for (const record of payload.saleRecords) {
-      await addDoc(collection(db, "tenants", payload.uid, "sales"), record);
-    }
-    for (const delta of payload.stockDeltas) {
-      await updateDoc(doc(db, "tenants", payload.uid, "inventory", delta.itemId), {
-        stock: increment(-delta.qty),
-      });
-    }
-  };
-
-  const { isOnline, pendingCount, syncing, enqueue, syncNow } = useOfflineSync({
-    pos_sale: processPosSale,
-  });
-
-  useEffect(() => {
-    let unsubInv = () => {};
-    let unsubBundles = () => {};
-
-    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
-      unsubInv();
-      unsubBundles();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      const session = await getSessionInfo(user);
-      const tenantId = session.tenantId;
-      setUid(tenantId);
-
-      getDoc(doc(db, "tenants", tenantId)).then((snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          setBusinessName(data.businessName || "");
-          setLogoUrl(data.logoUrl || null);
-        }
-      });
-
-      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(invQuery, (snapshot) => {
-        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItem[]);
-      });
-
-      const bundleQuery = query(collection(db, "tenants", tenantId, "bundles"), orderBy("name"));
-      unsubBundles = onSnapshot(bundleQuery, (snapshot) => {
-        setBundles(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Bundle[]);
-      });
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubInv();
-      unsubBundles();
-    };
-  }, [router]);
-
-  const categories = useMemo(() => {
-    const all = [...items.map((i) => i.category), ...bundles.map((b) => b.category)];
-    return ["All", ...Array.from(new Set(all.filter(Boolean))).sort()];
-  }, [items, bundles]);
-
-  const filteredProducts = useMemo(() => {
-    const searchLower = searchText.toLowerCase().trim();
-    const itemCards = items
-      .filter((i) => selectedCategory === "All" || i.category === selectedCategory)
-      .filter((i) => !searchLower || i.name.toLowerCase().includes(searchLower))
-      .map((i) => ({ kind: "item" as const, data: i }));
-    const bundleCards = bundles
-      .filter((b) => selectedCategory === "All" || b.category === selectedCategory)
-      .filter((b) => !searchLower || b.name.toLowerCase().includes(searchLower))
-      .map((b) => ({ kind: "bundle" as const, data: b }));
-    return [...itemCards, ...bundleCards];
-  }, [items, bundles, selectedCategory, searchText]);
-
-  // Cash-in-hand quantity available per underlying inventory item, accounting for
-  // both direct item lines AND bundle component consumption already in the cart.
-  const stockRemaining = useMemo(() => {
-    const remaining = new Map(items.map((i) => [i.id, i.stock]));
-    cart.forEach((line) => {
-      if (line.kind === "item") {
-        remaining.set(line.refId, (remaining.get(line.refId) || 0) - line.quantity);
-      } else {
-        line.components.forEach((c) => {
-          remaining.set(c.itemId, (remaining.get(c.itemId) || 0) - c.quantity * line.quantity);
-        });
-      }
-    });
-    return remaining;
-  }, [items, cart]);
-
-  const addItemToCart = (item: InventoryItem) => {
-    setErrorMessage("");
-    const existing = cart.find((l) => l.kind === "item" && l.refId === item.id);
-    const currentRemaining = stockRemaining.get(item.id) ?? item.stock;
-    if (currentRemaining <= 0) {
-      setErrorMessage(`No more stock available for "${item.name}".`);
-      return;
-    }
-    if (existing) {
-      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
-    } else {
-      setCart([
-        ...cart,
-        {
-          lineId: `item-${item.id}`,
-          kind: "item",
-          refId: item.id,
-          name: item.name,
-          unit: item.unit || "Piece",
-          unitPrice: item.sellingPrice,
-          unitCost: item.unitCost || 0,
-          quantity: 1,
-          maxStock: item.stock,
-        },
-      ]);
-    }
-  };
-
-  const addBundleToCart = (bundle: Bundle) => {
-    setErrorMessage("");
-    // Check every component has enough remaining stock for one more bundle unit
-    const insufficient = bundle.components.find((c) => (stockRemaining.get(c.itemId) ?? 0) < c.quantity);
-    if (insufficient) {
-      setErrorMessage(`Not enough stock of "${insufficient.itemName}" for this bundle.`);
-      return;
-    }
-    const existing = cart.find((l) => l.kind === "bundle" && l.refId === bundle.id);
-    if (existing) {
-      setCart(cart.map((l) => (l.lineId === existing.lineId ? { ...l, quantity: l.quantity + 1 } : l)));
-    } else {
-      setCart([
-        ...cart,
-        {
-          lineId: `bundle-${bundle.id}`,
-          kind: "bundle",
-          refId: bundle.id,
-          name: bundle.name,
-          unitPrice: bundle.price,
-          quantity: 1,
-          components: bundle.components,
-          maxBundleStock: 0,
-        },
-      ]);
-    }
-  };
-
-  const updateQuantity = (lineId: string, delta: number) => {
-    setErrorMessage("");
-    setCart((prev) => {
-      const line = prev.find((l) => l.lineId === lineId);
-      if (!line) return prev;
-      const newQty = line.quantity + delta;
-      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
-      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
-    });
-  };
-
-  const setExactQuantity = (lineId: string, valueStr: string) => {
-    setErrorMessage("");
-    const newQty = Number(valueStr);
-    if (isNaN(newQty)) return;
-    setCart((prev) => {
-      const line = prev.find((l) => l.lineId === lineId);
-      if (!line) return prev;
-      if (newQty <= 0) return prev.filter((l) => l.lineId !== lineId);
-      return prev.map((l) => (l.lineId === lineId ? { ...l, quantity: newQty } : l));
-    });
-  };
-
-  const removeLine = (lineId: string) => {
-    setCart(cart.filter((l) => l.lineId !== lineId));
-  };
-
-  const cartTotal = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0), [cart]);
-  const change = Number(cashReceived || 0) - cartTotal;
-
-  const handleCompleteSale = async () => {
-    if (!uid || cart.length === 0) return;
-    if (Number(cashReceived) < cartTotal) {
-      setErrorMessage("Cash received is less than the total amount due.");
-      return;
-    }
-
-    setProcessing(true);
-    setErrorMessage("");
-
-    try {
-      // Build the sale records + stock deltas once, regardless of connection status.
-      const saleRecords: QueuedSalePayload["saleRecords"] = [];
-      const stockDeltas: QueuedSalePayload["stockDeltas"] = [];
-      const nowIso = new Date().toISOString();
-
-      for (const line of cart) {
-        if (line.kind === "item") {
-          const total = line.unitPrice * line.quantity;
-          const profit = total - line.unitCost * line.quantity;
-          saleRecords.push({
-            itemName: line.name,
-            quantity: line.quantity,
-            price: line.unitPrice,
-            total,
-            profit,
-            date: nowIso,
-          });
-          stockDeltas.push({ itemId: line.refId, qty: line.quantity });
-        } else {
-          let totalCost = 0;
-          for (const comp of line.components) {
-            const invItem = items.find((i) => i.id === comp.itemId);
-            totalCost += (invItem?.unitCost || 0) * comp.quantity * line.quantity;
-          }
-          const total = line.unitPrice * line.quantity;
-          const profit = total - totalCost;
-          saleRecords.push({
-            itemName: `${line.name} (Bundle)`,
-            quantity: line.quantity,
-            price: line.unitPrice,
-            total,
-            profit,
-            date: nowIso,
-          });
-          for (const comp of line.components) {
-            stockDeltas.push({ itemId: comp.itemId, qty: comp.quantity * line.quantity });
-          }
-        }
-      }
-
-      if (isOnline) {
-        // Write straight to Firestore as before.
-        for (const record of saleRecords) {
-          await addDoc(collection(db, "tenants", uid, "sales"), { ...record, serialNumberUsed: null });
-        }
-        for (const delta of stockDeltas) {
-          await updateDoc(doc(db, "tenants", uid, "inventory", delta.itemId), {
-            stock: increment(-delta.qty),
-          });
-        }
-      } else {
-        // Queue the sale locally, then reflect the stock change immediately
-        // on this device so the next transaction sees accurate stock.
-        await enqueue("pos_sale", { uid, saleRecords, stockDeltas });
-        setItems((prev) =>
-          prev.map((item) => {
-            const totalDeducted = stockDeltas
-              .filter((d) => d.itemId === item.id)
-              .reduce((sum, d) => sum + d.qty, 0);
-            return totalDeducted > 0 ? { ...item, stock: item.stock - totalDeducted } : item;
-          })
-        );
-      }
-
-      setReceiptLines(cart);
-      setReceiptChange(change);
-      setCart([]);
-      setCashReceived("");
-    } catch (err) {
-      console.error(err);
-      setErrorMessage("Something went wrong while completing the sale. Please try again.");
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-
-  return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
-      <Sidebar />
-      <main className="flex-1 p-6 flex flex-col lg:flex-row gap-6">
-        {/* Product picker */}
-        <div className="flex-1">
-          {(!isOnline || pendingCount > 0) && (
-            <div
-              className="flex items-center justify-between gap-3 px-4 py-2.5 mb-4 text-sm font-medium"
-              style={{
-                background: isOnline ? "rgba(250, 204, 21, 0.1)" : "rgba(239, 68, 68, 0.1)",
-                color: isOnline ? "#facc15" : "#f87171",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-              <span>
-                {isOnline
-                  ? `🟡 ${pendingCount} sale(s) waiting to sync`
-                  : "🔴 Offline — sales are being saved on this device"}
-              </span>
-              {isOnline && pendingCount > 0 && (
-                <button
-                  onClick={() => syncNow()}
-                  disabled={syncing}
-                  className="text-xs font-bold px-3 py-1 rounded-full hover:opacity-80 disabled:opacity-50"
-                  style={{ background: "rgba(250, 204, 21, 0.2)" }}
-                >
-                  {syncing ? "Syncing..." : "Sync Now"}
-                </button>
-              )}
-            </div>
-          )}
-          <h1
-            className="text-xl font-bold mb-1"
-            style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-          >
-            Point of Sale
-          </h1>
-          <p className="text-sm mb-4" style={{ color: "var(--color-text-secondary)" }}>
-            Tap items to add them to the cart
-          </p>
-
-          <input
-            type="text"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            placeholder="Search products..."
-            className="w-full px-4 py-2 mb-3"
-            style={inputStyle}
-          />
-
-          <div className="flex flex-wrap gap-2 mb-4">
-            {categories.map((cat) => {
-              const isActive = selectedCategory === cat;
-              return (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className="px-3 py-1 rounded-full text-xs font-medium transition"
-                  style={{
-                    background: isActive ? "var(--color-primary)" : "var(--color-surface)",
-                    color: isActive ? "#fff" : "var(--color-text-secondary)",
-                    borderWidth: isActive ? 0 : "var(--border-width)",
-                    borderColor: "var(--color-border)",
-                  }}
-                >
-                  {cat}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {filteredProducts.map((p) => {
-              if (p.kind === "item") {
-                const remaining = stockRemaining.get(p.data.id) ?? p.data.stock;
-                const outOfStock = remaining <= 0;
-                return (
-                  <button
-                    key={`item-${p.data.id}`}
-                    onClick={() => addItemToCart(p.data)}
-                    disabled={outOfStock}
-                    className="p-3 text-left transition hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
-                    style={cardStyle}
-                  >
-                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
-                      {p.data.name}
-                    </p>
-                    <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                      Stock: {remaining} {p.data.unit || "Piece"}
-                    </p>
-                    <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
-                      ₱{p.data.sellingPrice.toLocaleString()}
-                    </p>
-                  </button>
-                );
-              }
-              return (
-                <button
-                  key={`bundle-${p.data.id}`}
-                  onClick={() => addBundleToCart(p.data)}
-                  className="p-3 text-left transition hover:opacity-90"
-                  style={{ ...cardStyle, background: "var(--color-surface-glass)" }}
-                >
-                  <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
-                    {p.data.name}{" "}
-                    <span
-                      className="text-[10px] px-1.5 py-0.5 rounded-full"
-                      style={{ background: "var(--color-secondary)", color: "#fff" }}
-                    >
-                      Bundle
-                    </span>
-                  </p>
-                  <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                    {p.data.components.length} parts
-                  </p>
-                  <p className="text-sm font-semibold mt-1" style={{ color: "var(--color-primary-light)" }}>
-                    ₱{p.data.price.toLocaleString()}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Cart / Checkout panel */}
-        <div className="w-full lg:w-96 flex-shrink-0 flex">
-          <div className="p-4 flex flex-col w-full" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
-            <p
-              className="text-sm font-semibold mb-3"
-              style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-            >
-              🛒 Cart
-            </p>
-
-            {cart.length === 0 ? (
-                <p className="text-sm py-6 text-center" style={{ color: "var(--color-text-secondary)" }}>
-                No items in cart yet
-              </p>
-            ) : (
-              <div className="space-y-2 mb-4 max-h-72 overflow-y-auto">
-                {cart.map((line) => (
-                  <div
-                    key={line.lineId}
-                    className="flex justify-between items-center px-2 py-2 rounded-lg text-sm"
-                    style={{ background: "var(--color-bg-secondary)" }}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="truncate" style={{ color: "var(--color-text-primary)" }}>
-                        {line.name}
-                      </p>
-                      <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                        ₱{line.unitPrice.toLocaleString()} × {line.quantity}
-                        {line.kind === "item" && line.unit !== "Piece" ? ` ${line.unit}` : ""}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      {line.kind === "item" && line.unit !== "Piece" ? (
-                        <input
-                          type="number"
-                          step="any"
-                          min={0.01}
-                          value={line.quantity}
-                          onChange={(e) => setExactQuantity(line.lineId, e.target.value)}
-                          className="w-16 px-2 py-1 text-center"
-                          style={inputStyle}
-                        />
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => updateQuantity(line.lineId, -1)}
-                            className="w-6 h-6 rounded-full font-bold"
-                            style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
-                          >
-                            −
-                          </button>
-                          <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
-                            {line.quantity}
-                          </span>
-                          <button
-                            onClick={() => updateQuantity(line.lineId, 1)}
-                            className="w-6 h-6 rounded-full font-bold"
-                            style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
-                          >
-                            +
-                          </button>
-                        </>
-                      )}
-                      <button
-                        onClick={() => removeLine(line.lineId)}
-                        className="ml-1 text-xs"
-                        style={{ color: "#f87171" }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div
-              className="flex justify-between items-center py-3 mb-3"
-              style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
-            >
-              <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                Total
-              </span>
-              <span
-                className="text-xl font-bold"
-                style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
-              >
-                ₱{cartTotal.toLocaleString()}
-              </span>
-            </div>
-
-            <label className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-              Cash Received (₱)
-            </label>
-            <input
-              type="number"
-              value={cashReceived}
-              onChange={(e) => setCashReceived(e.target.value)}
-              className="w-full mt-1 mb-3 px-3 py-2"
-              style={inputStyle}
-              placeholder="0"
-            />
-
-            <div
-              className="flex justify-between items-center px-4 py-3 mb-4"
-              style={{
-                background: change >= 0 ? "var(--gradient-accent)" : "rgba(239, 68, 68, 0.15)",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-                <span
-                className="text-sm font-medium"
-                style={{ color: change >= 0 ? "#fff" : "#f87171" }}
-              >
-                {change >= 0 ? "Change" : "Insufficient"}
-              </span>
-              <span
-                className="text-lg font-bold"
-                style={{ color: change >= 0 ? "#fff" : "#f87171", fontFamily: "var(--font-heading)" }}
-              >
-                ₱{Math.abs(change).toLocaleString()}
-              </span>
-            </div>
-
-            {errorMessage && (
-              <p
-                className="text-sm p-2 rounded-lg mb-3"
-                style={{ color: "#f87171", background: "rgba(239, 68, 68, 0.1)" }}
-              >
-                {errorMessage}
-              </p>
-            )}
-
-            <button
-              onClick={handleCompleteSale}
-              disabled={cart.length === 0 || processing}
-              className="w-full font-semibold py-3 disabled:opacity-50 hover:opacity-90"
-              style={{
-                background: "linear-gradient(135deg, #22c55e, #16a34a)",
-                color: "#fff",
-                borderRadius: "var(--radius-button)",
-              }}
-            >
-              {processing ? "Processing..." : "✓ Complete Sale"}
-            </button>
-          </div>
-        </div>
-
-        {/* Receipt confirmation */}
-        {receiptLines && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-            <div
-              className="w-full max-w-sm p-6"
-              style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
-            >
-              <p
-                className="text-lg font-bold mb-1 text-center"
-                style={{ color: "#4ade80", fontFamily: "var(--font-heading)" }}
-              >
-                ✓ Sale Complete
-              </p>
-              <p className="text-xs text-center mb-4" style={{ color: "var(--color-text-secondary)" }}>
-                {new Date().toLocaleString()}
-              </p>
-
-              <div className="space-y-1 mb-4">
-                {receiptLines.map((line) => (
-                  <div key={line.lineId} className="flex justify-between text-sm">
-                    <span style={{ color: "var(--color-text-primary)" }}>
-                      {line.name} × {line.quantity}
-                    </span>
-                    <span style={{ color: "var(--color-text-secondary)" }}>
-                      ₱{(line.unitPrice * line.quantity).toLocaleString()}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div
-                className="flex justify-between items-center py-2 mb-4"
-                style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
-              >
-                <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                  Change
-                </span>
-                <span className="text-lg font-bold" style={{ color: "var(--color-primary-light)" }}>
-                  ₱{receiptChange.toLocaleString()}
-                </span>
-              </div>
-
-                <button
-                onClick={() => {
-                  const total = receiptLines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
-                  printReceipt({
-                    businessName,
-                    logoUrl,
-                    receiptTitle: "Sales Receipt",
-                    date: new Date(),
-                    lines: receiptLines.map((l) => ({
-                      label: `${l.name} × ${l.quantity}`,
-                      amount: l.unitPrice * l.quantity,
-                    })),
-                    total,
-                    cashReceived: total + receiptChange,
-                    change: receiptChange,
-                  });
-                }}
-                className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"
-                style={{
-                  background: "var(--color-bg-secondary)",
-                  color: "var(--color-text-primary)",
-                  borderRadius: "var(--radius-button)",
-                  borderWidth: "var(--border-width)",
-                  borderColor: "var(--color-border)",
-                }}
-              >
-                🖨️ Print Receipt
-              </button>
-
-              <button
-                onClick={() => setReceiptLines(null)}
-                className="w-full font-semibold py-2.5 hover:opacity-90"
-                style={{
-                  background: "var(--gradient-accent)",
-                  color: "#fff",
-                  borderRadius: "var(--radius-button)",
-                }}
-              >
-                New Transaction
-              </button>
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}
-</file>
-
 <file path="app/repair-tickets/page.tsx">
 "use client";
 
@@ -10707,6 +11157,7 @@ import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
+import { canAccessPage, homeFor } from "../lib/permissions";
 
 type InventoryItem = {
   id: string;
@@ -10900,6 +11351,10 @@ export default function RepairTicketsPage() {
       }
 
       const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -11967,6 +12422,7 @@ import ReorderSummary from "../components/ReorderSummary";
 import HelpSupport from "../components/HelpSupport";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
+import { canAccessPage, homeFor } from "../lib/permissions";
 
 const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -12031,6 +12487,10 @@ export default function SettingsPage() {
       }
 
       const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -12710,11 +13170,13 @@ export default function SettingsPage() {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy, where } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo, type SessionInfo } from "../lib/staffAuth";
 import { hasFeatureAccess } from "../lib/subscription";
+import { canAccessPage } from "../lib/permissions";
+
 
 const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string; hideForRoles?: string[] }[] = [
   { href: "/dashboard", label: "Dashboard", icon: "🏠", hideForRoles: ["cashier"] },
@@ -12726,6 +13188,7 @@ const baseNavItems: { href: string; label: string; icon: string; disabled?: bool
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
   { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
+  { href: "/approvals", label: "Approvals", icon: "✅" },
 ];
 interface LowStockItem {
   id: string;
@@ -12792,6 +13255,7 @@ export default function Sidebar() {
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
   const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
   const [featuresLoaded, setFeaturesLoaded] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -12897,6 +13361,25 @@ export default function Sidebar() {
     };
   }, []);
 
+
+    useEffect(() => {
+    if (!session || session.role !== "owner") {
+      setPendingCount(0);
+      return;
+    }
+    const q = query(
+      collection(db, "tenants", session.tenantId, "approvals"),
+      where("status", "==", "pending")
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => setPendingCount(snap.size),
+      () => setPendingCount(0)
+    );
+    return () => unsub();
+  }, [session]);
+
+
   const saveBusinessName = async () => {
     if (!session || session.isStaff || !nameDraft.trim()) {
       setNameDraft(businessName);
@@ -12959,6 +13442,8 @@ export default function Sidebar() {
       if (item.adminOnly && !isAdmin) return false;
       // Hide feature-gated items until we've actually confirmed their state —
       // prevents a flash where all items briefly show before Firestore replies.
+      if (!session) return false;
+      if (!item.adminOnly && !canAccessPage(session.role, item.href)) return false;
       if (item.featureKey && !featuresLoaded) return false;
       // User's own on/off toggle (Settings > Modules) — kung pinatay nila ito
       // dahil hindi naman nila ginagamit, itago talaga, hindi lang i-lock.
@@ -12966,10 +13451,12 @@ export default function Sidebar() {
       return true;
     })
     .map((item) => {
-      // Plan-based entitlement: naka-toggle-ON pero baka hindi kasama sa
-      // plan nila (Basic) o expired/deactivated — ipakita pa rin pero naka-lock.
       const locked = !!item.featureKey && !hasFeatureAccess(tenantAccess, item.featureKey);
-      return { ...item, locked };
+      const label =
+        item.href === "/approvals" && pendingCount > 0
+          ? `${item.label} (${pendingCount})`
+          : item.label;
+      return { ...item, label, locked };
     });
 
   // Buod na banner kapag may naka-lock na Pro/Business feature dahil sa plan
@@ -14244,7 +14731,7 @@ import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
 import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
-
+import { can, type Role } from "../lib/permissions";
 
 type InventoryItem = {
   id: string;
@@ -14497,6 +14984,12 @@ export default function InventoryPage() {
   const [sellMessage, setSellMessage] = useState("");
   const [selling, setSelling] = useState(false);
 
+
+  const [role, setRole] = useState<Role>("cashier"); // pinaka-limitado muna habang naglo-load
+  const canEditInventory = can(role, "inventory.editDetails");
+  const canDeleteInventory = can(role, "inventory.delete");
+  const [staffName, setStaffName] = useState("");
+  const canAddDirectly = can(role, "inventory.addItem");
   const [showItemForm, setShowItemForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -14562,6 +15055,8 @@ export default function InventoryPage() {
       }
 
       const session = await getSessionInfo(user);
+            setRole(session.role);
+                  setStaffName(session.staffName || "");
       const tenantId = session.tenantId;
       setUid(tenantId);
 
@@ -14784,6 +15279,63 @@ export default function InventoryPage() {
     setShowItemForm(true);
   };
 
+  // Para kay Secretary: ang bagong item at pagbabago ng presyo ay dumadaan
+  // muna kay Owner. Ang ibang detalye (pangalan, stock, photo, atbp.) ay diretso.
+  const saveAsSecretary = async (itemData: any) => {
+    if (!uid) return;
+
+    const approvalsRef = collection(db, "tenants", uid, "approvals");
+    const requester = {
+      status: "pending",
+      requestedByUid: auth.currentUser?.uid || "",
+      requestedByName: staffName || "Secretary",
+      requestedAt: new Date().toISOString(),
+    };
+
+    // 1) BAGONG ITEM: hindi papasok sa inventory, hihintayin muna ang OK ni Owner
+    if (!editingItemId) {
+      await addDoc(approvalsRef, {
+        ...requester,
+        type: "new_item",
+        itemName: itemData.name,
+        itemData,
+      });
+      alert("Naipadala na kay Owner ang bagong item. Papasok ito sa Inventory kapag na-approve.");
+      return;
+    }
+
+    // 2) EDIT NG EXISTING NA ITEM
+    const current = items.find((i) => i.id === editingItemId);
+    if (!current) return;
+
+    const { sellingPrice, unitCost, ...otherFields } = itemData;
+
+    // Tingnan kung may nagbago sa presyo o puhunan
+    const changes: Record<string, { from: number; to: number }> = {};
+    if (sellingPrice !== (current.sellingPrice || 0)) {
+      changes.sellingPrice = { from: current.sellingPrice || 0, to: sellingPrice };
+    }
+    if (unitCost !== (current.unitCost || 0)) {
+      changes.unitCost = { from: current.unitCost || 0, to: unitCost };
+    }
+
+    // Ang ibang detalye ay diretso nang isave
+    await updateDoc(doc(db, "tenants", uid, "inventory", editingItemId), otherFields);
+
+    // Ang presyo ay hihintayin ang OK ni Owner. Ang lumang presyo
+    // ang patuloy na gagamitin hangga't hindi pa na-approve.
+    if (Object.keys(changes).length > 0) {
+      await addDoc(approvalsRef, {
+        ...requester,
+        type: "price_change",
+        itemId: editingItemId,
+        itemName: itemData.name,
+        changes,
+      });
+      alert("Naipadala na kay Owner ang bagong presyo. Ang lumang presyo muna ang gagamitin hangga't hindi pa na-approve.");
+    }
+  };
+
   const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uid) return;
@@ -14807,7 +15359,9 @@ export default function InventoryPage() {
     };
 
     try {
-      if (editingItemId) {
+      if (role === "secretary") {
+        await saveAsSecretary(itemData);
+      } else if (editingItemId) {
         await updateDoc(doc(db, "tenants", uid, "inventory", editingItemId), itemData);
       } else {
         await addDoc(collection(db, "tenants", uid, "inventory"), {
@@ -14819,6 +15373,7 @@ export default function InventoryPage() {
       setShowItemForm(false);
     } catch (err) {
       console.error(err);
+      alert("Hindi na-save. Subukan ulit.");
     } finally {
       setSavingItem(false);
     }
@@ -15387,6 +15942,7 @@ export default function InventoryPage() {
               Manage your items and stock levels
             </p>
           </div>
+          {canEditInventory && (
           <div className="flex flex-wrap gap-2">
             <button
               onClick={handleDownloadInventory}
@@ -15404,21 +15960,23 @@ export default function InventoryPage() {
               <span className="sm:hidden">⬇️ Backup</span>
               <span className="hidden sm:inline">⬇️ Download Inventory</span>
             </button>
-            <button
-              onClick={openScanModal}
-              className="font-semibold px-4 py-2 text-sm transition hover:opacity-90"
-              style={{
-                background: "var(--color-surface)",
-                color: "var(--color-primary-light)",
-                borderRadius: "var(--radius-button)",
-                borderWidth: "var(--border-width)",
-                borderColor: "var(--color-primary)",
-                boxShadow: "var(--glow-shadow)",
-              }}
-            >
-              <span className="sm:hidden">🔍 Scanner</span>
-              <span className="hidden sm:inline">🔍 UBA Scanner</span>
-            </button>
+                        {canAddDirectly && (
+              <button
+                onClick={openScanModal}
+                className="font-semibold px-4 py-2 text-sm transition hover:opacity-90"
+                style={{
+                  background: "var(--color-surface)",
+                  color: "var(--color-primary-light)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-primary)",
+                  boxShadow: "var(--glow-shadow)",
+                }}
+              >
+                <span className="sm:hidden">🔍 Scanner</span>
+                <span className="hidden sm:inline">🔍 UBA Scanner</span>
+              </button>
+            )}
 
             
             <button
@@ -15434,24 +15992,28 @@ export default function InventoryPage() {
               <span className="sm:hidden">+ Add</span>
               <span className="hidden sm:inline">+ Add Item</span>
             </button>
-            <button
-              onClick={openAddBundleForm}
-              disabled={items.length === 0}
-              title={items.length === 0 ? "Add inventory items first" : ""}
-              className="font-semibold px-4 py-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition hover:opacity-90"
-              style={{
-                background: "var(--color-surface)",
-                color: "var(--color-text-primary)",
-                borderRadius: "var(--radius-button)",
-                borderWidth: "var(--border-width)",
-                borderColor: "var(--color-border)",
-              }}
-            >
-              <span className="sm:hidden">🧩 Bundle</span>
-              <span className="hidden sm:inline">🧩 New Bundle</span>
-            </button>
+            {canAddDirectly && (
+              <button
+                onClick={openAddBundleForm}
+                disabled={items.length === 0}
+                title={items.length === 0 ? "Add inventory items first" : ""}
+                className="font-semibold px-4 py-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition hover:opacity-90"
+                style={{
+                  background: "var(--color-surface)",
+                  color: "var(--color-text-primary)",
+                  borderRadius: "var(--radius-button)",
+                  borderWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                }}
+              >
+                <span className="sm:hidden">🧩 Bundle</span>
+                <span className="hidden sm:inline">🧩 New Bundle</span>
+              </button>
+            )}
           </div>
+          )}
         </div>
+        
 
         <div className="mb-4">
           <input
@@ -15618,29 +16180,33 @@ export default function InventoryPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => openSellPanel(card)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#4ade80" }}
-                            >
-                              Sell
-                            </button>
-                            <button
-                              onClick={() => openEditItemForm(item)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "var(--color-primary-light)" }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDeleteItem(item.id, item.name)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#f87171" }}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {canEditInventory && (
+                            <div className="flex gap-3">
+                              <button
+                                onClick={() => openSellPanel(card)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "#4ade80" }}
+                              >
+                                Sell
+                              </button>
+                              <button
+                                onClick={() => openEditItemForm(item)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "var(--color-primary-light)" }}
+                              >
+                                Edit
+                              </button>
+                              {canDeleteInventory && (
+                                <button
+                                  onClick={() => handleDeleteItem(item.id, item.name)}
+                                  className="text-xs font-medium hover:underline"
+                                  style={{ color: "#f87171" }}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -15690,22 +16256,26 @@ export default function InventoryPage() {
                           ₱{bundle.price.toLocaleString()}
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => openSellPanel(card)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#4ade80" }}
-                            >
-                              Sell
-                            </button>
-                            <button
-                              onClick={() => handleDeleteBundle(bundle.id, bundle.name)}
-                              className="text-xs font-medium hover:underline"
-                              style={{ color: "#f87171" }}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {canEditInventory && (
+                            <div className="flex gap-3">
+                              <button
+                                onClick={() => openSellPanel(card)}
+                                className="text-xs font-medium hover:underline"
+                                style={{ color: "#4ade80" }}
+                              >
+                                Sell
+                              </button>
+                              {canDeleteInventory && (
+                                <button
+                                  onClick={() => handleDeleteBundle(bundle.id, bundle.name)}
+                                  className="text-xs font-medium hover:underline"
+                                  style={{ color: "#f87171" }}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
