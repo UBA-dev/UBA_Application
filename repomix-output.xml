@@ -112,6 +112,7 @@ app/
     firebaseAdmin.ts
     offlineQueue.ts
     permissions.ts
+    plans.js
     receipt.ts
     staffAuth.ts
     subscription.js
@@ -2242,6 +2243,173 @@ export function can(role: Role, action: Action): boolean {
 }
 </file>
 
+<file path="app/lib/plans.js">
+// ISANG LUGAR LANG kung saan nakasulat ang presyo, limits, at features ng
+// bawat plan. Ito ang binabasa ng Pricing page, Landing page, Admin page,
+// subscription.js (access checks), usageLimits.js (AI caps), at ng
+// /api/create-staff (staff cap).
+//
+// Kapag gusto mong baguhin ang presyo o limits sa future, DITO LANG ang edit.
+
+export const TRIAL_DAYS = 14;
+
+// 25% off sa annual = 9 buwan ang bayad, 12 buwan ang gamit ("3 months free").
+export const ANNUAL_DISCOUNT_PERCENT = 25;
+export const ANNUAL_MONTHS_PAID = 9;
+
+// Kung walang planId ang isang paying tenant (luma pang account), ito ang
+// default para hindi sila biglang mawalan ng access.
+export const LEGACY_FALLBACK_PLAN = "business";
+
+export const PLAN_IDS = ["basic", "pro", "business"];
+
+// Ang low-stock EMAIL alert ay gagana lang para sa lahat ng customer kapag
+// na-verify mo na ang sarili mong domain sa Resend (ang onboarding@resend.dev ay
+// test sender lang). Habang hindi pa, naka-OFF ito at hindi ina-advertise.
+// Kapag handa na: i-verify ang domain, itakda ang ALERT_FROM_EMAIL sa Vercel, at
+// gawing true ito.
+export const EMAIL_ALERTS_READY = false;
+
+// ── Features na kasama kada plan ─────────────────────────────────────────
+// Ang mga key na ito ay ginagamit ng hasFeatureAccess(tenant, key).
+const CORE = ["pos", "inventory", "salesExpenses", "cloudBackup"];
+const BASIC_FEATURES = [...CORE, "lowStockAlerts", "aiFeatures"];
+const PRO_FEATURES = [
+  ...BASIC_FEATURES,
+  "repairTickets",
+  "deliveryTickets",
+  "poTickets",
+  ...(EMAIL_ALERTS_READY ? ["lowStockEmail"] : []),
+];
+const BUSINESS_FEATURES = [...PRO_FEATURES, "prioritySupport", "assistedSetup"];
+
+// ── AI caps kada buwan (nagre-reset tuwing 1st) ──────────────────────────
+// scanCount         = AI Scanner (photo/PDF/Word)
+// chatCount         = UBA Assistant messages
+// analysisCount     = "Analyze My Business" sa Dashboard
+// notificationCount = AI-drafted customer messages
+export const PLANS = {
+  basic: {
+    id: "basic",
+    name: "Basic",
+    tagline: "Kumpletong operasyon ng tindahan",
+    monthly: 499,
+    annual: 499 * ANNUAL_MONTHS_PAID, // ₱4,491
+    staffCap: 3,
+    itemCap: Infinity,
+    ai: { scanCount: 10, chatCount: 20, analysisCount: 0, notificationCount: 0 },
+    features: BASIC_FEATURES,
+    highlights: [
+      "POS na gumagana kahit offline",
+      "Unlimited na items at sales history",
+      "Hanggang 3 staff logins (may roles at approvals)",
+      "Expenses at profit tracking, CSV/Excel import",
+      "Low-stock alert sa app",
+      "AI Starter: 10 scans + 20 assistant messages kada buwan",
+      "Support sa email/Messenger",
+    ],
+  },
+  pro: {
+    id: "pro",
+    name: "Pro",
+    tagline: "Para sa repair at service shops",
+    monthly: 999,
+    annual: 999 * ANNUAL_MONTHS_PAID, // ₱8,991
+    staffCap: 8,
+    itemCap: Infinity,
+    ai: { scanCount: 60, chatCount: 100, analysisCount: 20, notificationCount: 60 },
+    features: PRO_FEATURES,
+    highlights: [
+      "Lahat ng nasa Basic",
+      "Repair, Delivery, at P.O. Tickets",
+      "AI Business Analyst (20 kada buwan)",
+      "AI Scanner (60) at Assistant (100) kada buwan",
+      "AI-drafted na messages sa customers",
+      ...(EMAIL_ALERTS_READY ? ["Low-stock alert sa email"] : []),
+      "Hanggang 8 staff logins",
+      "Mas mabilis na support (~1 business day)",
+    ],
+  },
+  business: {
+    id: "business",
+    name: "Business",
+    tagline: "Para sa may team at mataas ang volume",
+    monthly: 1499,
+    annual: 1499 * ANNUAL_MONTHS_PAID, // ₱13,491
+    staffCap: 25,
+    itemCap: Infinity,
+    ai: { scanCount: 120, chatCount: 200, analysisCount: 40, notificationCount: 120 },
+    features: BUSINESS_FEATURES,
+    highlights: [
+      "Lahat ng nasa Pro",
+      "2× na AI allowance (120 scans, 200 messages, 40 analyses)",
+      "Hanggang 25 staff logins",
+      "Priority support (~4 business hours)",
+      "Libreng assisted setup: ii-import namin ang inventory mo",
+    ],
+  },
+};
+
+// Pagkatapos ng trial o pag-expire ng bayad: hindi nawawala ang data, at
+// gumagana pa rin ang POS. Limitado lang ang dami at wala na ang AI at tickets.
+export const FREE_LIMITS = {
+  itemCap: 50,
+  staffCap: 0,
+  ai: { scanCount: 0, chatCount: 0, analysisCount: 0, notificationCount: 0 },
+  features: CORE,
+};
+
+// Habang trial: buong access, pero may cap ang AI (parang Pro) para hindi
+// malugi sa mga hindi bumibili.
+export const TRIAL_LIMITS = {
+  itemCap: Infinity,
+  staffCap: PLANS.pro.staffCap,
+  ai: PLANS.pro.ai,
+};
+
+// ── Paano magbayad (manual, habang wala pa ang online payment) ───────────
+// PUNAN MO ITO. Ang walang laman ay hindi ipapakita sa Pricing page.
+export const PAYMENT_INFO = {
+  gcashName: "",
+  gcashNumber: "",
+  bankName: "",
+  bankAccountName: "",
+  bankAccountNumber: "",
+  contactLabel: "", // halimbawa: "Messenger: UBA Support"
+  contactUrl: "", // halimbawa: "https://m.me/iyong-page"
+  activationNote: "Ia-activate ang plan mo sa loob ng 1 business day pagkatapos ma-verify ang bayad.",
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+export function peso(amount) {
+  return "₱" + String(Math.round(amount)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+export function planPrice(planId, cycle) {
+  const plan = PLANS[planId];
+  if (!plan) return 0;
+  return cycle === "annual" ? plan.annual : plan.monthly;
+}
+
+export function annualPerMonth(planId) {
+  const plan = PLANS[planId];
+  return plan ? Math.round(plan.annual / 12) : 0;
+}
+
+export function annualSavings(planId) {
+  const plan = PLANS[planId];
+  return plan ? plan.monthly * 12 - plan.annual : 0;
+}
+
+export function cycleDays(cycle) {
+  return cycle === "annual" ? 365 : 30;
+}
+
+export function cycleLabel(cycle) {
+  return cycle === "annual" ? "Annual" : "Monthly";
+}
+</file>
+
 <file path="app/lib/receipt.ts">
 interface ReceiptLine {
   label: string;
@@ -2397,58 +2565,6 @@ export async function getSessionInfo(user: User): Promise<SessionInfo> {
     isStaff: false,
     staffName: null,
   };
-}
-</file>
-
-<file path="app/lib/usageLimits.js">
-// Soft, client-enforced monthly usage caps per tenant for AI-powered features.
-// Tracks counts in Firestore (tenants/{uid}/usage/{YYYY-MM}), protected by the
-// same tenant-scoped security rules as everything else — a tenant can only
-// read/write their OWN usage doc. This is not attacker-proof (a determined
-// user could bypass it client-side), but it catches accidental overuse/bugs,
-// which is the real risk during the manual pilot phase.
-
-import { doc, getDoc, setDoc, increment } from "firebase/firestore";
-import { db } from "./firebase";
-
-export const MONTHLY_LIMITS = {
-  scanCount: 100, // Universal Scanner (photo/PDF/Word)
-  chatCount: 150, // UBA Assistant messages
-  analysisCount: 60, // Dashboard "Analyze My Business"
-  notificationCount: 100, // AI-drafted customer notifications
-};
-
-export const LIMIT_LABELS = {
-  scanCount: "AI scans",
-  chatCount: "assistant messages",
-  analysisCount: "business analyses",
-  notificationCount: "customer notifications",
-};
-
-function currentMonthKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
-
-// Checks whether the tenant still has room for one more call of `feature`
-// this month. If allowed, increments the count. Returns { allowed, count, limit }.
-export async function checkAndIncrementUsage(uid, feature) {
-  const limit = MONTHLY_LIMITS[feature];
-  const usageRef = doc(db, "tenants", uid, "usage", currentMonthKey());
-
-  const snap = await getDoc(usageRef);
-  const currentCount = snap.exists() ? snap.data()[feature] || 0 : 0;
-
-  if (currentCount >= limit) {
-    return { allowed: false, count: currentCount, limit };
-  }
-
-  await setDoc(usageRef, { [feature]: increment(1) }, { merge: true });
-  return { allowed: true, count: currentCount + 1, limit };
-}
-
-export function usageLimitMessage(feature, limit) {
-  return `You've used all ${limit} ${LIMIT_LABELS[feature]} for this month. This resets on the 1st — contact your UBA provider if you need a higher limit.`;
 }
 </file>
 
@@ -4154,121 +4270,6 @@ if (typeof window !== "undefined") {
 }
 </file>
 
-<file path="app/lib/subscription.js">
-// Determines whether AI-powered features (Scanner photo/PDF/Word, Dashboard
-// Analyst, UBA Assistant chatbot, low-stock email alert) AND plan-gated
-// business features (Repair/Delivery/P.O. Tickets, Low Stock Alerts) are
-// unlocked for a tenant. Core business tools (Inventory CRUD, POS, Sales,
-// CSV/Excel import) are NEVER gated by this.
-//
-// Aligned sa Pricing Page (Basic / Pro / Business):
-//   Basic   — POS, Inventory, Sales & Expenses, Cloud Backup
-//   Pro     — + AI Business Analyst, Repair & Delivery Tickets,
-//              Low Stock Alerts, P.O. Tickets
-//   Business— + Unlimited AI Analysis, Priority Cloud Backup,
-//              Multi-Branch Support, Priority Support
-
-const TRIAL_DAYS = 14;
-
-export const PLAN_FEATURES = {
-  basic: ["pos", "inventory", "salesExpenses", "cloudBackup"],
-  pro: [
-    "pos", "inventory", "salesExpenses", "cloudBackup",
-    "aiFeatures", "repairTickets", "deliveryTickets", "poTickets", "lowStockAlerts",
-  ],
-  business: [
-    "pos", "inventory", "salesExpenses", "cloudBackup",
-    "aiFeatures", "repairTickets", "deliveryTickets", "poTickets", "lowStockAlerts",
-    "unlimitedAi", "priorityCloudBackup", "multiBranch", "prioritySupport",
-  ],
-};
-
-// IMPORTANT: default fallback kapag walang planId na naka-set.
-// "business" ang ginamit dito (hindi "basic") para hindi biglang mawalan ng
-// access ang mga EXISTING na paying tenant (Lifetime/Monthly) na na-set noon
-// pa bago idagdag ang planId field. Once na-re-classify mo na sila gamit ang
-// bagong Basic/Pro/Business buttons sa Admin, tama na ang tunay na plan nila.
-const LEGACY_FALLBACK_PLAN = "business";
-
-function planFeatureList(tenant) {
-  const plan = tenant?.planId || LEGACY_FALLBACK_PLAN;
-  return PLAN_FEATURES[plan] || PLAN_FEATURES[LEGACY_FALLBACK_PLAN];
-}
-
-export function getAiAccess(tenant) {
-  if (!tenant) return { allowed: false, status: "UNKNOWN", daysLeft: 0 };
-
-  if (tenant.subscriptionStatus === "LIFETIME") {
-    const planIncludesAi = planFeatureList(tenant).includes("aiFeatures");
-    return { allowed: planIncludesAi, status: "LIFETIME", daysLeft: null };
-  }
-
-  if (tenant.subscriptionStatus === "MONTHLY") {
-    const planIncludesAi = planFeatureList(tenant).includes("aiFeatures");
-    if (!tenant.nextPaymentDue) {
-      return { allowed: planIncludesAi, status: "MONTHLY", daysLeft: null };
-    }
-    const due = new Date(tenant.nextPaymentDue);
-    const now = new Date();
-    const daysLeft = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-    return { allowed: planIncludesAi && daysLeft >= 0, status: "MONTHLY", daysLeft };
-  }
-
-  // Default: TRIAL — buong access muna sa lahat (kahit Pro/Business-only
-  // features) habang tumatakbo ang 14-day free trial, para maranasan nila
-  // ang buong app bago pumili ng plan.
-  const start = new Date(tenant.trialStartDate || Date.now());
-  const now = new Date();
-  const daysUsed = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  const daysLeft = TRIAL_DAYS - daysUsed;
-  return { allowed: daysLeft > 0, status: "TRIAL", daysLeft };
-}
-
-export function urgencyLevel(accessInfo) {
-  if (accessInfo.status === "LIFETIME") return "none";
-  if (accessInfo.daysLeft == null) return "none";
-  if (accessInfo.daysLeft < 0) return "overdue";
-  if (accessInfo.daysLeft <= 3) return "urgent";
-  if (accessInfo.daysLeft <= 7) return "soon";
-  return "fine";
-}
-
-// --- Plan-based feature gating (bago) ---------------------------------
-// Ginagamit ito para sa Repair/Delivery/P.O. Tickets, Low Stock Alerts, at
-// AI features. Core tools (pos/inventory/salesExpenses/cloudBackup) ay
-// hindi dapat i-check dito dahil sadyang laging TRUE ang mga iyon.
-export function hasFeatureAccess(tenant, featureKey) {
-  if (!tenant) return false;
-
-  // Manual kill-switch (abuse/chargeback/non-payment na sinadya i-lock ng
-  // Admin) — bina-block ang LAHAT ng plan-gated features, walang exception.
-  if (tenant.manuallyDeactivated) return false;
-
-  if (tenant.subscriptionStatus === "LIFETIME") {
-    return planFeatureList(tenant).includes(featureKey);
-  }
-
-  if (tenant.subscriptionStatus === "MONTHLY") {
-    if (tenant.nextPaymentDue) {
-      const due = new Date(tenant.nextPaymentDue);
-      if (due.getTime() < Date.now()) return false; // overdue na, wala munang access
-    }
-    return planFeatureList(tenant).includes(featureKey);
-  }
-
-  // TRIAL (o walang subscriptionStatus pa) — sinusunod ang parehong 14-day
-  // countdown ng getAiAccess, at buong access sa lahat ng feature habang
-  // tumatakbo ang trial.
-  return getAiAccess(tenant).allowed;
-}
-
-export const AI_LOCKED_MESSAGE =
-  "Your free AI trial has ended, or your current plan doesn't include AI features. Everything else in UBA keeps working as normal — contact your UBA provider to unlock AI Scanner, Business Analyst, and Assistant again.";
-
-export const FEATURE_LOCKED_MESSAGE =
-  "Feature na ito ay bahagi ng Pro/Business plan. I-upgrade ang plan mo o mag-renew para magamit muli — pumunta sa Settings.";
-</file>
-
 <file path="app/lib/themes.js">
 export const themes = {
   soloLeveling: {
@@ -4591,6 +4592,65 @@ export function themeList() {
 }
 </file>
 
+<file path="app/lib/usageLimits.js">
+// Monthly usage caps kada tenant para sa AI-powered features. Ang laki ng cap
+// ay nakadepende sa PLAN ng tenant (tingnan ang ./plans.js at getPlanLimits).
+//
+// Nire-record ang count sa Firestore (tenants/{uid}/usage/{YYYY-MM}), na
+// protektado ng parehong tenant-scoped rules. PAALALA: client-side pa rin ang
+// pag-enforce nito, kaya hindi ito attacker-proof. Sa Phase 2, ililipat ito sa
+// server. Sapat ito para hulihin ang aksidenteng overuse habang pilot.
+
+import { doc, getDoc, setDoc, increment } from "firebase/firestore";
+import { db } from "./firebase";
+import { getPlanLimits } from "./subscription";
+
+export const LIMIT_LABELS = {
+  scanCount: "AI scans",
+  chatCount: "assistant messages",
+  analysisCount: "business analyses",
+  notificationCount: "customer notifications",
+};
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// Tinitingnan kung may natitira pang allowance ang tenant para sa isa pang
+// tawag ng `feature` ngayong buwan. Kung meron, dinadagdagan ang count.
+// Ibinabalik: { allowed, count, limit }.
+// `tenant` = ang tenant document data (para malaman ang plan).
+export async function checkAndIncrementUsage(uid, feature, tenant) {
+  const limit = getPlanLimits(tenant).ai[feature] ?? 0;
+
+  // Hindi kasama sa plan (limit 0) — hindi na kailangang tumingin sa database.
+  if (limit <= 0) {
+    return { allowed: false, count: 0, limit: 0 };
+  }
+
+  const usageRef = doc(db, "tenants", uid, "usage", currentMonthKey());
+
+  const snap = await getDoc(usageRef);
+  const currentCount = snap.exists() ? snap.data()[feature] || 0 : 0;
+
+  if (currentCount >= limit) {
+    return { allowed: false, count: currentCount, limit };
+  }
+
+  await setDoc(usageRef, { [feature]: increment(1) }, { merge: true });
+  return { allowed: true, count: currentCount + 1, limit };
+}
+
+export function usageLimitMessage(feature, limit) {
+  const label = LIMIT_LABELS[feature] || "AI features";
+  if (!limit || limit <= 0) {
+    return `Hindi kasama ang ${label} sa kasalukuyang plan mo. I-upgrade sa Pro (o mas mataas) sa Upgrade Plan para magamit ito.`;
+  }
+  return `Naubos mo na ang ${limit} ${label} ngayong buwan. Nagre-reset ito sa 1st ng susunod na buwan, o i-upgrade ang plan mo para sa mas mataas na limit.`;
+}
+</file>
+
 <file path="app/pricing/page.tsx">
 "use client";
 
@@ -4881,532 +4941,6 @@ export default function PricingPage() {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-</file>
-
-<file path="app/admin/page.tsx">
-"use client";
-
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import { collection, getDocs, doc, updateDoc, query, orderBy } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { getAiAccess, urgencyLevel } from "../lib/subscription";
-
-type Tenant = {
-  id: string;
-  businessName: string;
-  ownerEmail: string;
-  subscriptionStatus: string;
-  trialStartDate?: string;
-  nextPaymentDue?: string;
-  planId?: "basic" | "pro" | "business" | string;
-  manuallyDeactivated?: boolean;
-};
-
-const PLAN_OPTIONS: { id: "basic" | "pro" | "business"; label: string; color: string }[] = [
-  { id: "basic", label: "Basic", color: "#64748b" },
-  { id: "pro", label: "Pro", color: "#3b82f6" },
-  { id: "business", label: "Business", color: "#a855f7" },
-];
-
-type Feedback = {
-  id: string;
-  uid: string;
-  businessName?: string;
-  email?: string;
-  category: "feature" | "bug" | "general" | string;
-  message: string;
-  status: "new" | "resolved" | string;
-  createdAt?: { seconds: number; nanoseconds: number } | null;
-};
-
-const URGENCY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  overdue: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171", label: "Overdue" },
-  urgent: { bg: "rgba(249, 115, 22, 0.15)", text: "#fb923c", label: "Due very soon" },
-  soon: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15", label: "Due this week" },
-  fine: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80", label: "OK" },
-  none: { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", label: "Lifetime" },
-};
-
-const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  feature: { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", label: "💡 Feature Request" },
-  bug: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171", label: "🐞 Bug Report" },
-  general: { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc", label: "💬 General" },
-};
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--color-surface, #141d33)",
-  borderRadius: "var(--radius-card, 1rem)",
-  borderWidth: "var(--border-width, 1px)",
-  borderColor: "var(--color-border, rgba(59,130,246,0.25))",
-};
-
-// --- Live Countdown ---------------------------------------------------
-// Nagre-recompute ang natitirang oras every second para "buhay" tumakbo ang
-// timer sa screen (para astig tignan), hindi lang static na "(3d)" text.
-function useCountdown(targetIso?: string | null) {
-  const [remainingMs, setRemainingMs] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!targetIso) {
-      setRemainingMs(null);
-      return;
-    }
-    const targetTime = new Date(targetIso).getTime();
-    const tick = () => setRemainingMs(targetTime - Date.now());
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [targetIso]);
-
-  return remainingMs;
-}
-
-function formatCountdown(ms: number) {
-  const overdue = ms < 0;
-  const abs = Math.abs(ms);
-  const totalSeconds = Math.floor(abs / 1000);
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const text = `${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
-  return overdue ? `-${text}` : text;
-}
-
-function CountdownBadge({ tenant }: { tenant: Tenant }) {
-  const isLifetime = tenant.subscriptionStatus === "LIFETIME";
-  const remainingMs = useCountdown(isLifetime ? null : tenant.nextPaymentDue);
-
-  if (tenant.manuallyDeactivated) {
-    return (
-      <span
-        className="inline-flex items-center gap-1.5 text-sm font-mono font-bold px-3 py-1.5 rounded-lg"
-        style={{ background: "rgba(239,68,68,0.2)", color: "#f87171" }}
-      >
-        🚫 DEACTIVATED
-      </span>
-    );
-  }
-
-  if (isLifetime) {
-    return (
-      <span
-        className="inline-flex items-center gap-1.5 text-sm font-mono font-bold px-3 py-1.5 rounded-lg tabular-nums"
-        style={{ background: "rgba(59,130,246,0.15)", color: "#60a5fa" }}
-      >
-        ♾️ LIFETIME
-      </span>
-    );
-  }
-
-  if (!tenant.nextPaymentDue || remainingMs === null) {
-    return (
-      <span className="text-xs" style={{ color: "#8b9bc4" }}>
-        Walang due date na naka-set
-      </span>
-    );
-  }
-
-  const overdue = remainingMs < 0;
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 text-sm font-mono font-bold px-3 py-1.5 rounded-lg tabular-nums"
-      style={{
-        background: overdue ? "rgba(239,68,68,0.15)" : "rgba(74,222,128,0.15)",
-        color: overdue ? "#f87171" : "#4ade80",
-      }}
-    >
-      {overdue ? "⏰ OVERDUE " : "⏳ "}
-      {formatCountdown(remainingMs)}
-    </span>
-  );
-}
-
-export default function AdminPage() {
-  const [checking, setChecking] = useState(true);
-  const [authorized, setAuthorized] = useState(false);
-  const [activeTab, setActiveTab] = useState<"shops" | "feedback">("shops");
-  const router = useRouter();
-
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [loadingTenants, setLoadingTenants] = useState(true);
-  const [savingId, setSavingId] = useState<string | null>(null);
-
-  const [feedbackItems, setFeedbackItems] = useState<Feedback[]>([]);
-  const [loadingFeedback, setLoadingFeedback] = useState(true);
-  const [savingFeedbackId, setSavingFeedbackId] = useState<string | null>(null);
-
-  // 🔒 PINAGANDANG AUTH CHECK: Nagtatanong sa Server API sa halip na client-side env variable
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      try {
-        const res = await fetch("/api/check-admin", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: user.uid }),
-        });
-
-        const data = await res.json();
-
-        if (!res.ok || !data.isAdmin) {
-          router.push("/dashboard");
-          return;
-        }
-
-        setAuthorized(true);
-      } catch (error) {
-        console.error("Admin verification error:", error);
-        router.push("/dashboard");
-      } finally {
-        setChecking(false);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [router]);
-
-  useEffect(() => {
-    if (!authorized) return;
-    const loadTenants = async () => {
-      try {
-        const snap = await getDocs(collection(db, "tenants"));
-        setTenants(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Tenant[]);
-      } catch (error) {
-        console.error("Failed to load tenants:", error);
-      } finally {
-        setLoadingTenants(false);
-      }
-    };
-    loadTenants();
-  }, [authorized]);
-
-  useEffect(() => {
-    if (!authorized) return;
-    const loadFeedback = async () => {
-      try {
-        const q = query(collection(db, "feedback"), orderBy("createdAt", "desc"));
-        const snap = await getDocs(q);
-        setFeedbackItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Feedback[]);
-      } catch (error) {
-        console.error("Failed to load feedback:", error);
-      } finally {
-        setLoadingFeedback(false);
-      }
-    };
-    loadFeedback();
-  }, [authorized]);
-
-  const sortedTenants = useMemo(() => {
-    return [...tenants].sort((a, b) => {
-      const infoA = getAiAccess(a);
-      const infoB = getAiAccess(b);
-      const rank: Record<string, number> = { overdue: 0, urgent: 1, soon: 2, fine: 3, none: 4 };
-      return rank[urgencyLevel(infoA)] - rank[urgencyLevel(infoB)];
-    });
-  }, [tenants]);
-
-  // Bagong feedback (status: "new") muna, saka na yung resolved na
-  const sortedFeedback = useMemo(() => {
-    return [...feedbackItems].sort((a, b) => {
-      if (a.status === b.status) return 0;
-      return a.status === "new" ? -1 : 1;
-    });
-  }, [feedbackItems]);
-
-  const newFeedbackCount = feedbackItems.filter((f) => f.status !== "resolved").length;
-
-  const handleMarkPaidMonthly = async (tenant: Tenant, planId: "basic" | "pro" | "business") => {
-    setSavingId(tenant.id);
-    const nextDue = new Date();
-    nextDue.setDate(nextDue.getDate() + 30);
-    try {
-      // Ang pagre-renew/pag-mark-paid ay awtomatikong nag-re-reactivate din
-      // (in case may naka-deactivate dati) — bagong bayad, bagong access.
-      await updateDoc(doc(db, "tenants", tenant.id), {
-        subscriptionStatus: "MONTHLY",
-        planId,
-        nextPaymentDue: nextDue.toISOString(),
-        manuallyDeactivated: false,
-      });
-      setTenants((prev) =>
-        prev.map((t) =>
-          t.id === tenant.id
-            ? {
-                ...t,
-                subscriptionStatus: "MONTHLY",
-                planId,
-                nextPaymentDue: nextDue.toISOString(),
-                manuallyDeactivated: false,
-              }
-            : t
-        )
-      );
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const handleToggleDeactivate = async (tenant: Tenant) => {
-    setSavingId(tenant.id);
-    const nextValue = !tenant.manuallyDeactivated;
-    try {
-      await updateDoc(doc(db, "tenants", tenant.id), { manuallyDeactivated: nextValue });
-      setTenants((prev) =>
-        prev.map((t) => (t.id === tenant.id ? { ...t, manuallyDeactivated: nextValue } : t))
-      );
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const handleMarkLifetime = async (tenant: Tenant) => {
-    setSavingId(tenant.id);
-    try {
-      await updateDoc(doc(db, "tenants", tenant.id), { subscriptionStatus: "LIFETIME" });
-      setTenants((prev) =>
-        prev.map((t) => (t.id === tenant.id ? { ...t, subscriptionStatus: "LIFETIME" } : t))
-      );
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const handleToggleFeedbackStatus = async (item: Feedback) => {
-    setSavingFeedbackId(item.id);
-    const nextStatus = item.status === "resolved" ? "new" : "resolved";
-    try {
-      await updateDoc(doc(db, "feedback", item.id), { status: nextStatus });
-      setFeedbackItems((prev) =>
-        prev.map((f) => (f.id === item.id ? { ...f, status: nextStatus } : f))
-      );
-    } catch (error) {
-      console.error("Failed to update feedback status:", error);
-    } finally {
-      setSavingFeedbackId(null);
-    }
-  };
-
-  const formatDate = (ts?: { seconds: number } | null) => {
-    if (!ts?.seconds) return "";
-    return new Date(ts.seconds * 1000).toLocaleString();
-  };
-
-  if (checking || !authorized) {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "#0a0e1a" }}>
-        <p className="text-sm" style={{ color: "#8b9bc4" }}>Verifying Admin Access...</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen p-6" style={{ background: "#0a0e1a" }}>
-      <div className="flex items-center gap-3 mb-1">
-        <button
-          onClick={() => router.back()}
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-lg flex-shrink-0"
-          style={{ background: "rgba(59,130,246,0.1)", color: "#8b9bc4" }}
-          aria-label="Go back"
-          title="Back"
-        >
-          ←
-        </button>
-        <h1 className="text-xl font-bold" style={{ color: "#e8edf9" }}>
-          Admin
-        </h1>
-      </div>
-      <p className="text-sm mb-4 ml-11" style={{ color: "#8b9bc4" }}>
-        Only visible to verified Admin.
-      </p>
-
-      <div className="flex gap-2 mb-6">
-        <button
-          onClick={() => setActiveTab("shops")}
-          className="px-4 py-2 text-sm font-semibold rounded-lg"
-          style={{
-            background: activeTab === "shops" ? "#3b82f6" : "rgba(59,130,246,0.1)",
-            color: activeTab === "shops" ? "#fff" : "#8b9bc4",
-          }}
-        >
-          🏪 All Shops
-        </button>
-        <button
-          onClick={() => setActiveTab("feedback")}
-          className="relative px-4 py-2 text-sm font-semibold rounded-lg"
-          style={{
-            background: activeTab === "feedback" ? "#3b82f6" : "rgba(59,130,246,0.1)",
-            color: activeTab === "feedback" ? "#fff" : "#8b9bc4",
-          }}
-        >
-          📝 Suggestions Inbox
-          {newFeedbackCount > 0 && (
-            <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
-              {newFeedbackCount}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {activeTab === "shops" && (
-        <>
-          <p className="text-sm mb-4" style={{ color: "#8b9bc4" }}>
-            Sorted by most urgent first.
-          </p>
-          {loadingTenants ? (
-            <p style={{ color: "#8b9bc4" }}>Loading shops...</p>
-          ) : sortedTenants.length === 0 ? (
-            <p style={{ color: "#8b9bc4" }}>No shops registered yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {sortedTenants.map((tenant) => {
-                return (
-                  <div key={tenant.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={cardStyle}>
-                    <div>
-                      <p className="font-semibold" style={{ color: "#e8edf9" }}>
-                        {tenant.businessName || "(No name set)"}
-                      </p>
-                      <p className="text-xs" style={{ color: "#8b9bc4" }}>
-                        {tenant.ownerEmail || "no email on file"}
-                      </p>
-                      <p className="text-xs mt-0.5" style={{ color: "#8b9bc4" }}>
-                        {tenant.subscriptionStatus || "TRIAL"}
-                        {tenant.planId && ` · ${tenant.planId.charAt(0).toUpperCase() + tenant.planId.slice(1)}`}
-                      </p>
-                      <div className="mt-1.5">
-                        <CountdownBadge tenant={tenant} />
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[11px] mr-1" style={{ color: "#5b6d94" }}>
-                          Mark Paid:
-                        </span>
-                        {PLAN_OPTIONS.map((plan) => (
-                          <button
-                            key={plan.id}
-                            onClick={() => handleMarkPaidMonthly(tenant, plan.id)}
-                            disabled={savingId === tenant.id}
-                            className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
-                            style={{
-                              background: tenant.planId === plan.id && !tenant.manuallyDeactivated ? plan.color : "rgba(255,255,255,0.06)",
-                              color: tenant.planId === plan.id && !tenant.manuallyDeactivated ? "#fff" : "#8b9bc4",
-                              borderWidth: "1px",
-                              borderColor: plan.color,
-                            }}
-                            title={`Mark as ${plan.label} plan, +1 month`}
-                          >
-                            {plan.label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => handleMarkLifetime(tenant)}
-                          disabled={savingId === tenant.id}
-                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg disabled:opacity-50"
-                          style={{ background: "rgba(168,85,247,0.12)", color: "#c084fc" }}
-                          title="One-time payment — no more monthly renewal needed"
-                        >
-                          💎 Lifetime
-                        </button>
-                        <button
-                          onClick={() => handleToggleDeactivate(tenant)}
-                          disabled={savingId === tenant.id}
-                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
-                          style={{
-                            background: tenant.manuallyDeactivated ? "rgba(74,222,128,0.15)" : "rgba(239,68,68,0.15)",
-                            color: tenant.manuallyDeactivated ? "#4ade80" : "#f87171",
-                          }}
-                          title={
-                            tenant.manuallyDeactivated
-                              ? "I-restore ang access nang hindi kailangang i-renew"
-                              : "Instant lock — para sa abuse, chargeback, o hindi pagbayad"
-                          }
-                        >
-                          {tenant.manuallyDeactivated ? "✅ Reactivate" : "🚫 Deactivate"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-
-      {activeTab === "feedback" && (
-        <>
-          <p className="text-sm mb-4" style={{ color: "#8b9bc4" }}>
-            Mga suggestion/bug report na isinumite ng mga users mula sa Settings &gt; Help &amp; Support.
-          </p>
-          {loadingFeedback ? (
-            <p style={{ color: "#8b9bc4" }}>Loading feedback...</p>
-          ) : sortedFeedback.length === 0 ? (
-            <p style={{ color: "#8b9bc4" }}>Wala pang naisumiteng feedback.</p>
-          ) : (
-            <div className="space-y-3">
-              {sortedFeedback.map((item) => {
-                const catStyle = CATEGORY_STYLES[item.category] || CATEGORY_STYLES.general;
-                const isResolved = item.status === "resolved";
-                return (
-                  <div
-                    key={item.id}
-                    className="p-4 flex flex-col gap-3"
-                    style={{ ...cardStyle, opacity: isResolved ? 0.6 : 1 }}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap mb-1">
-                          <span
-                            className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                            style={{ background: catStyle.bg, color: catStyle.text }}
-                          >
-                            {catStyle.label}
-                          </span>
-                          {isResolved && (
-                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: "rgba(74,222,128,0.15)", color: "#4ade80" }}>
-                              ✓ Resolved
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs" style={{ color: "#8b9bc4" }}>
-                          {item.businessName || "(No shop name)"} · {item.email || "no email"}
-                        </p>
-                        <p className="text-[10px] mt-0.5" style={{ color: "#5b6d94" }}>
-                          {formatDate(item.createdAt)}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => handleToggleFeedbackStatus(item)}
-                        disabled={savingFeedbackId === item.id}
-                        className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 flex-shrink-0"
-                        style={{ background: isResolved ? "rgba(148,163,184,0.2)" : "#4ade80", color: isResolved ? "#8b9bc4" : "#0a0e1a" }}
-                      >
-                        {savingFeedbackId === item.id ? "..." : isResolved ? "Reopen" : "Mark Resolved"}
-                      </button>
-                    </div>
-                    <p className="text-sm whitespace-pre-wrap" style={{ color: "#e8edf9" }}>
-                      {item.message}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
     </div>
   );
 }
@@ -6131,6 +5665,185 @@ export function useTheme() {
 }
 </file>
 
+<file path="app/lib/subscription.js">
+// Determines what a tenant may use, based on their plan (Basic / Pro /
+// Business), trial, and payment status. Ang lahat ng presyo, limits, at
+// features ay nakasulat sa ./plans.js — dito lang ang LOGIC.
+//
+// Plans (tingnan ang plans.js para sa buong detalye):
+//   Free     — POS, Inventory (50 items), Sales & Expenses, Cloud Backup
+//   Basic    — + unlimited items, 3 staff, low-stock alert, AI Starter
+//   Pro      — + Repair/Delivery/P.O. Tickets, AI Analyst, low-stock email, 8 staff
+//   Business — + 2× AI allowance, 25 staff, priority support, assisted setup
+//
+// Core business tools (POS, Inventory, Sales) ay HINDI kailanman nila-lock ng
+// file na ito. Limits lang sa dami (items, staff) at AI/tickets ang naka-gate.
+//
+// subscriptionStatus values sa database:
+//   "TRIAL"    — 14-day free trial, buong access
+//   "MONTHLY"  — bayad na (monthly O annual — tingnan ang billingCycle at
+//                nextPaymentDue). Pinanatili ang pangalan para hindi masira
+//                ang mga lumang tenant record.
+//   "LIFETIME" — LEGACY lang. Hindi na inaalok. Ang mga lumang tenant na
+//                may ganito ay patuloy na gagana hanggang i-set sila ng
+//                Admin sa Monthly/Annual plan.
+
+import {
+  PLANS,
+  FREE_LIMITS,
+  TRIAL_LIMITS,
+  TRIAL_DAYS,
+  LEGACY_FALLBACK_PLAN,
+} from "./plans";
+
+export { TRIAL_DAYS };
+
+// Para sa compatibility: PLAN_FEATURES[planId] = listahan ng feature keys
+export const PLAN_FEATURES = {
+  basic: PLANS.basic.features,
+  pro: PLANS.pro.features,
+  business: PLANS.business.features,
+};
+
+function isPaidStatus(tenant) {
+  return tenant?.subscriptionStatus === "MONTHLY" || tenant?.subscriptionStatus === "LIFETIME";
+}
+
+function paidPlanId(tenant) {
+  return tenant?.planId && PLANS[tenant.planId] ? tenant.planId : LEGACY_FALLBACK_PLAN;
+}
+
+function planFeatureList(tenant) {
+  return PLAN_FEATURES[paidPlanId(tenant)];
+}
+
+function isPastDue(tenant) {
+  if (tenant?.subscriptionStatus !== "MONTHLY" || !tenant.nextPaymentDue) return false;
+  return new Date(tenant.nextPaymentDue).getTime() < Date.now();
+}
+
+export function getBillingCycle(tenant) {
+  return tenant?.billingCycle === "annual" ? "annual" : "monthly";
+}
+
+export function getAiAccess(tenant) {
+  if (!tenant) return { allowed: false, status: "UNKNOWN", daysLeft: 0 };
+
+  if (tenant.subscriptionStatus === "LIFETIME") {
+    const planIncludesAi = planFeatureList(tenant).includes("aiFeatures");
+    return { allowed: planIncludesAi, status: "LIFETIME", daysLeft: null };
+  }
+
+  if (tenant.subscriptionStatus === "MONTHLY") {
+    const planIncludesAi = planFeatureList(tenant).includes("aiFeatures");
+    if (!tenant.nextPaymentDue) {
+      return { allowed: planIncludesAi, status: "MONTHLY", daysLeft: null };
+    }
+    const due = new Date(tenant.nextPaymentDue);
+    const now = new Date();
+    const daysLeft = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    return { allowed: planIncludesAi && daysLeft >= 0, status: "MONTHLY", daysLeft };
+  }
+
+  // Default: TRIAL — buong access habang tumatakbo ang 14-day free trial,
+  // para maranasan nila ang buong app bago pumili ng plan.
+  const start = new Date(tenant.trialStartDate || Date.now());
+  const now = new Date();
+  const daysUsed = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  const daysLeft = TRIAL_DAYS - daysUsed;
+  return { allowed: daysLeft > 0, status: "TRIAL", daysLeft };
+}
+
+export function urgencyLevel(accessInfo) {
+  if (accessInfo.status === "LIFETIME") return "none";
+  if (accessInfo.daysLeft == null) return "none";
+  if (accessInfo.daysLeft < 0) return "overdue";
+  if (accessInfo.daysLeft <= 3) return "urgent";
+  if (accessInfo.daysLeft <= 7) return "soon";
+  return "fine";
+}
+
+// --- Plan-based feature gating ------------------------------------------
+// Ginagamit para sa Tickets, Low Stock Email, AI features, atbp.
+// Core tools (pos/inventory/salesExpenses/cloudBackup) ay hindi dapat i-check
+// dito dahil laging TRUE ang mga iyon.
+export function hasFeatureAccess(tenant, featureKey) {
+  if (!tenant) return false;
+
+  // Manual kill-switch (abuse/chargeback/non-payment na sinadya i-lock ng
+  // Admin) — bina-block ang LAHAT ng plan-gated features, walang exception.
+  if (tenant.manuallyDeactivated) return false;
+
+  if (tenant.subscriptionStatus === "LIFETIME") {
+    return planFeatureList(tenant).includes(featureKey);
+  }
+
+  if (tenant.subscriptionStatus === "MONTHLY") {
+    if (isPastDue(tenant)) return false; // expired na, wala munang access
+    return planFeatureList(tenant).includes(featureKey);
+  }
+
+  // TRIAL (o walang subscriptionStatus pa) — buong access habang tumatakbo
+  // ang trial.
+  return getAiAccess(tenant).allowed;
+}
+
+// --- Limits (dami ng items, staff, at AI kada buwan) ----------------------
+// Ibinabalik: { key, itemCap, staffCap, ai: { scanCount, chatCount, ... } }
+// key = "basic" | "pro" | "business" | "trial" | "free" | "loading"
+export function getPlanLimits(tenant) {
+  // Wala pang tenant data (naglo-load pa) — huwag muna mag-block.
+  if (!tenant) return { key: "loading", ...TRIAL_LIMITS };
+
+  if (tenant.manuallyDeactivated) return { key: "free", ...FREE_LIMITS };
+
+  if (isPaidStatus(tenant)) {
+    if (isPastDue(tenant)) return { key: "free", ...FREE_LIMITS };
+    const plan = PLANS[paidPlanId(tenant)];
+    return { key: plan.id, itemCap: plan.itemCap, staffCap: plan.staffCap, ai: plan.ai };
+  }
+
+  return getAiAccess(tenant).allowed
+    ? { key: "trial", ...TRIAL_LIMITS }
+    : { key: "free", ...FREE_LIMITS };
+}
+
+// Maikling label para sa Dashboard/Sidebar/Admin.
+// tone: "paid" | "trial" | "free" | "overdue" | "off"
+export function getPlanLabel(tenant) {
+  if (!tenant) return { text: "…", tone: "free" };
+  if (tenant.manuallyDeactivated) return { text: "Deactivated", tone: "off" };
+
+  if (isPaidStatus(tenant)) {
+    const plan = PLANS[paidPlanId(tenant)];
+    const cycle = getBillingCycle(tenant) === "annual" ? " · Annual" : "";
+    if (isPastDue(tenant)) return { text: `${plan.name}${cycle} · Expired`, tone: "overdue" };
+    return { text: `${plan.name}${cycle}`, tone: "paid" };
+  }
+
+  const info = getAiAccess(tenant);
+  if (info.allowed) return { text: `Free Trial · ${info.daysLeft} araw pa`, tone: "trial" };
+  return { text: "Free", tone: "free" };
+}
+
+export function itemCapMessage(cap) {
+  return `Umabot ka na sa ${cap} items na limit ng Free plan. I-upgrade sa Basic (unlimited items) sa Upgrade Plan para makapagdagdag pa. Hindi nawawala ang mga item mo.`;
+}
+
+export function staffCapMessage(cap, planName) {
+  if (cap <= 0) {
+    return "Hindi kasama ang staff logins sa Free plan. I-upgrade sa Basic o mas mataas para makapagdagdag ng staff.";
+  }
+  return `Umabot ka na sa limit na ${cap} staff logins ng ${planName} plan. I-upgrade ang plan para makapagdagdag pa.`;
+}
+
+export const AI_LOCKED_MESSAGE =
+  "Tapos na ang libreng trial mo, o hindi kasama ng kasalukuyang plan mo ang AI. Gumagana pa rin ang lahat ng iba sa UBA — pumunta sa Upgrade Plan para i-unlock muli ang AI Scanner, Business Analyst, at Assistant.";
+
+export const FEATURE_LOCKED_MESSAGE =
+  "Ang feature na ito ay para sa Pro/Business plan. I-upgrade ang plan mo o mag-renew — pumunta sa Upgrade Plan.";
+</file>
+
 <file path="app/signup/page.tsx">
 "use client";
 
@@ -6465,6 +6178,558 @@ export default function SignUpPage() {
           .uba-cursor, .uba-scanline { animation: none; }
         }
       `}</style>
+    </div>
+  );
+}
+</file>
+
+<file path="app/admin/page.tsx">
+"use client";
+
+import { useEffect, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import { collection, getDocs, doc, updateDoc, query, orderBy } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { getAiAccess, urgencyLevel, getPlanLabel } from "../lib/subscription";
+import { PLANS, PLAN_IDS, peso, planPrice, cycleDays, cycleLabel } from "../lib/plans";
+
+type Tenant = {
+  id: string;
+  businessName: string;
+  ownerEmail: string;
+  subscriptionStatus: string;
+  trialStartDate?: string;
+  nextPaymentDue?: string;
+  planId?: "basic" | "pro" | "business" | string;
+  billingCycle?: "monthly" | "annual" | string;
+  manuallyDeactivated?: boolean;
+};
+
+type PlanId = "basic" | "pro" | "business";
+type Cycle = "monthly" | "annual";
+
+// Galing sa app/lib/plans.js ang pangalan at presyo — para laging tugma ang Admin
+// sa Pricing page. Baguhin ang presyo doon, hindi dito.
+const PLAN_COLORS: Record<string, string> = { basic: "#64748b", pro: "#3b82f6", business: "#a855f7" };
+const PLAN_OPTIONS = (PLAN_IDS as PlanId[]).map((id) => ({
+  id,
+  label: PLANS[id].name,
+  color: PLAN_COLORS[id],
+}));
+const CYCLES: Cycle[] = ["monthly", "annual"];
+
+type Feedback = {
+  id: string;
+  uid: string;
+  businessName?: string;
+  email?: string;
+  category: "feature" | "bug" | "general" | string;
+  message: string;
+  status: "new" | "resolved" | string;
+  createdAt?: { seconds: number; nanoseconds: number } | null;
+};
+
+const URGENCY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  overdue: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171", label: "Overdue" },
+  urgent: { bg: "rgba(249, 115, 22, 0.15)", text: "#fb923c", label: "Due very soon" },
+  soon: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15", label: "Due this week" },
+  fine: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80", label: "OK" },
+  none: { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", label: "—" },
+};
+
+const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  feature: { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", label: "💡 Feature Request" },
+  bug: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171", label: "🐞 Bug Report" },
+  general: { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc", label: "💬 General" },
+};
+
+const cardStyle: React.CSSProperties = {
+  background: "var(--color-surface, #141d33)",
+  borderRadius: "var(--radius-card, 1rem)",
+  borderWidth: "var(--border-width, 1px)",
+  borderColor: "var(--color-border, rgba(59,130,246,0.25))",
+};
+
+// --- Live Countdown ---------------------------------------------------
+// Nagre-recompute ang natitirang oras every second para "buhay" tumakbo ang
+// timer sa screen (para astig tignan), hindi lang static na "(3d)" text.
+function useCountdown(targetIso?: string | null) {
+  const [remainingMs, setRemainingMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!targetIso) {
+      setRemainingMs(null);
+      return;
+    }
+    const targetTime = new Date(targetIso).getTime();
+    const tick = () => setRemainingMs(targetTime - Date.now());
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [targetIso]);
+
+  return remainingMs;
+}
+
+function formatCountdown(ms: number) {
+  const overdue = ms < 0;
+  const abs = Math.abs(ms);
+  const totalSeconds = Math.floor(abs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const text = `${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
+  return overdue ? `-${text}` : text;
+}
+
+function CountdownBadge({ tenant }: { tenant: Tenant }) {
+  const isLifetime = tenant.subscriptionStatus === "LIFETIME";
+  const remainingMs = useCountdown(isLifetime ? null : tenant.nextPaymentDue);
+
+  if (tenant.manuallyDeactivated) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-sm font-mono font-bold px-3 py-1.5 rounded-lg"
+        style={{ background: "rgba(239,68,68,0.2)", color: "#f87171" }}
+      >
+        🚫 DEACTIVATED
+      </span>
+    );
+  }
+
+  // Lumang "Lifetime" record — hindi na inaalok. Pumili ng plan sa kanan para gawin itong
+  // Monthly o Annual na may timer.
+  if (isLifetime) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
+        style={{ background: "rgba(250,204,21,0.15)", color: "#facc15" }}
+      >
+        ⚠️ LUMANG LIFETIME — pumili ng plan
+      </span>
+    );
+  }
+
+  if (!tenant.nextPaymentDue || remainingMs === null) {
+    return (
+      <span className="text-xs" style={{ color: "#8b9bc4" }}>
+        Walang due date na naka-set
+      </span>
+    );
+  }
+
+  const overdue = remainingMs < 0;
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-sm font-mono font-bold px-3 py-1.5 rounded-lg tabular-nums"
+      style={{
+        background: overdue ? "rgba(239,68,68,0.15)" : "rgba(74,222,128,0.15)",
+        color: overdue ? "#f87171" : "#4ade80",
+      }}
+    >
+      {overdue ? "⏰ OVERDUE " : "⏳ "}
+      {formatCountdown(remainingMs)}
+    </span>
+  );
+}
+
+export default function AdminPage() {
+  const [checking, setChecking] = useState(true);
+  const [authorized, setAuthorized] = useState(false);
+  const [activeTab, setActiveTab] = useState<"shops" | "feedback">("shops");
+  const router = useRouter();
+
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [loadingTenants, setLoadingTenants] = useState(true);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  const [feedbackItems, setFeedbackItems] = useState<Feedback[]>([]);
+  const [loadingFeedback, setLoadingFeedback] = useState(true);
+  const [savingFeedbackId, setSavingFeedbackId] = useState<string | null>(null);
+
+  // 🔒 PINAGANDANG AUTH CHECK: Nagtatanong sa Server API sa halip na client-side env variable
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/check-admin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.uid }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.isAdmin) {
+          router.push("/dashboard");
+          return;
+        }
+
+        setAuthorized(true);
+      } catch (error) {
+        console.error("Admin verification error:", error);
+        router.push("/dashboard");
+      } finally {
+        setChecking(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [router]);
+
+  useEffect(() => {
+    if (!authorized) return;
+    const loadTenants = async () => {
+      try {
+        const snap = await getDocs(collection(db, "tenants"));
+        setTenants(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Tenant[]);
+      } catch (error) {
+        console.error("Failed to load tenants:", error);
+      } finally {
+        setLoadingTenants(false);
+      }
+    };
+    loadTenants();
+  }, [authorized]);
+
+  useEffect(() => {
+    if (!authorized) return;
+    const loadFeedback = async () => {
+      try {
+        const q = query(collection(db, "feedback"), orderBy("createdAt", "desc"));
+        const snap = await getDocs(q);
+        setFeedbackItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Feedback[]);
+      } catch (error) {
+        console.error("Failed to load feedback:", error);
+      } finally {
+        setLoadingFeedback(false);
+      }
+    };
+    loadFeedback();
+  }, [authorized]);
+
+  const sortedTenants = useMemo(() => {
+    return [...tenants].sort((a, b) => {
+      const infoA = getAiAccess(a);
+      const infoB = getAiAccess(b);
+      const rank: Record<string, number> = { overdue: 0, urgent: 1, soon: 2, fine: 3, none: 4 };
+      return rank[urgencyLevel(infoA)] - rank[urgencyLevel(infoB)];
+    });
+  }, [tenants]);
+
+  // Bagong feedback (status: "new") muna, saka na yung resolved na
+  const sortedFeedback = useMemo(() => {
+    return [...feedbackItems].sort((a, b) => {
+      if (a.status === b.status) return 0;
+      return a.status === "new" ? -1 : 1;
+    });
+  }, [feedbackItems]);
+
+  const newFeedbackCount = feedbackItems.filter((f) => f.status !== "resolved").length;
+
+  // Mark Paid: pumili ng plan at cycle (Monthly +30 araw, Annual +365 araw).
+  // Kapag renewal ng parehong plan at cycle na hindi pa expired, idinadagdag sa
+  // kasalukuyang due date (hindi nawawala ang natitirang araw). Kung ibang plan o
+  // expired na, magsisimula sa ngayon.
+  const handleMarkPaid = async (tenant: Tenant, planId: PlanId, cycle: Cycle) => {
+    const price = planPrice(planId, cycle);
+    const ok = window.confirm(
+      `I-mark na bayad ang "${tenant.businessName || tenant.ownerEmail}" sa ${PLANS[planId].name} ${cycleLabel(cycle)} (${peso(price)})?`
+    );
+    if (!ok) return;
+
+    setSavingId(tenant.id);
+    const now = Date.now();
+    const currentDue = tenant.nextPaymentDue ? new Date(tenant.nextPaymentDue).getTime() : 0;
+    const sameTerm =
+      tenant.subscriptionStatus === "MONTHLY" &&
+      tenant.planId === planId &&
+      (tenant.billingCycle || "monthly") === cycle &&
+      currentDue > now;
+    const base = sameTerm ? currentDue : now;
+    const nextDue = new Date(base + cycleDays(cycle) * 24 * 60 * 60 * 1000).toISOString();
+
+    try {
+      // Ang pagre-renew/pag-mark-paid ay awtomatikong nag-re-reactivate din
+      // (in case may naka-deactivate dati) — bagong bayad, bagong access.
+      await updateDoc(doc(db, "tenants", tenant.id), {
+        subscriptionStatus: "MONTHLY", // "MONTHLY" = bayad na (monthly o annual, tingnan ang billingCycle)
+        planId,
+        billingCycle: cycle,
+        nextPaymentDue: nextDue,
+        manuallyDeactivated: false,
+      });
+      setTenants((prev) =>
+        prev.map((t) =>
+          t.id === tenant.id
+            ? {
+                ...t,
+                subscriptionStatus: "MONTHLY",
+                planId,
+                billingCycle: cycle,
+                nextPaymentDue: nextDue,
+                manuallyDeactivated: false,
+              }
+            : t
+        )
+      );
+    } catch (error) {
+      console.error("Failed to mark paid:", error);
+      alert("Hindi na-save. Tingnan ang koneksyon at subukan ulit.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleToggleDeactivate = async (tenant: Tenant) => {
+    setSavingId(tenant.id);
+    const nextValue = !tenant.manuallyDeactivated;
+    try {
+      await updateDoc(doc(db, "tenants", tenant.id), { manuallyDeactivated: nextValue });
+      setTenants((prev) =>
+        prev.map((t) => (t.id === tenant.id ? { ...t, manuallyDeactivated: nextValue } : t))
+      );
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleToggleFeedbackStatus = async (item: Feedback) => {
+    setSavingFeedbackId(item.id);
+    const nextStatus = item.status === "resolved" ? "new" : "resolved";
+    try {
+      await updateDoc(doc(db, "feedback", item.id), { status: nextStatus });
+      setFeedbackItems((prev) =>
+        prev.map((f) => (f.id === item.id ? { ...f, status: nextStatus } : f))
+      );
+    } catch (error) {
+      console.error("Failed to update feedback status:", error);
+    } finally {
+      setSavingFeedbackId(null);
+    }
+  };
+
+  const formatDate = (ts?: { seconds: number } | null) => {
+    if (!ts?.seconds) return "";
+    return new Date(ts.seconds * 1000).toLocaleString();
+  };
+
+  if (checking || !authorized) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "#0a0e1a" }}>
+        <p className="text-sm" style={{ color: "#8b9bc4" }}>Verifying Admin Access...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen p-6" style={{ background: "#0a0e1a" }}>
+      <div className="flex items-center gap-3 mb-1">
+        <button
+          onClick={() => router.back()}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-lg flex-shrink-0"
+          style={{ background: "rgba(59,130,246,0.1)", color: "#8b9bc4" }}
+          aria-label="Go back"
+          title="Back"
+        >
+          ←
+        </button>
+        <h1 className="text-xl font-bold" style={{ color: "#e8edf9" }}>
+          Admin
+        </h1>
+      </div>
+      <p className="text-sm mb-4 ml-11" style={{ color: "#8b9bc4" }}>
+        Only visible to verified Admin.
+      </p>
+
+      <div className="flex gap-2 mb-6">
+        <button
+          onClick={() => setActiveTab("shops")}
+          className="px-4 py-2 text-sm font-semibold rounded-lg"
+          style={{
+            background: activeTab === "shops" ? "#3b82f6" : "rgba(59,130,246,0.1)",
+            color: activeTab === "shops" ? "#fff" : "#8b9bc4",
+          }}
+        >
+          🏪 All Shops
+        </button>
+        <button
+          onClick={() => setActiveTab("feedback")}
+          className="relative px-4 py-2 text-sm font-semibold rounded-lg"
+          style={{
+            background: activeTab === "feedback" ? "#3b82f6" : "rgba(59,130,246,0.1)",
+            color: activeTab === "feedback" ? "#fff" : "#8b9bc4",
+          }}
+        >
+          📝 Suggestions Inbox
+          {newFeedbackCount > 0 && (
+            <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
+              {newFeedbackCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {activeTab === "shops" && (
+        <>
+          <p className="text-sm mb-4" style={{ color: "#8b9bc4" }}>
+            Sorted by most urgent first.
+          </p>
+          {loadingTenants ? (
+            <p style={{ color: "#8b9bc4" }}>Loading shops...</p>
+          ) : sortedTenants.length === 0 ? (
+            <p style={{ color: "#8b9bc4" }}>No shops registered yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {sortedTenants.map((tenant) => {
+                return (
+                  <div key={tenant.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={cardStyle}>
+                    <div>
+                      <p className="font-semibold" style={{ color: "#e8edf9" }}>
+                        {tenant.businessName || "(No name set)"}
+                      </p>
+                      <p className="text-xs" style={{ color: "#8b9bc4" }}>
+                        {tenant.ownerEmail || "no email on file"}
+                      </p>
+                      <p className="text-xs mt-0.5" style={{ color: "#8b9bc4" }}>
+                        {getPlanLabel(tenant).text}
+                      </p>
+                      <div className="mt-1.5">
+                        <CountdownBadge tenant={tenant} />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                      <div className="flex flex-col items-end gap-1.5">
+                        <span className="text-[11px]" style={{ color: "#5b6d94" }}>
+                          Mark Paid (Monthly +30 araw · Annual +365 araw):
+                        </span>
+                        {PLAN_OPTIONS.map((plan) => (
+                          <div key={plan.id} className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-semibold w-16 text-right" style={{ color: plan.color }}>
+                              {plan.label}
+                            </span>
+                            {CYCLES.map((cycle) => {
+                              const isCurrent =
+                                tenant.subscriptionStatus === "MONTHLY" &&
+                                tenant.planId === plan.id &&
+                                (tenant.billingCycle || "monthly") === cycle &&
+                                !tenant.manuallyDeactivated;
+                              return (
+                                <button
+                                  key={cycle}
+                                  onClick={() => handleMarkPaid(tenant, plan.id, cycle)}
+                                  disabled={savingId === tenant.id}
+                                  className="px-2.5 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
+                                  style={{
+                                    background: isCurrent ? plan.color : "rgba(255,255,255,0.06)",
+                                    color: isCurrent ? "#fff" : "#8b9bc4",
+                                    borderWidth: "1px",
+                                    borderColor: plan.color,
+                                  }}
+                                  title={`${plan.label} ${cycleLabel(cycle)} · ${peso(planPrice(plan.id, cycle))} · +${cycleDays(cycle)} araw`}
+                                >
+                                  {cycleLabel(cycle)} {peso(planPrice(plan.id, cycle))}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleToggleDeactivate(tenant)}
+                          disabled={savingId === tenant.id}
+                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
+                          style={{
+                            background: tenant.manuallyDeactivated ? "rgba(74,222,128,0.15)" : "rgba(239,68,68,0.15)",
+                            color: tenant.manuallyDeactivated ? "#4ade80" : "#f87171",
+                          }}
+                          title={
+                            tenant.manuallyDeactivated
+                              ? "I-restore ang access nang hindi kailangang i-renew"
+                              : "Instant lock — para sa abuse, chargeback, o hindi pagbayad"
+                          }
+                        >
+                          {tenant.manuallyDeactivated ? "✅ Reactivate" : "🚫 Deactivate"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === "feedback" && (
+        <>
+          <p className="text-sm mb-4" style={{ color: "#8b9bc4" }}>
+            Mga suggestion/bug report na isinumite ng mga users mula sa Settings &gt; Help &amp; Support.
+          </p>
+          {loadingFeedback ? (
+            <p style={{ color: "#8b9bc4" }}>Loading feedback...</p>
+          ) : sortedFeedback.length === 0 ? (
+            <p style={{ color: "#8b9bc4" }}>Wala pang naisumiteng feedback.</p>
+          ) : (
+            <div className="space-y-3">
+              {sortedFeedback.map((item) => {
+                const catStyle = CATEGORY_STYLES[item.category] || CATEGORY_STYLES.general;
+                const isResolved = item.status === "resolved";
+                return (
+                  <div
+                    key={item.id}
+                    className="p-4 flex flex-col gap-3"
+                    style={{ ...cardStyle, opacity: isResolved ? 0.6 : 1 }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span
+                            className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                            style={{ background: catStyle.bg, color: catStyle.text }}
+                          >
+                            {catStyle.label}
+                          </span>
+                          {isResolved && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: "rgba(74,222,128,0.15)", color: "#4ade80" }}>
+                              ✓ Resolved
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs" style={{ color: "#8b9bc4" }}>
+                          {item.businessName || "(No shop name)"} · {item.email || "no email"}
+                        </p>
+                        <p className="text-[10px] mt-0.5" style={{ color: "#5b6d94" }}>
+                          {formatDate(item.createdAt)}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleToggleFeedbackStatus(item)}
+                        disabled={savingFeedbackId === item.id}
+                        className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50 flex-shrink-0"
+                        style={{ background: isResolved ? "rgba(148,163,184,0.2)" : "#4ade80", color: isResolved ? "#8b9bc4" : "#0a0e1a" }}
+                      >
+                        {savingFeedbackId === item.id ? "..." : isResolved ? "Reopen" : "Mark Resolved"}
+                      </button>
+                    </div>
+                    <p className="text-sm whitespace-pre-wrap" style={{ color: "#e8edf9" }}>
+                      {item.message}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -12940,1550 +13205,6 @@ export default function RepairTicketsPage() {
 }
 </file>
 
-<file path="app/components/Sidebar.tsx">
-"use client";
-
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
-import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy, where } from "firebase/firestore";
-import { signOut } from "firebase/auth";
-import { auth, db } from "../lib/firebase";
-import { getSessionInfo, type SessionInfo } from "../lib/staffAuth";
-import { hasFeatureAccess } from "../lib/subscription";
-import { canAccessPage } from "../lib/permissions";
-
-
-const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string; hideForRoles?: string[] }[] = [
-  { href: "/dashboard", label: "Dashboard", icon: "🏠", hideForRoles: ["cashier"] },
-  { href: "/inventory", label: "Inventory", icon: "📦" },
-  { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️", featureKey: "repairTickets" },
-  { href: "/delivery-tickets", label: "Delivery Tickets", icon: "🚚", featureKey: "deliveryTickets" },
-  { href: "/po-tickets", label: "P.O. / Purchase Order", icon: "📋", featureKey: "poTickets" },
-  { href: "/sales", label: "Sales & Expenses", icon: "💰" },
-  { href: "/pos", label: "POS / Checkout", icon: "🧾" },
-  { href: "/settings", label: "Settings", icon: "⚙️" },
-  { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
-  { href: "/approvals", label: "Approvals", icon: "✅" },
-];
-interface LowStockItem {
-  id: string;
-  name: string;
-  stock: number;
-  minStock: number;
-  suggestedOrder: number;
-  supplier: string;
-}
-
-interface NotificationData {
-  hasNotification: boolean;
-  count: number;
-  title: string;
-  message: string;
-  items: LowStockItem[];
-}
-
-function resizeImageToBase64(file: File, maxSize = 160): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let { width, height } = img;
-        if (width > height) {
-          if (width > maxSize) {
-            height *= maxSize / width;
-            width = maxSize;
-          }
-        } else {
-          if (height > maxSize) {
-            width *= maxSize / height;
-            height = maxSize;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", 0.8));
-      };
-      img.onerror = reject;
-      img.src = e.target!.result as string;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
-
-export default function Sidebar() {
-  const pathname = usePathname();
-  const router = useRouter();
-  const [collapsed, setCollapsed] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [businessName, setBusinessName] = useState("");
-  const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  const [nextPaymentDue, setNextPaymentDue] = useState<string | undefined>(undefined);
-  const [manuallyDeactivated, setManuallyDeactivated] = useState<boolean>(false);
-  const [planId, setPlanId] = useState<string | null>(null);
-  const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
-  const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
-  const [session, setSession] = useState<SessionInfo | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
-  const [featuresLoaded, setFeaturesLoaded] = useState(false);
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const [notification, setNotification] = useState<NotificationData | null>(null);
-  const [showNotifModal, setShowNotifModal] = useState(false);
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) {
-        setIsAdmin(false);
-        setBusinessName("");
-        setLogoUrl(null);
-        setSession(null);
-        return;
-      }
-
-      const sessionInfo = await getSessionInfo(user);
-      setSession(sessionInfo);
-      setIsAdmin(user.uid === ADMIN_UID);
-
-      try {
-        const tenantSnap = await getDoc(doc(db, "tenants", sessionInfo.tenantId));
-        if (tenantSnap.exists()) {
-          const data = tenantSnap.data();
-          setBusinessName(data.businessName || "");
-          setNameDraft(data.businessName || "");
-          setLogoUrl(data.logoUrl || null);
-          setPlanId(data.planId || undefined);
-          setSubscriptionStatus(data.subscriptionStatus || "trial");
-          setNextPaymentDue(data.nextPaymentDue || undefined);
-          setManuallyDeactivated(!!data.manuallyDeactivated);
-          setEnabledFeatures(data.enabledFeatures || {});
-        }
-      } catch (err) {
-        console.error("Error fetching tenant data:", err);
-      } finally {
-        setFeaturesLoaded(true);
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    let unsubInv = () => {};
-
-    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
-      unsubInv();
-
-      if (!user) {
-        setNotification(null);
-        return;
-      }
-
-      const sessionInfo = await getSessionInfo(user);
-      const invQuery = query(collection(db, "tenants", sessionInfo.tenantId, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(
-        invQuery,
-        (snapshot) => {
-          const lowStockItems: LowStockItem[] = snapshot.docs
-            .map((d) => ({ id: d.id, ...d.data() } as any))
-            .filter((i) => (i.stock ?? 0) <= (i.threshold ?? i.minStock ?? 0))
-            .map((i) => {
-              const limit = i.threshold ?? i.minStock ?? 0;
-              return {
-                id: i.id,
-                name: i.name,
-                stock: i.stock ?? 0,
-                minStock: limit,
-                suggestedOrder: Math.max(limit * 2 - (i.stock ?? 0), limit || 1),
-                supplier: i.supplierName?.trim() || "N/A",
-              };
-            });
-
-          if (lowStockItems.length === 0) {
-            setNotification(null);
-            return;
-          }
-
-          setNotification({
-            hasNotification: true,
-            count: lowStockItems.length,
-            title: "⚠️ Low Stock Alert",
-            message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
-              .map((i) => i.name)
-              .join(", ")}.`,
-            items: lowStockItems,
-          });
-        },
-        (error) => {
-          console.error("Error fetching inventory notifications:", error);
-        }
-      );
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubInv();
-    };
-  }, []);
-
-
-    useEffect(() => {
-    if (!session || session.role !== "owner") {
-      setPendingCount(0);
-      return;
-    }
-    const q = query(
-      collection(db, "tenants", session.tenantId, "approvals"),
-      where("status", "==", "pending")
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => setPendingCount(snap.size),
-      () => setPendingCount(0)
-    );
-    return () => unsub();
-  }, [session]);
-
-
-  const saveBusinessName = async () => {
-    if (!session || session.isStaff || !nameDraft.trim()) {
-      setNameDraft(businessName);
-      setEditingName(false);
-      return;
-    }
-    const trimmed = nameDraft.trim();
-    try {
-      await updateDoc(doc(db, "tenants", session.tenantId), { businessName: trimmed });
-      setBusinessName(trimmed);
-    } catch (err) {
-      console.error("Failed to update business name:", err);
-    } finally {
-      setEditingName(false);
-    }
-  };
-
-  const handleLogoClick = () => {
-    if (collapsed) return;
-    fileInputRef.current?.click();
-  };
-
-  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !session || session.isStaff) return;
-
-    setUploading(true);
-    setUploadError("");
-    try {
-      const base64 = await resizeImageToBase64(file);
-      await updateDoc(doc(db, "tenants", session.tenantId), { logoUrl: base64 });
-      setLogoUrl(base64);
-    } catch (err) {
-      console.error("Logo upload failed:", err);
-      setUploadError("Couldn't process that image. Try a different photo.");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      router.push("/login");
-    } catch (err) {
-      console.error("Error signing out:", err);
-    }
-  };
-
-  // Iisang tenant object na ginagamit sa buong component para sa access checks
-  const tenantAccess = { subscriptionStatus, planId, nextPaymentDue, manuallyDeactivated };
-
-  // Ang Low Stock notification bell ay Pro/Business feature — i-suppress kung
-  // hindi entitled ang tenant, kahit meron talagang low-stock data sa likod.
-  const lowStockAllowed = featuresLoaded && hasFeatureAccess(tenantAccess, "lowStockAlerts");
-  const visibleNotification = lowStockAllowed ? notification : null;
-
-  const navItems = baseNavItems
-    .filter((item) => {
-      if (item.adminOnly && !isAdmin) return false;
-      // Hide feature-gated items until we've actually confirmed their state —
-      // prevents a flash where all items briefly show before Firestore replies.
-      if (!session) return false;
-      if (!item.adminOnly && !canAccessPage(session.role, item.href)) return false;
-      if (item.featureKey && !featuresLoaded) return false;
-      // User's own on/off toggle (Settings > Modules) — kung pinatay nila ito
-      // dahil hindi naman nila ginagamit, itago talaga, hindi lang i-lock.
-      if (item.featureKey && enabledFeatures[item.featureKey] === false) return false;
-      return true;
-    })
-    .map((item) => {
-      const locked = !!item.featureKey && !hasFeatureAccess(tenantAccess, item.featureKey);
-      const label =
-        item.href === "/approvals" && pendingCount > 0
-          ? `${item.label} (${pendingCount})`
-          : item.label;
-      return { ...item, label, locked };
-    });
-
-  // Buod na banner kapag may naka-lock na Pro/Business feature dahil sa plan
-  // o expiry — iisang mensahe lang, hindi na kailangang i-ulit per-item.
-  const hasLockedNavItem = navItems.some((item) => item.locked);
-  let lockBannerMessage: string | null = null;
-  if (manuallyDeactivated) {
-    lockBannerMessage = "🚫 Na-deactivate ang account mo. Makipag-ugnayan sa developer (Settings > Help & Support) para ma-restore.";
-  } else if (hasLockedNavItem) {
-    lockBannerMessage =
-      subscriptionStatus === "MONTHLY"
-        ? "⚠️ Naka-lock ang ilang features (hindi kasama sa Basic plan mo, o na-expire na). I-upgrade o mag-renew sa Settings."
-        : "⏳ Naka-lock ang ilang Pro/Business features (tapos na ang trial o Basic ka pa lang). Pumunta sa Settings para mag-upgrade.";
-  }
-
-  const planLabel: { text: string; bg: string; color: string } = (() => {
-    if (subscriptionStatus === "MONTHLY" || subscriptionStatus === "LIFETIME") {
-      const labels: Record<string, string> = { basic: "BASIC", pro: "PRO", business: "BUSINESS" };
-      const planText = planId ? labels[planId] || planId.toUpperCase() : "";
-      return {
-        text: subscriptionStatus === "LIFETIME" ? `${planText} · LIFETIME`.trim() : planText || "PAID",
-        bg: "rgba(74, 222, 128, 0.15)",
-        color: "#4ade80",
-      };
-    }
-    return { text: "FREE TRIAL", bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
-  })();
-
-  return (
-    <>
-      {/* MOBILE TOP BAR - Upgrade button sa TOP RIGHT CORNER */}
-      <div
-        className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
-        style={{
-          background: "var(--color-bg-secondary)",
-          borderBottom: "1px solid var(--color-border)",
-        }}
-      >
-        <button
-          onClick={() => setMobileMenuOpen(true)}
-          className="text-2xl leading-none"
-          style={{ color: "var(--color-text-primary)" }}
-          aria-label="Open menu"
-        >
-          ☰
-        </button>
-
-        <div className="flex items-center gap-1.5 max-w-[45%]">
-          <p
-            className="text-sm font-semibold truncate"
-            style={{ color: "var(--color-text-primary)" }}
-          >
-            {businessName || "My Shop"}
-          </p>
-          <span
-            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
-            style={{ background: planLabel.bg, color: planLabel.color }}
-          >
-            {planLabel.text}
-          </span>
-        </div>
-
-        {/* TOP RIGHT CORNER: Notification Icon */}
-        <div className="flex items-center gap-2">
-          {visibleNotification && visibleNotification.count > 0 && (
-            <button
-              onClick={() => setShowNotifModal(true)}
-              className="relative text-lg"
-              aria-label="Notifications"
-            >
-              🔔
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                {visibleNotification.count}
-              </span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Mobile Drawer Overlay */}
-      {mobileMenuOpen && (
-        <div className="sm:hidden fixed inset-0 z-50 flex">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setMobileMenuOpen(false)}
-          />
-          <div
-            className="relative w-72 max-w-[80vw] h-full flex flex-col p-4 overflow-y-auto"
-            style={{ background: "var(--color-bg-secondary)" }}
-          >
-            <div className="flex justify-between items-center mb-6">
-              <p
-                className="text-sm font-semibold"
-                style={{ color: "var(--color-text-primary)" }}
-              >
-                {businessName || "My Shop"}
-              </p>
-              <button
-                onClick={() => setMobileMenuOpen(false)}
-                className="text-2xl leading-none"
-                style={{ color: "var(--color-text-secondary)" }}
-                aria-label="Close menu"
-              >
-                ×
-              </button>
-            </div>
-
-            {lockBannerMessage && !session?.isStaff && (
-              <div
-                className="mb-4 p-3 rounded-lg text-xs leading-snug"
-                style={{
-                  background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
-                  color: manuallyDeactivated ? "#f87171" : "#facc15",
-                }}
-              >
-                {lockBannerMessage}
-              </div>
-            )}
-
-            <nav className="space-y-1 flex-1">
-              {navItems.map((item) => {
-                if (item.locked) {
-                  return (
-                    <button
-                      key={item.href}
-                      onClick={() => {
-                        setMobileMenuOpen(false);
-                        router.push("/settings");
-                      }}
-                      title="Naka-lock — pumunta sa Settings para mag-upgrade"
-                      className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded-lg text-sm font-medium opacity-60"
-                      style={{ color: "var(--color-text-secondary)" }}
-                    >
-                      <span className="flex items-center gap-3">
-                        <span>{item.icon}</span>
-                        <span>{item.label}</span>
-                      </span>
-                      <span>🔒</span>
-                    </button>
-                  );
-                }
-                const isActive = pathname === item.href;
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setMobileMenuOpen(false)}
-                    className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium"
-                    style={{
-                      background: isActive ? "var(--color-surface)" : "transparent",
-                      color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
-                    }}
-                  >
-                    <span>{item.icon}</span>
-                    <span>{item.label}</span>
-                  </Link>
-                );
-              })}
-            </nav>
-
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium mt-4"
-              style={{ color: "#f87171" }}
-            >
-              <span>🚪</span>
-              <span>Log Out</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* DESKTOP SIDEBAR - Upgrade button sa TOP RIGHT CORNER ng Sidebar Header */}
-      <aside
-        className={`${
-          collapsed ? "w-16" : "w-64"
-        } min-h-screen p-3 hidden sm:flex sm:flex-col transition-all duration-200 border-r relative`}
-        style={{
-          background: "var(--color-bg-secondary)",
-          borderColor: "var(--color-border)",
-        }}
-      >
-        {/* Header Section (May UPGRADE button sa Top Right) */}
-        <div className="flex items-center justify-between mb-4 px-1 relative">
-          {!collapsed ? (
-            <div className="flex items-center justify-between w-full">
-              <p
-                className="text-xs font-semibold uppercase tracking-wide"
-                style={{ color: "var(--color-text-secondary)" }}
-              >
-                {session?.isStaff ? `${session.staffName} · ${session.role}` : "My Shop"}
-              </p>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setCollapsed(!collapsed)}
-                  className="p-1 rounded-lg transition hover:opacity-80"
-                  style={{ color: "var(--color-text-secondary)" }}
-                  title="Collapse sidebar"
-                >
-                  «
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => setCollapsed(!collapsed)}
-              className="p-1.5 rounded-lg transition mx-auto hover:opacity-80"
-              style={{ color: "var(--color-text-secondary)" }}
-              title="Expand sidebar"
-            >
-              »
-            </button>
-          )}
-        </div>
-
-        {/* Logo Section */}
-        <div className="flex flex-col items-center mb-6 px-1">
-          <input
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            onChange={handleLogoChange}
-            className="hidden"
-          />
-          <button
-            onClick={handleLogoClick}
-            disabled={collapsed}
-            title="Click to change logo"
-            className={`relative rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 border transition ${
-              collapsed ? "w-9 h-9" : "w-16 h-16"
-            } ${!collapsed ? "hover:opacity-80 cursor-pointer" : ""}`}
-            style={{
-              background: "var(--color-surface)",
-              borderColor: "var(--color-border)",
-            }}
-          >
-            {logoUrl ? (
-              <img src={logoUrl} alt="Shop logo" className="w-full h-full object-cover" />
-            ) : (
-              <span className={collapsed ? "text-sm" : "text-xl"}>🏪</span>
-            )}
-          </button>
-
-          {!collapsed && uploadError && (
-            <p className="text-[11px] text-red-400 mt-1 text-center">{uploadError}</p>
-          )}
-
-          {!collapsed && (
-            <div className="mt-2 w-full text-center px-1">
-              {editingName ? (
-                <textarea
-                  autoFocus
-                  rows={2}
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  onBlur={saveBusinessName}
-                  className="w-full text-sm font-semibold text-center leading-snug rounded px-1 py-1 resize-none focus:outline-none"
-                  style={{
-                    background: "var(--color-surface)",
-                    color: "var(--color-text-primary)",
-                    borderWidth: "1px",
-                    borderColor: "var(--color-primary)",
-                  }}
-                />
-              ) : (
-                <button
-                  onClick={() => setEditingName(true)}
-                  className="text-sm font-semibold leading-snug break-words whitespace-normal w-full hover:opacity-80"
-                  style={{ color: "var(--color-text-primary)" }}
-                >
-                  {businessName || "Set shop name"}{" "}
-                  <span style={{ color: "var(--color-text-secondary)" }}>✎</span>
-                </button>
-              )}
-              <span
-                className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full"
-                style={{ background: planLabel.bg, color: planLabel.color }}
-              >
-                {planLabel.text}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Lock / Renew Banner */}
-        {!collapsed && lockBannerMessage && !session?.isStaff && (
-          <button
-            onClick={() => router.push("/settings")}
-            className="mb-3 w-full p-2.5 rounded-lg text-left text-[11px] leading-snug transition hover:opacity-90"
-            style={{
-              background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
-              color: manuallyDeactivated ? "#f87171" : "#facc15",
-              borderWidth: "1px",
-              borderColor: manuallyDeactivated ? "rgba(239,68,68,0.3)" : "rgba(250,204,21,0.3)",
-            }}
-          >
-            {lockBannerMessage}
-          </button>
-        )}
-
-        {/* Low Stock Alert Button */}
-        {visibleNotification && visibleNotification.count > 0 && (
-          <button
-            onClick={() => setShowNotifModal(true)}
-            className="mb-4 w-full p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20 transition flex items-center justify-between text-xs font-semibold"
-          >
-            <span className="flex items-center gap-1.5">
-              🔔 {!collapsed && "Reorder Alerts"}
-            </span>
-            <span className="bg-red-500 text-white px-1.5 py-0.5 rounded-full text-[10px] font-bold">
-              {visibleNotification.count}
-            </span>
-          </button>
-        )}
-
-        {/* Navigation Items */}
-        <nav className="space-y-1">
-          {navItems.map((item) => {
-            const isActive = pathname === item.href;
-
-            if (item.locked) {
-              return (
-                <button
-                  key={item.href}
-                  onClick={() => router.push("/settings")}
-                  title={collapsed ? `${item.label} (naka-lock)` : "Naka-lock — i-click para mag-upgrade"}
-                  className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition opacity-50 ${
-                    collapsed ? "justify-center" : "justify-between"
-                  }`}
-                  style={{ color: "var(--color-text-secondary)" }}
-                >
-                  <span className="flex items-center gap-3">
-                    <span>{item.icon}</span>
-                    {!collapsed && <span>{item.label}</span>}
-                  </span>
-                  {!collapsed && <span>🔒</span>}
-                </button>
-              );
-            }
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={collapsed ? item.label : ""}
-                className={`flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition ${
-                  collapsed ? "justify-center" : ""
-                }`}
-                style={{
-                  background: isActive ? "var(--color-surface)" : "transparent",
-                  color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
-                }}
-              >
-                <span>{item.icon}</span>
-                {!collapsed && <span>{item.label}</span>}
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* Logout Button */}
-        <button
-          onClick={handleLogout}
-          title={collapsed ? "Log out" : ""}
-          className={`mt-auto flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 ${
-            collapsed ? "justify-center" : ""
-          }`}
-          style={{ color: "#f87171" }}
-        >
-          <span>🚪</span>
-          {!collapsed && <span>Log Out</span>}
-        </button>
-      </aside>
-
-      {/* Low Stock Modal */}
-      {showNotifModal && visibleNotification && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div
-            className="w-full max-w-lg rounded-xl p-5 shadow-2xl border space-y-4"
-            style={{
-              background: "var(--color-bg-secondary)",
-              borderColor: "var(--color-border)",
-              color: "var(--color-text-primary)",
-            }}
-          >
-            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--color-border)" }}>
-              <div className="flex items-center gap-2">
-                <span className="text-xl">⚠️</span>
-                <h3 className="font-bold text-base">Owner Reorder Notifications</h3>
-              </div>
-              <button onClick={() => setShowNotifModal(false)} className="text-gray-400 hover:text-white text-lg font-bold">
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-gray-400">{visibleNotification.message}</p>
-
-            <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-              {visibleNotification.items.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-3 rounded-lg border text-xs flex items-center justify-between"
-                  style={{
-                    background: "var(--color-surface)",
-                    borderColor: "var(--color-border)",
-                  }}
-                >
-                  <div>
-                    <p className="font-semibold text-sm">{item.name}</p>
-                    <p className="text-[11px] text-gray-400">Supplier: {item.supplier}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-red-400 font-bold">Stock: {item.stock} / {item.minStock}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                onClick={() => setShowNotifModal(false)}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg border"
-                style={{ borderColor: "var(--color-border)" }}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="sm:hidden h-14" />
-    </>
-  );
-}
-</file>
-
-<file path="app/dashboard/page.tsx">
-"use client";
-
-import { useEffect, useState, useMemo, useRef, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import {
-  doc,
-  getDoc,
-  collection,
-  onSnapshot,
-  query,
-  orderBy,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-} from "firebase/firestore";
-import { signOut } from "firebase/auth";
-import { auth, db } from "../lib/firebase";
-import { getSessionInfo } from "../lib/staffAuth";
-import Sidebar from "../components/Sidebar";
-import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
-import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
-import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from "recharts";
-import { useTheme } from "../context/ThemeContext";
-
-type Tenant = {
-  businessName: string;
-  businessType: string;
-  theme: string;
-  subscriptionStatus: string;
-  aiAnalyticsEnabled?: boolean;
-  lastInsight?: AIInsight;
-  lastInsightAt?: string;
-  lastInsightRange?: string;
-};
-type SaleRecord = { id: string; itemName: string; total: number; profit: number; quantity: number; date: string };
-type ExpenseRecord = { id: string; amount: number; date: string };
-type InventoryItemLite = {
-  id: string;
-  name: string;
-  category: string;
-  stock: number;
-  threshold: number;
-  unitCost: number;
-  sellingPrice: number;
-};
-type RepairTicketLite = {
-  id: string;
-  deviceInfo: string;
-  issueDescription: string;
-  status: string;
-  laborPayment: number;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type AITaskPriority = "high" | "medium" | "low";
-
-type AITask = {
-  id: string;
-  text: string;
-  priority: AITaskPriority;
-  completed: boolean;
-  createdAt: string;
-};
-
-type AIInsight = {
-  summary: string;
-  tasks: { text: string; priority: AITaskPriority }[];
-  suggestedGoal: { label: string; value: string };
-};
-
-const PRIORITY_ORDER: Record<AITaskPriority, number> = { high: 0, medium: 1, low: 2 };
-const PRIORITY_COLORS: Record<AITaskPriority, { bg: string; text: string }> = {
-  high: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
-  medium: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
-  low: { bg: "rgba(96, 165, 250, 0.15)", text: "#60a5fa" },
-};
-
-function TrendArrow({ pct }: { pct: number }) {
-  const isUp = pct >= 0;
-  return (
-    <span
-      className="text-xs font-semibold inline-flex items-center gap-1"
-      style={{ color: isUp ? "#4ade80" : "#f87171" }}
-    >
-      {isUp ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
-    </span>
-  );
-}
-
-function DashboardContent() {
-  const [tenant, setTenant] = useState<Tenant | null>(null);
-  const [showPaymentBanner, setShowPaymentBanner] = useState(false);
-  const searchParams = useSearchParams();
-  const [uid, setUid] = useState<string | null>(null);
-  const [canTriggerAnalysis, setCanTriggerAnalysis] = useState(true);
-  const [loading, setLoading] = useState(true);
-  const [sales, setSales] = useState<SaleRecord[]>([]);
-  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
-  const [items, setItems] = useState<InventoryItemLite[]>([]);
-  const [repairTickets, setRepairTickets] = useState<RepairTicketLite[]>([]);
-  const [range, setRange] = useState<string>("30D");
-  const [insight, setInsight] = useState<AIInsight | null>(null);
-  const [loadingInsight, setLoadingInsight] = useState(false);
-  const [insightError, setInsightError] = useState("");
-  const [aiTasks, setAiTasks] = useState<AITask[]>([]);
-  const aiTasksRef = useRef<AITask[]>([]);
-  const router = useRouter();
-  const { graphStyle } = useTheme();
-
-    useEffect(() => {
-    let unsubSales = () => {};
-    let unsubExpenses = () => {};
-    let unsubInv = () => {};
-    let unsubTickets = () => {};
-    let unsubTasks = () => {};
-    let unsubTenant = () => {};
-
-    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
-      unsubSales();
-      unsubExpenses();
-      unsubInv();
-      unsubTickets();
-      unsubTasks();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      const session = await getSessionInfo(user);
-
-      // Cashiers never see the Dashboard link in the Sidebar — but guard
-      // direct URL access too, since hiding a link isn't real protection.
-      if (session.role === "cashier") {
-        router.push("/pos");
-        return;
-      }
-      // At this point role is guaranteed to be "owner" or "secretary" —
-      // both can trigger analysis, so this is always true; kept explicit
-      // for readability and in case role permissions change later.
-      setCanTriggerAnalysis(true);
-
-      const tenantId = session.tenantId;
-      const tenantDocRef = doc(db, "tenants", tenantId);
-      const initialSnap = await getDoc(tenantDocRef);
-      if (initialSnap.exists()) {
-        setTenant(initialSnap.data() as Tenant);
-      } else {
-        router.push("/onboarding");
-        return;
-      }
-      setUid(tenantId);
-      setLoading(false);
-
-      unsubTenant = onSnapshot(tenantDocRef, (snap) => {
-        if (snap.exists()) setTenant(snap.data() as Tenant);
-      });
-
-      const salesQuery = query(collection(db, "tenants", tenantId, "sales"), orderBy("date", "desc"));
-      unsubSales = onSnapshot(salesQuery, (snapshot) => {
-        setSales(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as SaleRecord[]);
-      });
-
-      const expenseQuery = query(collection(db, "tenants", tenantId, "expenses"), orderBy("date", "desc"));
-      unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
-        setExpenses(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as ExpenseRecord[]);
-      });
-
-      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
-      unsubInv = onSnapshot(invQuery, (snapshot) => {
-        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItemLite[]);
-      });
-
-      const ticketQuery = query(
-        collection(db, "tenants", tenantId, "repairTickets"),
-        orderBy("createdAt", "desc")
-      );
-      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
-        setRepairTickets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicketLite[]);
-      });
-
-      const taskQuery = query(collection(db, "tenants", tenantId, "aiTasks"), orderBy("createdAt", "desc"));
-      unsubTasks = onSnapshot(taskQuery, (snapshot) => {
-        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as AITask[];
-        setAiTasks(list);
-        aiTasksRef.current = list;
-      });
-    });
-
-    return () => {
-      unsubscribeAuth();
-      unsubSales();
-      unsubExpenses();
-      unsubInv();
-      unsubTickets();
-      unsubTasks();
-      unsubTenant();
-    };
-  }, [router]);
-
-  const { series, start, end } = useMemo(() => buildTrendSeries(sales, expenses, range), [sales, expenses, range]);
-  const comparison = useMemo(() => computePeriodComparison(sales, expenses, range), [sales, expenses, range]);
-
-  const salesInRange = useMemo(
-    () => sales.filter((s) => { const d = new Date(s.date); return d >= start && d <= end; }),
-    [sales, start, end]
-  );
-
-  const ticketsInRange = useMemo(
-    () => repairTickets.filter((t) => { const d = new Date(t.createdAt); return d >= start && d <= end; }),
-    [repairTickets, start, end]
-  );
-
-  // Top-selling items — aggregated by name, sorted by revenue
-  const topSellingItems = useMemo(() => {
-    const map = new Map<string, { name: string; revenue: number; profit: number; quantity: number }>();
-    salesInRange.forEach((s) => {
-      const existing = map.get(s.itemName) || { name: s.itemName, revenue: 0, profit: 0, quantity: 0 };
-      existing.revenue += s.total || 0;
-      existing.profit += s.profit || 0;
-      existing.quantity += s.quantity || 0;
-      map.set(s.itemName, existing);
-    });
-    return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 3);
-  }, [salesInRange]);
-
-  const slowMovingItems = useMemo(() => {
-    const soldNames = new Set(salesInRange.map((s) => s.itemName));
-    return items
-      .filter((i) => i.stock > 0 && !soldNames.has(i.name))
-      .slice(0, 5)
-      .map((i) => ({ name: i.name, stock: i.stock }));
-  }, [items, salesInRange]);
-
-  const lowStockItems = useMemo(() => {
-    return items
-      .filter((i) => i.stock <= i.threshold)
-      .slice(0, 5)
-      .map((i) => ({ name: i.name, stock: i.stock, threshold: i.threshold }));
-  }, [items]);
-
-  const categoryBreakdown = useMemo(() => {
-    const nameToCategory = new Map(items.map((i) => [i.name, i.category]));
-    const map = new Map<string, number>();
-    salesInRange.forEach((s) => {
-      const category = nameToCategory.get(s.itemName) || "Uncategorized";
-      map.set(category, (map.get(category) || 0) + (s.total || 0));
-    });
-    return Array.from(map.entries())
-      .map(([category, revenue]) => ({ category, revenue }))
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 3);
-  }, [salesInRange, items]);
-
-  // Repair ticket metrics — labor revenue, overdue tickets, common devices
-  const repairMetrics = useMemo(() => {
-    const statusCounts: Record<string, number> = {};
-    ticketsInRange.forEach((t) => {
-      statusCounts[t.status] = (statusCounts[t.status] || 0) + 1;
-    });
-
-    const laborRevenue = ticketsInRange
-      .filter((t) => t.status === "Claimed")
-      .reduce((sum, t) => sum + (t.laborPayment || 0), 0);
-
-    const now = new Date();
-    const overdue = repairTickets.filter((t) => {
-      if (t.status !== "Pending" && t.status !== "In Progress") return false;
-      const ageMs = now.getTime() - new Date(t.createdAt).getTime();
-      return ageMs > 5 * 24 * 60 * 60 * 1000; // older than 5 days and still unresolved
-    });
-
-    const deviceFreq = new Map<string, number>();
-    ticketsInRange.forEach((t) => {
-      if (t.deviceInfo) deviceFreq.set(t.deviceInfo, (deviceFreq.get(t.deviceInfo) || 0) + 1);
-    });
-    const topDevices = Array.from(deviceFreq.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 3);
-
-    return {
-      totalTickets: ticketsInRange.length,
-      statusCounts,
-      laborRevenue,
-      overdueCount: overdue.length,
-      overdueExamples: overdue.slice(0, 3).map((t) => ({
-        device: t.deviceInfo,
-        daysOpen: Math.floor((now.getTime() - new Date(t.createdAt).getTime()) / (24 * 60 * 60 * 1000)),
-      })),
-      topDevices,
-    };
-  }, [ticketsInRange, repairTickets]);
-
-    // Items with a thin profit margin — a real analyst would flag these for a price review
-  const marginAnalysis = useMemo(() => {
-    return items
-      .filter((i) => i.sellingPrice > 0 && i.unitCost > 0)
-      .map((i) => ({
-        name: i.name,
-        marginPct: Math.round(((i.sellingPrice - i.unitCost) / i.sellingPrice) * 100),
-      }))
-      .filter((i) => i.marginPct < 15)
-      .sort((a, b) => a.marginPct - b.marginPct)
-      .slice(0, 5);
-  }, [items]);
-
-  // Repair issues reported more than once — a signal to pre-stock the relevant parts
-  const commonIssues = useMemo(() => {
-    const map = new Map<string, number>();
-    ticketsInRange.forEach((t) => {
-      const key = (t.issueDescription || "").trim().toLowerCase();
-      if (!key) return;
-      map.set(key, (map.get(key) || 0) + 1);
-    });
-    return Array.from(map.entries())
-      .filter(([, count]) => count > 1)
-      .map(([issue, count]) => ({ issue, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 3);
-  }, [ticketsInRange]);
-
-  const hasEnoughData = sales.length > 0 || expenses.length > 0 || repairTickets.length > 0;
-  const aiAccess = useMemo(() => getAiAccess(tenant), [tenant]);
-
-    // Load the cached insight (if any) when the tenant doc arrives — no API call here
-  useEffect(() => {
-    if (tenant?.lastInsight) {
-      setInsight(tenant.lastInsight);
-    }
-  }, [tenant]);
-
-
-  useEffect(() => {
-    if (searchParams.get("payment") === "success") {
-      setShowPaymentBanner(true);
-      const timeout = setTimeout(() => setShowPaymentBanner(false), 8000);
-      return () => clearTimeout(timeout);
-    }
-  }, [searchParams]);
-
-
-
-  const runAnalysis = async () => {
-    if (!uid || !aiAccess.allowed) return;
-
-    const usage = await checkAndIncrementUsage(uid, "analysisCount");
-    if (!usage.allowed) {
-      setInsightError(usageLimitMessage("analysisCount", usage.limit));
-      return;
-    }
-
-    setLoadingInsight(true);
-    setInsightError("");
-    try {
-        const res = await fetch("/api/analyze-business", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          rangeLabel: (RANGE_LABELS as Record<string, string>)[range],
-          comparison,
-          topSellingItems,
-          slowMovingItems,
-          lowStockItems,
-          categoryBreakdown,
-          repairMetrics,
-          currentMonth: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-          marginAnalysis,
-          commonIssues,
-          periodSeries: series,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setInsightError(data.error || "Couldn't generate an insight right now.");
-        return;
-      }
-      setInsight(data);
-
-      // Cache the result on the tenant doc so we don't need to re-call the API
-      // just to display the same insight again later.
-      await updateDoc(doc(db, "tenants", uid), {
-        lastInsight: data,
-        lastInsightAt: new Date().toISOString(),
-        lastInsightRange: range,
-      });
-
-      // Persist new tasks — skip ones that already exist (by text match)
-      if (Array.isArray(data.tasks)) {
-        const existingTexts = new Set(aiTasksRef.current.map((t) => t.text.trim().toLowerCase()));
-        for (const t of data.tasks) {
-          const norm = (t.text || "").trim().toLowerCase();
-          if (!norm || existingTexts.has(norm)) continue;
-          await addDoc(collection(db, "tenants", uid, "aiTasks"), {
-            text: t.text,
-            priority: t.priority || "medium",
-            completed: false,
-            createdAt: new Date().toISOString(),
-          });
-          existingTexts.add(norm);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-      setInsightError("Couldn't generate an insight right now.");
-    } finally {
-      setLoadingInsight(false);
-    }
-  };
-
-  const handleToggleAiAnalytics = async () => {
-    if (!uid || !tenant) return;
-    const newValue = !tenant.aiAnalyticsEnabled;
-    await updateDoc(doc(db, "tenants", uid), { aiAnalyticsEnabled: newValue });
-    setTenant({ ...tenant, aiAnalyticsEnabled: newValue });
-  };
-
-  const handleToggleTask = async (task: AITask) => {
-    if (!uid) return;
-    await updateDoc(doc(db, "tenants", uid, "aiTasks", task.id), { completed: !task.completed });
-  };
-
-  const handleDeleteTask = async (taskId: string) => {
-    if (!uid) return;
-    await deleteDoc(doc(db, "tenants", uid, "aiTasks", taskId));
-  };
-
-  const activeTasks = useMemo(() => {
-    return aiTasks
-      .filter((t) => !t.completed)
-      .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
-  }, [aiTasks]);
-
-  const handleLogout = async () => {
-    await signOut(auth);
-    router.push("/login");
-  };
-
-  if (loading || !tenant) {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--color-bg-primary)" }}>
-        <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-          Loading your dashboard...
-        </p>
-      </div>
-    );
-  }
-
-  const cardStyle: React.CSSProperties = {
-    background: "var(--color-surface)",
-    borderRadius: "var(--radius-card)",
-    borderWidth: "var(--border-width)",
-    borderColor: "var(--color-border)",
-  };
-
-  return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
-      <Sidebar />
-      <div className="flex-1">
-        <header
-          className="border-b"
-          style={{ background: "var(--color-bg-secondary)", borderColor: "var(--color-border)" }}
-        >
-          {showPaymentBanner && (
-            <div
-              className="px-6 py-2.5 text-sm font-medium flex items-center gap-2"
-              style={{ background: "rgba(74, 222, 128, 0.15)", color: "#4ade80" }}
-            >
-              <span>✅</span>
-              <span>
-                Payment received! Your plan is being activated — this page will update automatically within a few seconds.
-              </span>
-            </div>
-          )}
-
-          <div className="px-6 py-4 flex items-center justify-between gap-4">
-            <div>
-              <h1 className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
-                Welcome back, {tenant.businessName}!
-              </h1>
-              <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
-                {tenant.subscriptionStatus === "active" ? "Current Plan: " : "Status: "}
-                <span
-                  className="font-semibold"
-                  style={{ color: tenant.subscriptionStatus === "active" ? "#4ade80" : "var(--color-text-secondary)" }}
-                >
-                  {tenant.subscriptionStatus === "active"
-                    ? (tenant as any).planId?.toUpperCase() || "ACTIVE"
-                    : "Free Trial"}
-                </span>
-              </p>
-            </div>
-
-            <Link
-              href="/pricing"
-              className="flex-shrink-0 text-sm font-bold px-4 py-2 rounded-lg text-white transition flex items-center gap-2 shadow-sm hover:opacity-90"
-              style={{ background: "linear-gradient(135deg, #8b5cf6, #d946ef)" }}
-            >
-              <span>👑</span>
-              <span>Upgrade Plan</span>
-            </Link>
-          </div>
-        </header>
-
-        
-
-        <main className="p-6">
-          {!hasEnoughData ? (
-            <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-              No sales, expense, or repair data yet. Once you start recording activity, your analytics will show up here.
-            </div>
-          ) : (
-            <>
-              {/* Range selector */}
-              <div className="flex flex-wrap gap-2 mb-6">
-                {RANGE_OPTIONS.map((r) => {
-                  const isActive = range === r;
-                  return (
-                    <button
-                      key={r}
-                      onClick={() => setRange(r)}
-                      className="px-4 py-1.5 rounded-full text-sm font-medium transition"
-                      style={{
-                        background: isActive ? "var(--color-primary)" : "var(--color-surface)",
-                        color: isActive ? "#fff" : "var(--color-text-secondary)",
-                        boxShadow: isActive ? "var(--glow-shadow)" : "none",
-                        borderWidth: isActive ? 0 : "var(--border-width)",
-                        borderColor: "var(--color-border)",
-                      }}
-                    >
-                      {r}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Summary cards with trend arrows */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-                <div className="p-4" style={cardStyle}>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Revenue</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
-                    ₱{comparison.currentRevenue.toLocaleString()}
-                  </p>
-                  <TrendArrow pct={comparison.revenueChangePct} />
-                </div>
-                <div className="p-4" style={cardStyle}>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Profit</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
-                    ₱{comparison.currentProfit.toLocaleString()}
-                  </p>
-                  <TrendArrow pct={comparison.profitChangePct} />
-                </div>
-                <div className="p-4" style={cardStyle}>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Expenses</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "#f87171", fontFamily: "var(--font-heading)" }}>
-                    ₱{comparison.currentExpenses.toLocaleString()}
-                  </p>
-                  <TrendArrow pct={-comparison.expensesChangePct} />
-                </div>
-                <div className="p-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
-                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Net Profit</p>
-                  <p
-                    className="text-lg font-bold mt-1"
-                    style={{
-                      color: comparison.currentNetProfit >= 0 ? "#4ade80" : "#f87171",
-                      fontFamily: "var(--font-heading)",
-                    }}
-                  >
-                    ₱{comparison.currentNetProfit.toLocaleString()}
-                  </p>
-                  <TrendArrow pct={comparison.netProfitChangePct} />
-                </div>
-              </div>
-
-              {/* Trend chart */}
-              <div className="p-4 mb-6" style={cardStyle}>
-                <p className="text-sm font-semibold mb-3" style={{ color: "var(--color-text-primary)" }}>
-                  {(RANGE_LABELS as Record<string, string>)[range]}
-                </p>
-                <ResponsiveContainer width="100%" height={280}>
-  {graphStyle === "bar" ? (
-    <BarChart data={series}>
-      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
-      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
-      <Tooltip
-        contentStyle={{
-          background: "var(--color-bg-secondary)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "8px",
-          color: "var(--color-text-primary)",
-        }}
-        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
-      />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
-      <Bar dataKey="revenue" name="Revenue" fill="var(--color-primary-light)" radius={[4, 4, 0, 0]} />
-      <Bar dataKey="netProfit" name="Net Profit" fill="#4ade80" radius={[4, 4, 0, 0]} />
-      <Bar dataKey="expenses" name="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} />
-    </BarChart>
-  ) : graphStyle === "area" ? (
-    <AreaChart data={series}>
-      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
-      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
-      <Tooltip
-        contentStyle={{
-          background: "var(--color-bg-secondary)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "8px",
-          color: "var(--color-text-primary)",
-        }}
-        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
-      />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
-      <Area type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" fill="var(--color-primary-light)" fillOpacity={0.25} strokeWidth={2} />
-      <Area type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" fill="#4ade80" fillOpacity={0.2} strokeWidth={2} />
-      <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" fill="#f87171" fillOpacity={0.2} strokeWidth={2} />
-    </AreaChart>
-  ) : (
-    <LineChart data={series}>
-      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
-      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
-      <Tooltip
-        contentStyle={{
-          background: "var(--color-bg-secondary)",
-          border: "1px solid var(--color-border)",
-          borderRadius: "8px",
-          color: "var(--color-text-primary)",
-        }}
-        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
-      />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
-      <Line type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" strokeWidth={2} dot={false} />
-      <Line type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" strokeWidth={2} dot={false} />
-      <Line type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" strokeWidth={2} dot={false} />
-    </LineChart>
-  )}
-</ResponsiveContainer>
-              </div>
-
-                            {/* AI Business Analyst — toggleable, manual-trigger, cached */}
-              <div className="p-5 mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
-                <div className="flex justify-between items-center mb-3">
-                  <p className="text-sm font-semibold" style={{ color: "var(--color-primary-light)" }}>
-                    🤖 Your AI Business Analyst
-                  </p>
-                  <button
-                    onClick={handleToggleAiAnalytics}
-                    className="text-xs font-medium px-3 py-1 rounded-full transition"
-                    style={{
-                      background: tenant.aiAnalyticsEnabled ? "rgba(34, 197, 94, 0.15)" : "var(--color-bg-secondary)",
-                      color: tenant.aiAnalyticsEnabled ? "#4ade80" : "var(--color-text-secondary)",
-                    }}
-                  >
-                    {tenant.aiAnalyticsEnabled ? "● Enabled" : "○ Disabled"}
-                  </button>
-                </div>
-
-                
-                {!canTriggerAnalysis ? (
-                  <p className="text-sm p-3 rounded-lg" style={{ color: "var(--color-text-secondary)" }}>
-                    Only the Owner or Secretary can run a new analysis.
-                  </p>
-                ) : !aiAccess.allowed ? (
-                  <p className="text-sm p-3 rounded-lg" style={{ color: "#facc15", background: "rgba(250, 204, 21, 0.1)" }}>
-                    {AI_LOCKED_MESSAGE}
-                  </p>
-                ) : !tenant.aiAnalyticsEnabled ? (
-                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-                    AI Analytics is off. Turn it on above to get insights and priority tasks — you control when it runs, so it won't use extra AI usage automatically.
-                  </p>
-                ) : (
-                  <>
-                    <button
-                      onClick={runAnalysis}
-                      disabled={loadingInsight}
-                      className="w-full font-semibold py-2 mb-4 text-sm disabled:opacity-50 hover:opacity-90"
-                      style={{
-                        background: "var(--gradient-accent)",
-                        color: "#fff",
-                        borderRadius: "var(--radius-button)",
-                      }}
-                    >
-                      {loadingInsight
-                        ? "Analyzing..."
-                        : insight
-                        ? "🔄 Re-analyze My Business"
-                        : "🔍 Analyze My Business"}
-                    </button>
-
-                    {tenant.lastInsightAt && (
-                      <p className="text-xs mb-3" style={{ color: "var(--color-text-secondary)" }}>
-                        Last analyzed: {new Date(tenant.lastInsightAt).toLocaleString()}
-                        {tenant.lastInsightRange && ` · ${(RANGE_LABELS as Record<string, string>)[tenant.lastInsightRange] || tenant.lastInsightRange}`}
-                      </p>
-                    )}
-                  </>
-                )}
-
-                {tenant.aiAnalyticsEnabled && loadingInsight ? (
-                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-                    Analyzing your shop's data...
-                  </p>
-                ) : insightError ? (
-                  <p className="text-sm" style={{ color: "#f87171" }}>{insightError}</p>
-                ) : insight ? (
-                  <>
-                    <p className="text-sm font-medium mb-4" style={{ color: "var(--color-text-primary)" }}>
-                      {insight.summary}
-                    </p>
-
-                    {insight.suggestedGoal && (
-                      <div
-                        className="flex justify-between items-center px-4 py-3 mb-4"
-                        style={{ background: "var(--gradient-accent)", borderRadius: "var(--radius-button)" }}
-                      >
-                        <span className="text-xs font-medium" style={{ color: "#fff" }}>
-                          🎯 {insight.suggestedGoal.label}
-                        </span>
-                        <span className="text-base font-bold" style={{ color: "#fff", fontFamily: "var(--font-heading)" }}>
-                          {insight.suggestedGoal.value}
-                        </span>
-                      </div>
-                    )}
-                  </>
-                ) : null}
-
-                {/* Persistent, checkable task list — shown regardless of toggle, since these are already saved */}
-                {tenant.aiAnalyticsEnabled && activeTasks.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                      Action items
-                    </p>
-                    {activeTasks.map((task) => {
-                      const colors = PRIORITY_COLORS[task.priority];
-                      return (
-                        <div
-                          key={task.id}
-                          className="flex items-start gap-2 px-3 py-2 text-sm"
-                          style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}
-                        >
-                          <button
-                            onClick={() => handleToggleTask(task)}
-                            className="mt-0.5 w-4 h-4 rounded flex-shrink-0"
-                            style={{ borderWidth: "1.5px", borderColor: colors.text }}
-                            title="Mark as done"
-                          />
-                          <span className="flex-1" style={{ color: "var(--color-text-primary)" }}>
-                            {task.text}
-                          </span>
-                          <span
-                            className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
-                            style={{ background: colors.bg, color: colors.text }}
-                          >
-                            {task.priority}
-                          </span>
-                          <button
-                            onClick={() => handleDeleteTask(task.id)}
-                            className="text-xs leading-none hover:opacity-70 flex-shrink-0"
-                            style={{ color: "var(--color-text-secondary)" }}
-                            title="Dismiss"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <Link
-                href="/sales"
-                className="text-sm font-medium hover:underline"
-                style={{ color: "var(--color-primary-light)" }}
-              >
-                View detailed Sales & Expenses report →
-              </Link>
-            </>
-          )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-export default function DashboardPage() {
-  return (
-    <Suspense fallback={null}>
-      <DashboardContent />
-    </Suspense>
-  );
-}
-</file>
-
 <file path="app/settings/page.jsx">
 "use client";
 
@@ -15272,6 +13993,1563 @@ export default function SettingsPage() {
 }
 </file>
 
+<file path="app/components/Sidebar.tsx">
+"use client";
+
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy, where } from "firebase/firestore";
+import { signOut } from "firebase/auth";
+import { auth, db } from "../lib/firebase";
+import { getSessionInfo, type SessionInfo } from "../lib/staffAuth";
+import { hasFeatureAccess, getPlanLabel } from "../lib/subscription";
+import { canAccessPage } from "../lib/permissions";
+
+
+const baseNavItems: { href: string; label: string; icon: string; disabled?: boolean; adminOnly?: boolean; featureKey?: string; hideForRoles?: string[] }[] = [
+  { href: "/dashboard", label: "Dashboard", icon: "🏠", hideForRoles: ["cashier"] },
+  { href: "/inventory", label: "Inventory", icon: "📦" },
+  { href: "/repair-tickets", label: "Repair Tickets", icon: "🛠️", featureKey: "repairTickets" },
+  { href: "/delivery-tickets", label: "Delivery Tickets", icon: "🚚", featureKey: "deliveryTickets" },
+  { href: "/po-tickets", label: "P.O. / Purchase Order", icon: "📋", featureKey: "poTickets" },
+  { href: "/sales", label: "Sales & Expenses", icon: "💰" },
+  { href: "/pos", label: "POS / Checkout", icon: "🧾" },
+  { href: "/settings", label: "Settings", icon: "⚙️" },
+  { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
+  { href: "/approvals", label: "Approvals", icon: "✅" },
+];
+interface LowStockItem {
+  id: string;
+  name: string;
+  stock: number;
+  minStock: number;
+  suggestedOrder: number;
+  supplier: string;
+}
+
+interface NotificationData {
+  hasNotification: boolean;
+  count: number;
+  title: string;
+  message: string;
+  items: LowStockItem[];
+}
+
+function resizeImageToBase64(file: File, maxSize = 160): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let { width, height } = img;
+        if (width > height) {
+          if (width > maxSize) {
+            height *= maxSize / width;
+            width = maxSize;
+          }
+        } else {
+          if (height > maxSize) {
+            width *= maxSize / height;
+            height = maxSize;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.onerror = reject;
+      img.src = e.target!.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
+
+export default function Sidebar() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [businessName, setBusinessName] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [nextPaymentDue, setNextPaymentDue] = useState<string | undefined>(undefined);
+  const [manuallyDeactivated, setManuallyDeactivated] = useState<boolean>(false);
+  const [planId, setPlanId] = useState<string | null>(null);
+  const [trialStartDate, setTrialStartDate] = useState<string | undefined>(undefined);
+  const [billingCycle, setBillingCycle] = useState<string | undefined>(undefined);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
+  const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [featuresLoaded, setFeaturesLoaded] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [notification, setNotification] = useState<NotificationData | null>(null);
+  const [showNotifModal, setShowNotifModal] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        setIsAdmin(false);
+        setBusinessName("");
+        setLogoUrl(null);
+        setSession(null);
+        return;
+      }
+
+      const sessionInfo = await getSessionInfo(user);
+      setSession(sessionInfo);
+      setIsAdmin(user.uid === ADMIN_UID);
+
+      try {
+        const tenantSnap = await getDoc(doc(db, "tenants", sessionInfo.tenantId));
+        if (tenantSnap.exists()) {
+          const data = tenantSnap.data();
+          setBusinessName(data.businessName || "");
+          setNameDraft(data.businessName || "");
+          setLogoUrl(data.logoUrl || null);
+          setPlanId(data.planId || undefined);
+          setTrialStartDate(data.trialStartDate || undefined);
+          setBillingCycle(data.billingCycle || undefined);  
+          setSubscriptionStatus(data.subscriptionStatus || "trial");
+          setNextPaymentDue(data.nextPaymentDue || undefined);
+          setManuallyDeactivated(!!data.manuallyDeactivated);
+          setEnabledFeatures(data.enabledFeatures || {});
+        }
+      } catch (err) {
+        console.error("Error fetching tenant data:", err);
+      } finally {
+        setFeaturesLoaded(true);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    let unsubInv = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
+      unsubInv();
+
+      if (!user) {
+        setNotification(null);
+        return;
+      }
+
+      const sessionInfo = await getSessionInfo(user);
+      const invQuery = query(collection(db, "tenants", sessionInfo.tenantId, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(
+        invQuery,
+        (snapshot) => {
+          const lowStockItems: LowStockItem[] = snapshot.docs
+            .map((d) => ({ id: d.id, ...d.data() } as any))
+            .filter((i) => (i.stock ?? 0) <= (i.threshold ?? i.minStock ?? 0))
+            .map((i) => {
+              const limit = i.threshold ?? i.minStock ?? 0;
+              return {
+                id: i.id,
+                name: i.name,
+                stock: i.stock ?? 0,
+                minStock: limit,
+                suggestedOrder: Math.max(limit * 2 - (i.stock ?? 0), limit || 1),
+                supplier: i.supplierName?.trim() || "N/A",
+              };
+            });
+
+          if (lowStockItems.length === 0) {
+            setNotification(null);
+            return;
+          }
+
+          setNotification({
+            hasNotification: true,
+            count: lowStockItems.length,
+            title: "⚠️ Low Stock Alert",
+            message: `${lowStockItems.length} item(s) need reordering: ${lowStockItems
+              .map((i) => i.name)
+              .join(", ")}.`,
+            items: lowStockItems,
+          });
+        },
+        (error) => {
+          console.error("Error fetching inventory notifications:", error);
+        }
+      );
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubInv();
+    };
+  }, []);
+
+
+    useEffect(() => {
+    if (!session || session.role !== "owner") {
+      setPendingCount(0);
+      return;
+    }
+    const q = query(
+      collection(db, "tenants", session.tenantId, "approvals"),
+      where("status", "==", "pending")
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => setPendingCount(snap.size),
+      () => setPendingCount(0)
+    );
+    return () => unsub();
+  }, [session]);
+
+
+  const saveBusinessName = async () => {
+    if (!session || session.isStaff || !nameDraft.trim()) {
+      setNameDraft(businessName);
+      setEditingName(false);
+      return;
+    }
+    const trimmed = nameDraft.trim();
+    try {
+      await updateDoc(doc(db, "tenants", session.tenantId), { businessName: trimmed });
+      setBusinessName(trimmed);
+    } catch (err) {
+      console.error("Failed to update business name:", err);
+    } finally {
+      setEditingName(false);
+    }
+  };
+
+  const handleLogoClick = () => {
+    if (collapsed) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session || session.isStaff) return;
+
+    setUploading(true);
+    setUploadError("");
+    try {
+      const base64 = await resizeImageToBase64(file);
+      await updateDoc(doc(db, "tenants", session.tenantId), { logoUrl: base64 });
+      setLogoUrl(base64);
+    } catch (err) {
+      console.error("Logo upload failed:", err);
+      setUploadError("Couldn't process that image. Try a different photo.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      router.push("/login");
+    } catch (err) {
+      console.error("Error signing out:", err);
+    }
+  };
+
+  // Iisang tenant object na ginagamit sa buong component para sa access checks
+  const tenantAccess = { subscriptionStatus, planId, nextPaymentDue, manuallyDeactivated, trialStartDate, billingCycle };
+
+  // Ang Low Stock notification bell ay Pro/Business feature — i-suppress kung
+  // hindi entitled ang tenant, kahit meron talagang low-stock data sa likod.
+  const lowStockAllowed = featuresLoaded && hasFeatureAccess(tenantAccess, "lowStockAlerts");
+  const visibleNotification = lowStockAllowed ? notification : null;
+
+  const navItems = baseNavItems
+    .filter((item) => {
+      if (item.adminOnly && !isAdmin) return false;
+      // Hide feature-gated items until we've actually confirmed their state —
+      // prevents a flash where all items briefly show before Firestore replies.
+      if (!session) return false;
+      if (!item.adminOnly && !canAccessPage(session.role, item.href)) return false;
+      if (item.featureKey && !featuresLoaded) return false;
+      // User's own on/off toggle (Settings > Modules) — kung pinatay nila ito
+      // dahil hindi naman nila ginagamit, itago talaga, hindi lang i-lock.
+      if (item.featureKey && enabledFeatures[item.featureKey] === false) return false;
+      return true;
+    })
+    .map((item) => {
+      const locked = !!item.featureKey && !hasFeatureAccess(tenantAccess, item.featureKey);
+      const label =
+        item.href === "/approvals" && pendingCount > 0
+          ? `${item.label} (${pendingCount})`
+          : item.label;
+      return { ...item, label, locked };
+    });
+
+  // Buod na banner kapag may naka-lock na Pro/Business feature dahil sa plan
+  // o expiry — iisang mensahe lang, hindi na kailangang i-ulit per-item.
+  const hasLockedNavItem = navItems.some((item) => item.locked);
+  let lockBannerMessage: string | null = null;
+  if (manuallyDeactivated) {
+    lockBannerMessage = "🚫 Na-deactivate ang account mo. Makipag-ugnayan sa developer (Settings > Help & Support) para ma-restore.";
+  } else if (hasLockedNavItem) {
+    lockBannerMessage =
+      subscriptionStatus === "MONTHLY"
+        ? "⚠️ Naka-lock ang ilang features (hindi kasama sa Basic plan mo, o na-expire na). I-upgrade o mag-renew sa Upgrade Plan."
+        : "⏳ Naka-lock ang ilang Pro/Business features (tapos na ang trial o Basic ka pa lang). Pumunta sa Upgrade Plan.";
+  }
+
+  const planLabel: { text: string; bg: string; color: string } = (() => {
+    if (!featuresLoaded) {
+      return { text: "…", bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
+    }
+    const info = getPlanLabel(tenantAccess);
+    const text = info.text.toUpperCase();
+    if (info.tone === "paid") return { text, bg: "rgba(74, 222, 128, 0.15)", color: "#4ade80" };
+    if (info.tone === "overdue" || info.tone === "off") {
+      return { text, bg: "rgba(239, 68, 68, 0.15)", color: "#f87171" };
+    }
+    return { text, bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
+  })();
+
+  return (
+    <>
+      {/* MOBILE TOP BAR - Upgrade button sa TOP RIGHT CORNER */}
+      <div
+        className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
+        style={{
+          background: "var(--color-bg-secondary)",
+          borderBottom: "1px solid var(--color-border)",
+        }}
+      >
+        <button
+          onClick={() => setMobileMenuOpen(true)}
+          className="text-2xl leading-none"
+          style={{ color: "var(--color-text-primary)" }}
+          aria-label="Open menu"
+        >
+          ☰
+        </button>
+
+        <div className="flex items-center gap-1.5 max-w-[45%]">
+          <p
+            className="text-sm font-semibold truncate"
+            style={{ color: "var(--color-text-primary)" }}
+          >
+            {businessName || "My Shop"}
+          </p>
+          <span
+            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
+            style={{ background: planLabel.bg, color: planLabel.color }}
+          >
+            {planLabel.text}
+          </span>
+        </div>
+
+        {/* TOP RIGHT CORNER: Notification Icon */}
+        <div className="flex items-center gap-2">
+          {visibleNotification && visibleNotification.count > 0 && (
+            <button
+              onClick={() => setShowNotifModal(true)}
+              className="relative text-lg"
+              aria-label="Notifications"
+            >
+              🔔
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                {visibleNotification.count}
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Mobile Drawer Overlay */}
+      {mobileMenuOpen && (
+        <div className="sm:hidden fixed inset-0 z-50 flex">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div
+            className="relative w-72 max-w-[80vw] h-full flex flex-col p-4 overflow-y-auto"
+            style={{ background: "var(--color-bg-secondary)" }}
+          >
+            <div className="flex justify-between items-center mb-6">
+              <p
+                className="text-sm font-semibold"
+                style={{ color: "var(--color-text-primary)" }}
+              >
+                {businessName || "My Shop"}
+              </p>
+              <button
+                onClick={() => setMobileMenuOpen(false)}
+                className="text-2xl leading-none"
+                style={{ color: "var(--color-text-secondary)" }}
+                aria-label="Close menu"
+              >
+                ×
+              </button>
+            </div>
+
+            {lockBannerMessage && !session?.isStaff && (
+              <div
+                className="mb-4 p-3 rounded-lg text-xs leading-snug"
+                style={{
+                  background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
+                  color: manuallyDeactivated ? "#f87171" : "#facc15",
+                }}
+              >
+                {lockBannerMessage}
+              </div>
+            )}
+
+            <nav className="space-y-1 flex-1">
+              {navItems.map((item) => {
+                if (item.locked) {
+                  return (
+                    <button
+                      key={item.href}
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        router.push("/pricing");
+                      }}
+                      title="Naka-lock — pumunta sa Upgrade Plan"
+                      className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded-lg text-sm font-medium opacity-60"
+                      style={{ color: "var(--color-text-secondary)" }}
+                    >
+                      <span className="flex items-center gap-3">
+                        <span>{item.icon}</span>
+                        <span>{item.label}</span>
+                      </span>
+                      <span>🔒</span>
+                    </button>
+                  );
+                }
+                const isActive = pathname === item.href;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium"
+                    style={{
+                      background: isActive ? "var(--color-surface)" : "transparent",
+                      color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
+                    }}
+                  >
+                    <span>{item.icon}</span>
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium mt-4"
+              style={{ color: "#f87171" }}
+            >
+              <span>🚪</span>
+              <span>Log Out</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DESKTOP SIDEBAR - Upgrade button sa TOP RIGHT CORNER ng Sidebar Header */}
+      <aside
+        className={`${
+          collapsed ? "w-16" : "w-64"
+        } min-h-screen p-3 hidden sm:flex sm:flex-col transition-all duration-200 border-r relative`}
+        style={{
+          background: "var(--color-bg-secondary)",
+          borderColor: "var(--color-border)",
+        }}
+      >
+        {/* Header Section (May UPGRADE button sa Top Right) */}
+        <div className="flex items-center justify-between mb-4 px-1 relative">
+          {!collapsed ? (
+            <div className="flex items-center justify-between w-full">
+              <p
+                className="text-xs font-semibold uppercase tracking-wide"
+                style={{ color: "var(--color-text-secondary)" }}
+              >
+                {session?.isStaff ? `${session.staffName} · ${session.role}` : "My Shop"}
+              </p>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setCollapsed(!collapsed)}
+                  className="p-1 rounded-lg transition hover:opacity-80"
+                  style={{ color: "var(--color-text-secondary)" }}
+                  title="Collapse sidebar"
+                >
+                  «
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              className="p-1.5 rounded-lg transition mx-auto hover:opacity-80"
+              style={{ color: "var(--color-text-secondary)" }}
+              title="Expand sidebar"
+            >
+              »
+            </button>
+          )}
+        </div>
+
+        {/* Logo Section */}
+        <div className="flex flex-col items-center mb-6 px-1">
+          <input
+            type="file"
+            accept="image/*"
+            ref={fileInputRef}
+            onChange={handleLogoChange}
+            className="hidden"
+          />
+          <button
+            onClick={handleLogoClick}
+            disabled={collapsed}
+            title="Click to change logo"
+            className={`relative rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 border transition ${
+              collapsed ? "w-9 h-9" : "w-16 h-16"
+            } ${!collapsed ? "hover:opacity-80 cursor-pointer" : ""}`}
+            style={{
+              background: "var(--color-surface)",
+              borderColor: "var(--color-border)",
+            }}
+          >
+            {logoUrl ? (
+              <img src={logoUrl} alt="Shop logo" className="w-full h-full object-cover" />
+            ) : (
+              <span className={collapsed ? "text-sm" : "text-xl"}>🏪</span>
+            )}
+          </button>
+
+          {!collapsed && uploadError && (
+            <p className="text-[11px] text-red-400 mt-1 text-center">{uploadError}</p>
+          )}
+
+          {!collapsed && (
+            <div className="mt-2 w-full text-center px-1">
+              {editingName ? (
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onBlur={saveBusinessName}
+                  className="w-full text-sm font-semibold text-center leading-snug rounded px-1 py-1 resize-none focus:outline-none"
+                  style={{
+                    background: "var(--color-surface)",
+                    color: "var(--color-text-primary)",
+                    borderWidth: "1px",
+                    borderColor: "var(--color-primary)",
+                  }}
+                />
+              ) : (
+                <button
+                  onClick={() => setEditingName(true)}
+                  className="text-sm font-semibold leading-snug break-words whitespace-normal w-full hover:opacity-80"
+                  style={{ color: "var(--color-text-primary)" }}
+                >
+                  {businessName || "Set shop name"}{" "}
+                  <span style={{ color: "var(--color-text-secondary)" }}>✎</span>
+                </button>
+              )}
+              <span
+                className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full"
+                style={{ background: planLabel.bg, color: planLabel.color }}
+              >
+                {planLabel.text}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Lock / Renew Banner */}
+        {!collapsed && lockBannerMessage && !session?.isStaff && (
+          <button
+            onClick={() => router.push("/pricing")}
+            className="mb-3 w-full p-2.5 rounded-lg text-left text-[11px] leading-snug transition hover:opacity-90"
+            style={{
+              background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
+              color: manuallyDeactivated ? "#f87171" : "#facc15",
+              borderWidth: "1px",
+              borderColor: manuallyDeactivated ? "rgba(239,68,68,0.3)" : "rgba(250,204,21,0.3)",
+            }}
+          >
+            {lockBannerMessage}
+          </button>
+        )}
+
+        {/* Low Stock Alert Button */}
+        {visibleNotification && visibleNotification.count > 0 && (
+          <button
+            onClick={() => setShowNotifModal(true)}
+            className="mb-4 w-full p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 hover:bg-red-500/20 transition flex items-center justify-between text-xs font-semibold"
+          >
+            <span className="flex items-center gap-1.5">
+              🔔 {!collapsed && "Reorder Alerts"}
+            </span>
+            <span className="bg-red-500 text-white px-1.5 py-0.5 rounded-full text-[10px] font-bold">
+              {visibleNotification.count}
+            </span>
+          </button>
+        )}
+
+        {/* Navigation Items */}
+        <nav className="space-y-1">
+          {navItems.map((item) => {
+            const isActive = pathname === item.href;
+
+            if (item.locked) {
+              return (
+                <button
+                  key={item.href}
+                  onClick={() => router.push("/pricing")}
+                  title={collapsed ? `${item.label} (naka-lock)` : "Naka-lock — i-click para mag-upgrade"}
+                  className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition opacity-50 ${
+                    collapsed ? "justify-center" : "justify-between"
+                  }`}
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  <span className="flex items-center gap-3">
+                    <span>{item.icon}</span>
+                    {!collapsed && <span>{item.label}</span>}
+                  </span>
+                  {!collapsed && <span>🔒</span>}
+                </button>
+              );
+            }
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                title={collapsed ? item.label : ""}
+                className={`flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition ${
+                  collapsed ? "justify-center" : ""
+                }`}
+                style={{
+                  background: isActive ? "var(--color-surface)" : "transparent",
+                  color: isActive ? "var(--color-primary-light)" : "var(--color-text-secondary)",
+                }}
+              >
+                <span>{item.icon}</span>
+                {!collapsed && <span>{item.label}</span>}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Logout Button */}
+        <button
+          onClick={handleLogout}
+          title={collapsed ? "Log out" : ""}
+          className={`mt-auto flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition hover:opacity-80 ${
+            collapsed ? "justify-center" : ""
+          }`}
+          style={{ color: "#f87171" }}
+        >
+          <span>🚪</span>
+          {!collapsed && <span>Log Out</span>}
+        </button>
+      </aside>
+
+      {/* Low Stock Modal */}
+      {showNotifModal && visibleNotification && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div
+            className="w-full max-w-lg rounded-xl p-5 shadow-2xl border space-y-4"
+            style={{
+              background: "var(--color-bg-secondary)",
+              borderColor: "var(--color-border)",
+              color: "var(--color-text-primary)",
+            }}
+          >
+            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--color-border)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-xl">⚠️</span>
+                <h3 className="font-bold text-base">Owner Reorder Notifications</h3>
+              </div>
+              <button onClick={() => setShowNotifModal(false)} className="text-gray-400 hover:text-white text-lg font-bold">
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-400">{visibleNotification.message}</p>
+
+            <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+              {visibleNotification.items.map((item) => (
+                <div
+                  key={item.id}
+                  className="p-3 rounded-lg border text-xs flex items-center justify-between"
+                  style={{
+                    background: "var(--color-surface)",
+                    borderColor: "var(--color-border)",
+                  }}
+                >
+                  <div>
+                    <p className="font-semibold text-sm">{item.name}</p>
+                    <p className="text-[11px] text-gray-400">Supplier: {item.supplier}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-red-400 font-bold">Stock: {item.stock} / {item.minStock}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setShowNotifModal(false)}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg border"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="sm:hidden h-14" />
+    </>
+  );
+}
+</file>
+
+<file path="app/dashboard/page.tsx">
+"use client";
+
+import { useEffect, useState, useMemo, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import {
+  doc,
+  getDoc,
+  collection,
+  onSnapshot,
+  query,
+  orderBy,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+} from "firebase/firestore";
+import { signOut } from "firebase/auth";
+import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
+import Sidebar from "../components/Sidebar";
+import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
+import { getAiAccess, getPlanLabel, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from "recharts";
+import { useTheme } from "../context/ThemeContext";
+
+type Tenant = {
+  businessName: string;
+  businessType: string;
+  theme: string;
+  subscriptionStatus: string;
+  aiAnalyticsEnabled?: boolean;
+  lastInsight?: AIInsight;
+  lastInsightAt?: string;
+  lastInsightRange?: string;
+};
+type SaleRecord = { id: string; itemName: string; total: number; profit: number; quantity: number; date: string };
+type ExpenseRecord = { id: string; amount: number; date: string };
+type InventoryItemLite = {
+  id: string;
+  name: string;
+  category: string;
+  stock: number;
+  threshold: number;
+  unitCost: number;
+  sellingPrice: number;
+};
+type RepairTicketLite = {
+  id: string;
+  deviceInfo: string;
+  issueDescription: string;
+  status: string;
+  laborPayment: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type AITaskPriority = "high" | "medium" | "low";
+
+type AITask = {
+  id: string;
+  text: string;
+  priority: AITaskPriority;
+  completed: boolean;
+  createdAt: string;
+};
+
+type AIInsight = {
+  summary: string;
+  tasks: { text: string; priority: AITaskPriority }[];
+  suggestedGoal: { label: string; value: string };
+};
+
+const PRIORITY_ORDER: Record<AITaskPriority, number> = { high: 0, medium: 1, low: 2 };
+const PRIORITY_COLORS: Record<AITaskPriority, { bg: string; text: string }> = {
+  high: { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171" },
+  medium: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15" },
+  low: { bg: "rgba(96, 165, 250, 0.15)", text: "#60a5fa" },
+};
+
+function TrendArrow({ pct }: { pct: number }) {
+  const isUp = pct >= 0;
+  return (
+    <span
+      className="text-xs font-semibold inline-flex items-center gap-1"
+      style={{ color: isUp ? "#4ade80" : "#f87171" }}
+    >
+      {isUp ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
+    </span>
+  );
+}
+
+function DashboardContent() {
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [showPaymentBanner, setShowPaymentBanner] = useState(false);
+  const searchParams = useSearchParams();
+  const [uid, setUid] = useState<string | null>(null);
+  const [canTriggerAnalysis, setCanTriggerAnalysis] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [sales, setSales] = useState<SaleRecord[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+  const [items, setItems] = useState<InventoryItemLite[]>([]);
+  const [repairTickets, setRepairTickets] = useState<RepairTicketLite[]>([]);
+  const [range, setRange] = useState<string>("30D");
+  const [insight, setInsight] = useState<AIInsight | null>(null);
+  const [loadingInsight, setLoadingInsight] = useState(false);
+  const [insightError, setInsightError] = useState("");
+  const [aiTasks, setAiTasks] = useState<AITask[]>([]);
+  const aiTasksRef = useRef<AITask[]>([]);
+  const router = useRouter();
+  const { graphStyle } = useTheme();
+
+    useEffect(() => {
+    let unsubSales = () => {};
+    let unsubExpenses = () => {};
+    let unsubInv = () => {};
+    let unsubTickets = () => {};
+    let unsubTasks = () => {};
+    let unsubTenant = () => {};
+
+    const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
+      unsubSales();
+      unsubExpenses();
+      unsubInv();
+      unsubTickets();
+      unsubTasks();
+
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const session = await getSessionInfo(user);
+
+      // Cashiers never see the Dashboard link in the Sidebar — but guard
+      // direct URL access too, since hiding a link isn't real protection.
+      if (session.role === "cashier") {
+        router.push("/pos");
+        return;
+      }
+      // At this point role is guaranteed to be "owner" or "secretary" —
+      // both can trigger analysis, so this is always true; kept explicit
+      // for readability and in case role permissions change later.
+      setCanTriggerAnalysis(true);
+
+      const tenantId = session.tenantId;
+      const tenantDocRef = doc(db, "tenants", tenantId);
+      const initialSnap = await getDoc(tenantDocRef);
+      if (initialSnap.exists()) {
+        setTenant(initialSnap.data() as Tenant);
+      } else {
+        router.push("/onboarding");
+        return;
+      }
+      setUid(tenantId);
+      setLoading(false);
+
+      unsubTenant = onSnapshot(tenantDocRef, (snap) => {
+        if (snap.exists()) setTenant(snap.data() as Tenant);
+      });
+
+      const salesQuery = query(collection(db, "tenants", tenantId, "sales"), orderBy("date", "desc"));
+      unsubSales = onSnapshot(salesQuery, (snapshot) => {
+        setSales(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as SaleRecord[]);
+      });
+
+      const expenseQuery = query(collection(db, "tenants", tenantId, "expenses"), orderBy("date", "desc"));
+      unsubExpenses = onSnapshot(expenseQuery, (snapshot) => {
+        setExpenses(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as ExpenseRecord[]);
+      });
+
+      const invQuery = query(collection(db, "tenants", tenantId, "inventory"), orderBy("name"));
+      unsubInv = onSnapshot(invQuery, (snapshot) => {
+        setItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as InventoryItemLite[]);
+      });
+
+      const ticketQuery = query(
+        collection(db, "tenants", tenantId, "repairTickets"),
+        orderBy("createdAt", "desc")
+      );
+      unsubTickets = onSnapshot(ticketQuery, (snapshot) => {
+        setRepairTickets(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RepairTicketLite[]);
+      });
+
+      const taskQuery = query(collection(db, "tenants", tenantId, "aiTasks"), orderBy("createdAt", "desc"));
+      unsubTasks = onSnapshot(taskQuery, (snapshot) => {
+        const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as AITask[];
+        setAiTasks(list);
+        aiTasksRef.current = list;
+      });
+    });
+
+    return () => {
+      unsubscribeAuth();
+      unsubSales();
+      unsubExpenses();
+      unsubInv();
+      unsubTickets();
+      unsubTasks();
+      unsubTenant();
+    };
+  }, [router]);
+
+  const { series, start, end } = useMemo(() => buildTrendSeries(sales, expenses, range), [sales, expenses, range]);
+  const comparison = useMemo(() => computePeriodComparison(sales, expenses, range), [sales, expenses, range]);
+
+  const salesInRange = useMemo(
+    () => sales.filter((s) => { const d = new Date(s.date); return d >= start && d <= end; }),
+    [sales, start, end]
+  );
+
+  const ticketsInRange = useMemo(
+    () => repairTickets.filter((t) => { const d = new Date(t.createdAt); return d >= start && d <= end; }),
+    [repairTickets, start, end]
+  );
+
+  // Top-selling items — aggregated by name, sorted by revenue
+  const topSellingItems = useMemo(() => {
+    const map = new Map<string, { name: string; revenue: number; profit: number; quantity: number }>();
+    salesInRange.forEach((s) => {
+      const existing = map.get(s.itemName) || { name: s.itemName, revenue: 0, profit: 0, quantity: 0 };
+      existing.revenue += s.total || 0;
+      existing.profit += s.profit || 0;
+      existing.quantity += s.quantity || 0;
+      map.set(s.itemName, existing);
+    });
+    return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 3);
+  }, [salesInRange]);
+
+  const slowMovingItems = useMemo(() => {
+    const soldNames = new Set(salesInRange.map((s) => s.itemName));
+    return items
+      .filter((i) => i.stock > 0 && !soldNames.has(i.name))
+      .slice(0, 5)
+      .map((i) => ({ name: i.name, stock: i.stock }));
+  }, [items, salesInRange]);
+
+  const lowStockItems = useMemo(() => {
+    return items
+      .filter((i) => i.stock <= i.threshold)
+      .slice(0, 5)
+      .map((i) => ({ name: i.name, stock: i.stock, threshold: i.threshold }));
+  }, [items]);
+
+  const categoryBreakdown = useMemo(() => {
+    const nameToCategory = new Map(items.map((i) => [i.name, i.category]));
+    const map = new Map<string, number>();
+    salesInRange.forEach((s) => {
+      const category = nameToCategory.get(s.itemName) || "Uncategorized";
+      map.set(category, (map.get(category) || 0) + (s.total || 0));
+    });
+    return Array.from(map.entries())
+      .map(([category, revenue]) => ({ category, revenue }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 3);
+  }, [salesInRange, items]);
+
+  // Repair ticket metrics — labor revenue, overdue tickets, common devices
+  const repairMetrics = useMemo(() => {
+    const statusCounts: Record<string, number> = {};
+    ticketsInRange.forEach((t) => {
+      statusCounts[t.status] = (statusCounts[t.status] || 0) + 1;
+    });
+
+    const laborRevenue = ticketsInRange
+      .filter((t) => t.status === "Claimed")
+      .reduce((sum, t) => sum + (t.laborPayment || 0), 0);
+
+    const now = new Date();
+    const overdue = repairTickets.filter((t) => {
+      if (t.status !== "Pending" && t.status !== "In Progress") return false;
+      const ageMs = now.getTime() - new Date(t.createdAt).getTime();
+      return ageMs > 5 * 24 * 60 * 60 * 1000; // older than 5 days and still unresolved
+    });
+
+    const deviceFreq = new Map<string, number>();
+    ticketsInRange.forEach((t) => {
+      if (t.deviceInfo) deviceFreq.set(t.deviceInfo, (deviceFreq.get(t.deviceInfo) || 0) + 1);
+    });
+    const topDevices = Array.from(deviceFreq.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+
+    return {
+      totalTickets: ticketsInRange.length,
+      statusCounts,
+      laborRevenue,
+      overdueCount: overdue.length,
+      overdueExamples: overdue.slice(0, 3).map((t) => ({
+        device: t.deviceInfo,
+        daysOpen: Math.floor((now.getTime() - new Date(t.createdAt).getTime()) / (24 * 60 * 60 * 1000)),
+      })),
+      topDevices,
+    };
+  }, [ticketsInRange, repairTickets]);
+
+    // Items with a thin profit margin — a real analyst would flag these for a price review
+  const marginAnalysis = useMemo(() => {
+    return items
+      .filter((i) => i.sellingPrice > 0 && i.unitCost > 0)
+      .map((i) => ({
+        name: i.name,
+        marginPct: Math.round(((i.sellingPrice - i.unitCost) / i.sellingPrice) * 100),
+      }))
+      .filter((i) => i.marginPct < 15)
+      .sort((a, b) => a.marginPct - b.marginPct)
+      .slice(0, 5);
+  }, [items]);
+
+  // Repair issues reported more than once — a signal to pre-stock the relevant parts
+  const commonIssues = useMemo(() => {
+    const map = new Map<string, number>();
+    ticketsInRange.forEach((t) => {
+      const key = (t.issueDescription || "").trim().toLowerCase();
+      if (!key) return;
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    return Array.from(map.entries())
+      .filter(([, count]) => count > 1)
+      .map(([issue, count]) => ({ issue, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+  }, [ticketsInRange]);
+
+  const hasEnoughData = sales.length > 0 || expenses.length > 0 || repairTickets.length > 0;
+  const aiAccess = useMemo(() => getAiAccess(tenant), [tenant]);
+
+    // Load the cached insight (if any) when the tenant doc arrives — no API call here
+  useEffect(() => {
+    if (tenant?.lastInsight) {
+      setInsight(tenant.lastInsight);
+    }
+  }, [tenant]);
+
+
+  useEffect(() => {
+    if (searchParams.get("payment") === "success") {
+      setShowPaymentBanner(true);
+      const timeout = setTimeout(() => setShowPaymentBanner(false), 8000);
+      return () => clearTimeout(timeout);
+    }
+  }, [searchParams]);
+
+
+
+  const runAnalysis = async () => {
+    if (!uid || !aiAccess.allowed) return;
+
+    const usage = await checkAndIncrementUsage(uid, "analysisCount", tenant);
+    if (!usage.allowed) {
+      setInsightError(usageLimitMessage("analysisCount", usage.limit));
+      return;
+    }
+
+    setLoadingInsight(true);
+    setInsightError("");
+    try {
+        const res = await fetch("/api/analyze-business", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rangeLabel: (RANGE_LABELS as Record<string, string>)[range],
+          comparison,
+          topSellingItems,
+          slowMovingItems,
+          lowStockItems,
+          categoryBreakdown,
+          repairMetrics,
+          currentMonth: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+          marginAnalysis,
+          commonIssues,
+          periodSeries: series,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setInsightError(data.error || "Couldn't generate an insight right now.");
+        return;
+      }
+      setInsight(data);
+
+      // Cache the result on the tenant doc so we don't need to re-call the API
+      // just to display the same insight again later.
+      await updateDoc(doc(db, "tenants", uid), {
+        lastInsight: data,
+        lastInsightAt: new Date().toISOString(),
+        lastInsightRange: range,
+      });
+
+      // Persist new tasks — skip ones that already exist (by text match)
+      if (Array.isArray(data.tasks)) {
+        const existingTexts = new Set(aiTasksRef.current.map((t) => t.text.trim().toLowerCase()));
+        for (const t of data.tasks) {
+          const norm = (t.text || "").trim().toLowerCase();
+          if (!norm || existingTexts.has(norm)) continue;
+          await addDoc(collection(db, "tenants", uid, "aiTasks"), {
+            text: t.text,
+            priority: t.priority || "medium",
+            completed: false,
+            createdAt: new Date().toISOString(),
+          });
+          existingTexts.add(norm);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setInsightError("Couldn't generate an insight right now.");
+    } finally {
+      setLoadingInsight(false);
+    }
+  };
+
+  const handleToggleAiAnalytics = async () => {
+    if (!uid || !tenant) return;
+    const newValue = !tenant.aiAnalyticsEnabled;
+    await updateDoc(doc(db, "tenants", uid), { aiAnalyticsEnabled: newValue });
+    setTenant({ ...tenant, aiAnalyticsEnabled: newValue });
+  };
+
+  const handleToggleTask = async (task: AITask) => {
+    if (!uid) return;
+    await updateDoc(doc(db, "tenants", uid, "aiTasks", task.id), { completed: !task.completed });
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    if (!uid) return;
+    await deleteDoc(doc(db, "tenants", uid, "aiTasks", taskId));
+  };
+
+  const activeTasks = useMemo(() => {
+    return aiTasks
+      .filter((t) => !t.completed)
+      .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+  }, [aiTasks]);
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    router.push("/login");
+  };
+
+  if (loading || !tenant) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--color-bg-primary)" }}>
+        <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+          Loading your dashboard...
+        </p>
+      </div>
+    );
+  }
+
+  const cardStyle: React.CSSProperties = {
+    background: "var(--color-surface)",
+    borderRadius: "var(--radius-card)",
+    borderWidth: "var(--border-width)",
+    borderColor: "var(--color-border)",
+  };
+
+  return (
+    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+      <Sidebar />
+      <div className="flex-1">
+        <header
+          className="border-b"
+          style={{ background: "var(--color-bg-secondary)", borderColor: "var(--color-border)" }}
+        >
+          {showPaymentBanner && (
+            <div
+              className="px-6 py-2.5 text-sm font-medium flex items-center gap-2"
+              style={{ background: "rgba(74, 222, 128, 0.15)", color: "#4ade80" }}
+            >
+              <span>✅</span>
+              <span>
+                Payment received! Your plan is being activated — this page will update automatically within a few seconds.
+              </span>
+            </div>
+          )}
+
+          <div className="px-6 py-4 flex items-center justify-between gap-4">
+            <div>
+              <h1 className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
+                Welcome back, {tenant.businessName}!
+              </h1>
+              <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                
+                
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}></p>
+                Plan:{" "}
+                {(() => {
+                  const planInfo = getPlanLabel(tenant);
+                  const color =
+                    planInfo.tone === "paid"
+                      ? "#4ade80"
+                      : planInfo.tone === "overdue" || planInfo.tone === "off"
+                      ? "#f87171"
+                      : "var(--color-text-secondary)";
+                  return (
+                    <span className="font-semibold" style={{ color }}>
+                      {planInfo.text}
+                    </span>
+                  );
+                })()}
+              </p>
+            </div>
+
+            <Link
+              href="/pricing"
+              className="flex-shrink-0 text-sm font-bold px-4 py-2 rounded-lg text-white transition flex items-center gap-2 shadow-sm hover:opacity-90"
+              style={{ background: "linear-gradient(135deg, #8b5cf6, #d946ef)" }}
+            >
+              <span>👑</span>
+              <span>Upgrade Plan</span>
+            </Link>
+          </div>
+        </header>
+
+        
+
+        <main className="p-6">
+          {!hasEnoughData ? (
+            <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
+              No sales, expense, or repair data yet. Once you start recording activity, your analytics will show up here.
+            </div>
+          ) : (
+            <>
+              {/* Range selector */}
+              <div className="flex flex-wrap gap-2 mb-6">
+                {RANGE_OPTIONS.map((r) => {
+                  const isActive = range === r;
+                  return (
+                    <button
+                      key={r}
+                      onClick={() => setRange(r)}
+                      className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                      style={{
+                        background: isActive ? "var(--color-primary)" : "var(--color-surface)",
+                        color: isActive ? "#fff" : "var(--color-text-secondary)",
+                        boxShadow: isActive ? "var(--glow-shadow)" : "none",
+                        borderWidth: isActive ? 0 : "var(--border-width)",
+                        borderColor: "var(--color-border)",
+                      }}
+                    >
+                      {r}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Summary cards with trend arrows */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                <div className="p-4" style={cardStyle}>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Revenue</p>
+                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+                    ₱{comparison.currentRevenue.toLocaleString()}
+                  </p>
+                  <TrendArrow pct={comparison.revenueChangePct} />
+                </div>
+                <div className="p-4" style={cardStyle}>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Profit</p>
+                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+                    ₱{comparison.currentProfit.toLocaleString()}
+                  </p>
+                  <TrendArrow pct={comparison.profitChangePct} />
+                </div>
+                <div className="p-4" style={cardStyle}>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Expenses</p>
+                  <p className="text-lg font-bold mt-1" style={{ color: "#f87171", fontFamily: "var(--font-heading)" }}>
+                    ₱{comparison.currentExpenses.toLocaleString()}
+                  </p>
+                  <TrendArrow pct={-comparison.expensesChangePct} />
+                </div>
+                <div className="p-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+                  <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Net Profit</p>
+                  <p
+                    className="text-lg font-bold mt-1"
+                    style={{
+                      color: comparison.currentNetProfit >= 0 ? "#4ade80" : "#f87171",
+                      fontFamily: "var(--font-heading)",
+                    }}
+                  >
+                    ₱{comparison.currentNetProfit.toLocaleString()}
+                  </p>
+                  <TrendArrow pct={comparison.netProfitChangePct} />
+                </div>
+              </div>
+
+              {/* Trend chart */}
+              <div className="p-4 mb-6" style={cardStyle}>
+                <p className="text-sm font-semibold mb-3" style={{ color: "var(--color-text-primary)" }}>
+                  {(RANGE_LABELS as Record<string, string>)[range]}
+                </p>
+                <ResponsiveContainer width="100%" height={280}>
+  {graphStyle === "bar" ? (
+    <BarChart data={series}>
+      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
+      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
+      <Tooltip
+        contentStyle={{
+          background: "var(--color-bg-secondary)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "8px",
+          color: "var(--color-text-primary)",
+        }}
+        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
+      />
+      <Legend wrapperStyle={{ fontSize: 12 }} />
+      <Bar dataKey="revenue" name="Revenue" fill="var(--color-primary-light)" radius={[4, 4, 0, 0]} />
+      <Bar dataKey="netProfit" name="Net Profit" fill="#4ade80" radius={[4, 4, 0, 0]} />
+      <Bar dataKey="expenses" name="Expenses" fill="#f87171" radius={[4, 4, 0, 0]} />
+    </BarChart>
+  ) : graphStyle === "area" ? (
+    <AreaChart data={series}>
+      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
+      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
+      <Tooltip
+        contentStyle={{
+          background: "var(--color-bg-secondary)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "8px",
+          color: "var(--color-text-primary)",
+        }}
+        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
+      />
+      <Legend wrapperStyle={{ fontSize: 12 }} />
+      <Area type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" fill="var(--color-primary-light)" fillOpacity={0.25} strokeWidth={2} />
+      <Area type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" fill="#4ade80" fillOpacity={0.2} strokeWidth={2} />
+      <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" fill="#f87171" fillOpacity={0.2} strokeWidth={2} />
+    </AreaChart>
+  ) : (
+    <LineChart data={series}>
+      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+      <XAxis dataKey="label" stroke="var(--color-text-secondary)" fontSize={11} />
+      <YAxis stroke="var(--color-text-secondary)" fontSize={11} />
+      <Tooltip
+        contentStyle={{
+          background: "var(--color-bg-secondary)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "8px",
+          color: "var(--color-text-primary)",
+        }}
+        formatter={(value: any) => `₱${Number(value).toLocaleString()}`}
+      />
+      <Legend wrapperStyle={{ fontSize: 12 }} />
+      <Line type="monotone" dataKey="revenue" name="Revenue" stroke="var(--color-primary-light)" strokeWidth={2} dot={false} />
+      <Line type="monotone" dataKey="netProfit" name="Net Profit" stroke="#4ade80" strokeWidth={2} dot={false} />
+      <Line type="monotone" dataKey="expenses" name="Expenses" stroke="#f87171" strokeWidth={2} dot={false} />
+    </LineChart>
+  )}
+</ResponsiveContainer>
+              </div>
+
+                            {/* AI Business Analyst — toggleable, manual-trigger, cached */}
+              <div className="p-5 mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+                <div className="flex justify-between items-center mb-3">
+                  <p className="text-sm font-semibold" style={{ color: "var(--color-primary-light)" }}>
+                    🤖 Your AI Business Analyst
+                  </p>
+                  <button
+                    onClick={handleToggleAiAnalytics}
+                    className="text-xs font-medium px-3 py-1 rounded-full transition"
+                    style={{
+                      background: tenant.aiAnalyticsEnabled ? "rgba(34, 197, 94, 0.15)" : "var(--color-bg-secondary)",
+                      color: tenant.aiAnalyticsEnabled ? "#4ade80" : "var(--color-text-secondary)",
+                    }}
+                  >
+                    {tenant.aiAnalyticsEnabled ? "● Enabled" : "○ Disabled"}
+                  </button>
+                </div>
+
+                
+                {!canTriggerAnalysis ? (
+                  <p className="text-sm p-3 rounded-lg" style={{ color: "var(--color-text-secondary)" }}>
+                    Only the Owner or Secretary can run a new analysis.
+                  </p>
+                ) : !aiAccess.allowed ? (
+                  <p className="text-sm p-3 rounded-lg" style={{ color: "#facc15", background: "rgba(250, 204, 21, 0.1)" }}>
+                    {AI_LOCKED_MESSAGE}
+                  </p>
+                ) : !tenant.aiAnalyticsEnabled ? (
+                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                    AI Analytics is off. Turn it on above to get insights and priority tasks — you control when it runs, so it won't use extra AI usage automatically.
+                  </p>
+                ) : (
+                  <>
+                    <button
+                      onClick={runAnalysis}
+                      disabled={loadingInsight}
+                      className="w-full font-semibold py-2 mb-4 text-sm disabled:opacity-50 hover:opacity-90"
+                      style={{
+                        background: "var(--gradient-accent)",
+                        color: "#fff",
+                        borderRadius: "var(--radius-button)",
+                      }}
+                    >
+                      {loadingInsight
+                        ? "Analyzing..."
+                        : insight
+                        ? "🔄 Re-analyze My Business"
+                        : "🔍 Analyze My Business"}
+                    </button>
+
+                    {tenant.lastInsightAt && (
+                      <p className="text-xs mb-3" style={{ color: "var(--color-text-secondary)" }}>
+                        Last analyzed: {new Date(tenant.lastInsightAt).toLocaleString()}
+                        {tenant.lastInsightRange && ` · ${(RANGE_LABELS as Record<string, string>)[tenant.lastInsightRange] || tenant.lastInsightRange}`}
+                      </p>
+                    )}
+                  </>
+                )}
+
+                {tenant.aiAnalyticsEnabled && loadingInsight ? (
+                  <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                    Analyzing your shop's data...
+                  </p>
+                ) : insightError ? (
+                  <p className="text-sm" style={{ color: "#f87171" }}>{insightError}</p>
+                ) : insight ? (
+                  <>
+                    <p className="text-sm font-medium mb-4" style={{ color: "var(--color-text-primary)" }}>
+                      {insight.summary}
+                    </p>
+
+                    {insight.suggestedGoal && (
+                      <div
+                        className="flex justify-between items-center px-4 py-3 mb-4"
+                        style={{ background: "var(--gradient-accent)", borderRadius: "var(--radius-button)" }}
+                      >
+                        <span className="text-xs font-medium" style={{ color: "#fff" }}>
+                          🎯 {insight.suggestedGoal.label}
+                        </span>
+                        <span className="text-base font-bold" style={{ color: "#fff", fontFamily: "var(--font-heading)" }}>
+                          {insight.suggestedGoal.value}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : null}
+
+                {/* Persistent, checkable task list — shown regardless of toggle, since these are already saved */}
+                {tenant.aiAnalyticsEnabled && activeTasks.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                      Action items
+                    </p>
+                    {activeTasks.map((task) => {
+                      const colors = PRIORITY_COLORS[task.priority];
+                      return (
+                        <div
+                          key={task.id}
+                          className="flex items-start gap-2 px-3 py-2 text-sm"
+                          style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}
+                        >
+                          <button
+                            onClick={() => handleToggleTask(task)}
+                            className="mt-0.5 w-4 h-4 rounded flex-shrink-0"
+                            style={{ borderWidth: "1.5px", borderColor: colors.text }}
+                            title="Mark as done"
+                          />
+                          <span className="flex-1" style={{ color: "var(--color-text-primary)" }}>
+                            {task.text}
+                          </span>
+                          <span
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                            style={{ background: colors.bg, color: colors.text }}
+                          >
+                            {task.priority}
+                          </span>
+                          <button
+                            onClick={() => handleDeleteTask(task.id)}
+                            className="text-xs leading-none hover:opacity-70 flex-shrink-0"
+                            style={{ color: "var(--color-text-secondary)" }}
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <Link
+                href="/sales"
+                className="text-sm font-medium hover:underline"
+                style={{ color: "var(--color-primary-light)" }}
+              >
+                View detailed Sales & Expenses report →
+              </Link>
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <DashboardContent />
+    </Suspense>
+  );
+}
+</file>
+
 <file path="app/inventory/page.tsx">
 "use client";
 
@@ -15293,7 +15571,7 @@ import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
-import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { getAiAccess, hasFeatureAccess, getPlanLimits, itemCapMessage, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 import { can, type Role } from "../lib/permissions";
 
@@ -15536,6 +15814,8 @@ export default function InventoryPage() {
   const router = useRouter();
 
   const aiAccess = useMemo(() => getAiAccess(tenantData), [tenantData]);
+  // Limit ng items kada plan (Free 50, ang iba unlimited)
+  const planLimits = useMemo(() => getPlanLimits(tenantData), [tenantData]);
 
   const [searchText, setSearchText] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
@@ -15663,7 +15943,7 @@ export default function InventoryPage() {
   // ---- Low stock email alert ----
   // Fires once per item when it crosses at/below its threshold; resets when restocked
   useEffect(() => {
-    if (!uid || items.length === 0 || !aiAccess.allowed) return;
+    if (!uid || items.length === 0 || !hasFeatureAccess(tenantData, "lowStockEmail")) return;
 
     const newlyLow = items.filter((i) => i.stock <= i.threshold && !i.lowStockAlertSent);
     const restocked = items.filter((i) => i.stock > i.threshold && i.lowStockAlertSent);
@@ -15928,6 +16208,10 @@ export default function InventoryPage() {
       } else if (editingItemId) {
         await updateDoc(doc(db, "tenants", uid, "inventory", editingItemId), itemData);
       } else {
+        if (items.length >= planLimits.itemCap) {
+          alert(itemCapMessage(planLimits.itemCap));
+          return;
+        }
         await addDoc(collection(db, "tenants", uid, "inventory"), {
           ...itemData,
           createdAt: new Date().toISOString(),
@@ -16343,7 +16627,7 @@ export default function InventoryPage() {
     }
 
     if (needsAi && uid) {
-      const usage = await checkAndIncrementUsage(uid, "scanCount");
+      const usage = await checkAndIncrementUsage(uid, "scanCount", tenantData);
       if (!usage.allowed) {
         setScanError(usageLimitMessage("scanCount", usage.limit));
         setScanning(false);
@@ -16459,9 +16743,18 @@ export default function InventoryPage() {
       return;
     }
 
+    const slotsLeft = planLimits.itemCap - items.length;
+    if (selectedRows.length > slotsLeft) {
+      setBulkMessage(
+        slotsLeft <= 0
+          ? itemCapMessage(planLimits.itemCap)
+          : `Puwede ka na lang magdagdag ng ${slotsLeft} pang item sa Free plan (limit: ${planLimits.itemCap}). Bawasan ang napili mo, o i-upgrade sa Basic para sa unlimited items.`
+      );
+      return;
+    }
+
     setAddingBulk(true);
     setBulkMessage("");
-
     try {
       for (const row of selectedRows) {
         await addDoc(collection(db, "tenants", uid, "inventory"), {
