@@ -7,7 +7,7 @@ import { doc, getDoc, updateDoc, collection, onSnapshot, query, orderBy, where }
 import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo, type SessionInfo } from "../lib/staffAuth";
-import { hasFeatureAccess } from "../lib/subscription";
+import { hasFeatureAccess, getPlanLabel } from "../lib/subscription";
 import { canAccessPage } from "../lib/permissions";
 
 
@@ -85,6 +85,8 @@ export default function Sidebar() {
   const [nextPaymentDue, setNextPaymentDue] = useState<string | undefined>(undefined);
   const [manuallyDeactivated, setManuallyDeactivated] = useState<boolean>(false);
   const [planId, setPlanId] = useState<string | null>(null);
+  const [trialStartDate, setTrialStartDate] = useState<string | undefined>(undefined);
+  const [billingCycle, setBillingCycle] = useState<string | undefined>(undefined);
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>("trial");
   const [enabledFeatures, setEnabledFeatures] = useState<Record<string, boolean>>({});
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -121,6 +123,8 @@ export default function Sidebar() {
           setNameDraft(data.businessName || "");
           setLogoUrl(data.logoUrl || null);
           setPlanId(data.planId || undefined);
+          setTrialStartDate(data.trialStartDate || undefined);
+          setBillingCycle(data.billingCycle || undefined);  
           setSubscriptionStatus(data.subscriptionStatus || "trial");
           setNextPaymentDue(data.nextPaymentDue || undefined);
           setManuallyDeactivated(!!data.manuallyDeactivated);
@@ -263,7 +267,7 @@ export default function Sidebar() {
   };
 
   // Iisang tenant object na ginagamit sa buong component para sa access checks
-  const tenantAccess = { subscriptionStatus, planId, nextPaymentDue, manuallyDeactivated };
+  const tenantAccess = { subscriptionStatus, planId, nextPaymentDue, manuallyDeactivated, trialStartDate, billingCycle };
 
   // Ang Low Stock notification bell ay Pro/Business feature — i-suppress kung
   // hindi entitled ang tenant, kahit meron talagang low-stock data sa likod.
@@ -301,21 +305,21 @@ export default function Sidebar() {
   } else if (hasLockedNavItem) {
     lockBannerMessage =
       subscriptionStatus === "MONTHLY"
-        ? "⚠️ Naka-lock ang ilang features (hindi kasama sa Basic plan mo, o na-expire na). I-upgrade o mag-renew sa Settings."
-        : "⏳ Naka-lock ang ilang Pro/Business features (tapos na ang trial o Basic ka pa lang). Pumunta sa Settings para mag-upgrade.";
+        ? "⚠️ Naka-lock ang ilang features (hindi kasama sa Basic plan mo, o na-expire na). I-upgrade o mag-renew sa Upgrade Plan."
+        : "⏳ Naka-lock ang ilang Pro/Business features (tapos na ang trial o Basic ka pa lang). Pumunta sa Upgrade Plan.";
   }
 
   const planLabel: { text: string; bg: string; color: string } = (() => {
-    if (subscriptionStatus === "MONTHLY" || subscriptionStatus === "LIFETIME") {
-      const labels: Record<string, string> = { basic: "BASIC", pro: "PRO", business: "BUSINESS" };
-      const planText = planId ? labels[planId] || planId.toUpperCase() : "";
-      return {
-        text: subscriptionStatus === "LIFETIME" ? `${planText} · LIFETIME`.trim() : planText || "PAID",
-        bg: "rgba(74, 222, 128, 0.15)",
-        color: "#4ade80",
-      };
+    if (!featuresLoaded) {
+      return { text: "…", bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
     }
-    return { text: "FREE TRIAL", bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
+    const info = getPlanLabel(tenantAccess);
+    const text = info.text.toUpperCase();
+    if (info.tone === "paid") return { text, bg: "rgba(74, 222, 128, 0.15)", color: "#4ade80" };
+    if (info.tone === "overdue" || info.tone === "off") {
+      return { text, bg: "rgba(239, 68, 68, 0.15)", color: "#f87171" };
+    }
+    return { text, bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
   })();
 
   return (
@@ -417,9 +421,9 @@ export default function Sidebar() {
                       key={item.href}
                       onClick={() => {
                         setMobileMenuOpen(false);
-                        router.push("/settings");
+                        router.push("/pricing");
                       }}
-                      title="Naka-lock — pumunta sa Settings para mag-upgrade"
+                      title="Naka-lock — pumunta sa Upgrade Plan"
                       className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded-lg text-sm font-medium opacity-60"
                       style={{ color: "var(--color-text-secondary)" }}
                     >
@@ -578,7 +582,7 @@ export default function Sidebar() {
         {/* Lock / Renew Banner */}
         {!collapsed && lockBannerMessage && !session?.isStaff && (
           <button
-            onClick={() => router.push("/settings")}
+            onClick={() => router.push("/pricing")}
             className="mb-3 w-full p-2.5 rounded-lg text-left text-[11px] leading-snug transition hover:opacity-90"
             style={{
               background: manuallyDeactivated ? "rgba(239,68,68,0.12)" : "rgba(250,204,21,0.12)",
@@ -615,7 +619,7 @@ export default function Sidebar() {
               return (
                 <button
                   key={item.href}
-                  onClick={() => router.push("/settings")}
+                  onClick={() => router.push("/pricing")}
                   title={collapsed ? `${item.label} (naka-lock)` : "Naka-lock — i-click para mag-upgrade"}
                   className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition opacity-50 ${
                     collapsed ? "justify-center" : "justify-between"

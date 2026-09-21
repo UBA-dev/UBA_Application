@@ -1,19 +1,14 @@
-// Soft, client-enforced monthly usage caps per tenant for AI-powered features.
-// Tracks counts in Firestore (tenants/{uid}/usage/{YYYY-MM}), protected by the
-// same tenant-scoped security rules as everything else — a tenant can only
-// read/write their OWN usage doc. This is not attacker-proof (a determined
-// user could bypass it client-side), but it catches accidental overuse/bugs,
-// which is the real risk during the manual pilot phase.
+// Monthly usage caps kada tenant para sa AI-powered features. Ang laki ng cap
+// ay nakadepende sa PLAN ng tenant (tingnan ang ./plans.js at getPlanLimits).
+//
+// Nire-record ang count sa Firestore (tenants/{uid}/usage/{YYYY-MM}), na
+// protektado ng parehong tenant-scoped rules. PAALALA: client-side pa rin ang
+// pag-enforce nito, kaya hindi ito attacker-proof. Sa Phase 2, ililipat ito sa
+// server. Sapat ito para hulihin ang aksidenteng overuse habang pilot.
 
 import { doc, getDoc, setDoc, increment } from "firebase/firestore";
 import { db } from "./firebase";
-
-export const MONTHLY_LIMITS = {
-  scanCount: 100, // Universal Scanner (photo/PDF/Word)
-  chatCount: 150, // UBA Assistant messages
-  analysisCount: 60, // Dashboard "Analyze My Business"
-  notificationCount: 100, // AI-drafted customer notifications
-};
+import { getPlanLimits } from "./subscription";
 
 export const LIMIT_LABELS = {
   scanCount: "AI scans",
@@ -27,10 +22,18 @@ function currentMonthKey() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-// Checks whether the tenant still has room for one more call of `feature`
-// this month. If allowed, increments the count. Returns { allowed, count, limit }.
-export async function checkAndIncrementUsage(uid, feature) {
-  const limit = MONTHLY_LIMITS[feature];
+// Tinitingnan kung may natitira pang allowance ang tenant para sa isa pang
+// tawag ng `feature` ngayong buwan. Kung meron, dinadagdagan ang count.
+// Ibinabalik: { allowed, count, limit }.
+// `tenant` = ang tenant document data (para malaman ang plan).
+export async function checkAndIncrementUsage(uid, feature, tenant) {
+  const limit = getPlanLimits(tenant).ai[feature] ?? 0;
+
+  // Hindi kasama sa plan (limit 0) — hindi na kailangang tumingin sa database.
+  if (limit <= 0) {
+    return { allowed: false, count: 0, limit: 0 };
+  }
+
   const usageRef = doc(db, "tenants", uid, "usage", currentMonthKey());
 
   const snap = await getDoc(usageRef);
@@ -45,5 +48,9 @@ export async function checkAndIncrementUsage(uid, feature) {
 }
 
 export function usageLimitMessage(feature, limit) {
-  return `You've used all ${limit} ${LIMIT_LABELS[feature]} for this month. This resets on the 1st — contact your UBA provider if you need a higher limit.`;
+  const label = LIMIT_LABELS[feature] || "AI features";
+  if (!limit || limit <= 0) {
+    return `Hindi kasama ang ${label} sa kasalukuyang plan mo. I-upgrade sa Pro (o mas mataas) sa Upgrade Plan para magamit ito.`;
+  }
+  return `Naubos mo na ang ${limit} ${label} ngayong buwan. Nagre-reset ito sa 1st ng susunod na buwan, o i-upgrade ang plan mo para sa mas mataas na limit.`;
 }

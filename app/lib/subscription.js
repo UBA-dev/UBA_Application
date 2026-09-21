@@ -1,41 +1,61 @@
-// Determines whether AI-powered features (Scanner photo/PDF/Word, Dashboard
-// Analyst, UBA Assistant chatbot, low-stock email alert) AND plan-gated
-// business features (Repair/Delivery/P.O. Tickets, Low Stock Alerts) are
-// unlocked for a tenant. Core business tools (Inventory CRUD, POS, Sales,
-// CSV/Excel import) are NEVER gated by this.
+// Determines what a tenant may use, based on their plan (Basic / Pro /
+// Business), trial, and payment status. Ang lahat ng presyo, limits, at
+// features ay nakasulat sa ./plans.js — dito lang ang LOGIC.
 //
-// Aligned sa Pricing Page (Basic / Pro / Business):
-//   Basic   — POS, Inventory, Sales & Expenses, Cloud Backup
-//   Pro     — + AI Business Analyst, Repair & Delivery Tickets,
-//              Low Stock Alerts, P.O. Tickets
-//   Business— + Unlimited AI Analysis, Priority Cloud Backup,
-//              Multi-Branch Support, Priority Support
+// Plans (tingnan ang plans.js para sa buong detalye):
+//   Free     — POS, Inventory (50 items), Sales & Expenses, Cloud Backup
+//   Basic    — + unlimited items, 3 staff, low-stock alert, AI Starter
+//   Pro      — + Repair/Delivery/P.O. Tickets, AI Analyst, low-stock email, 8 staff
+//   Business — + 2× AI allowance, 25 staff, priority support, assisted setup
+//
+// Core business tools (POS, Inventory, Sales) ay HINDI kailanman nila-lock ng
+// file na ito. Limits lang sa dami (items, staff) at AI/tickets ang naka-gate.
+//
+// subscriptionStatus values sa database:
+//   "TRIAL"    — 14-day free trial, buong access
+//   "MONTHLY"  — bayad na (monthly O annual — tingnan ang billingCycle at
+//                nextPaymentDue). Pinanatili ang pangalan para hindi masira
+//                ang mga lumang tenant record.
+//   "LIFETIME" — LEGACY lang. Hindi na inaalok. Ang mga lumang tenant na
+//                may ganito ay patuloy na gagana hanggang i-set sila ng
+//                Admin sa Monthly/Annual plan.
 
-const TRIAL_DAYS = 14;
+import {
+  PLANS,
+  FREE_LIMITS,
+  TRIAL_LIMITS,
+  TRIAL_DAYS,
+  LEGACY_FALLBACK_PLAN,
+} from "./plans";
 
+export { TRIAL_DAYS };
+
+// Para sa compatibility: PLAN_FEATURES[planId] = listahan ng feature keys
 export const PLAN_FEATURES = {
-  basic: ["pos", "inventory", "salesExpenses", "cloudBackup"],
-  pro: [
-    "pos", "inventory", "salesExpenses", "cloudBackup",
-    "aiFeatures", "repairTickets", "deliveryTickets", "poTickets", "lowStockAlerts",
-  ],
-  business: [
-    "pos", "inventory", "salesExpenses", "cloudBackup",
-    "aiFeatures", "repairTickets", "deliveryTickets", "poTickets", "lowStockAlerts",
-    "unlimitedAi", "priorityCloudBackup", "multiBranch", "prioritySupport",
-  ],
+  basic: PLANS.basic.features,
+  pro: PLANS.pro.features,
+  business: PLANS.business.features,
 };
 
-// IMPORTANT: default fallback kapag walang planId na naka-set.
-// "business" ang ginamit dito (hindi "basic") para hindi biglang mawalan ng
-// access ang mga EXISTING na paying tenant (Lifetime/Monthly) na na-set noon
-// pa bago idagdag ang planId field. Once na-re-classify mo na sila gamit ang
-// bagong Basic/Pro/Business buttons sa Admin, tama na ang tunay na plan nila.
-const LEGACY_FALLBACK_PLAN = "business";
+function isPaidStatus(tenant) {
+  return tenant?.subscriptionStatus === "MONTHLY" || tenant?.subscriptionStatus === "LIFETIME";
+}
+
+function paidPlanId(tenant) {
+  return tenant?.planId && PLANS[tenant.planId] ? tenant.planId : LEGACY_FALLBACK_PLAN;
+}
 
 function planFeatureList(tenant) {
-  const plan = tenant?.planId || LEGACY_FALLBACK_PLAN;
-  return PLAN_FEATURES[plan] || PLAN_FEATURES[LEGACY_FALLBACK_PLAN];
+  return PLAN_FEATURES[paidPlanId(tenant)];
+}
+
+function isPastDue(tenant) {
+  if (tenant?.subscriptionStatus !== "MONTHLY" || !tenant.nextPaymentDue) return false;
+  return new Date(tenant.nextPaymentDue).getTime() < Date.now();
+}
+
+export function getBillingCycle(tenant) {
+  return tenant?.billingCycle === "annual" ? "annual" : "monthly";
 }
 
 export function getAiAccess(tenant) {
@@ -57,9 +77,8 @@ export function getAiAccess(tenant) {
     return { allowed: planIncludesAi && daysLeft >= 0, status: "MONTHLY", daysLeft };
   }
 
-  // Default: TRIAL — buong access muna sa lahat (kahit Pro/Business-only
-  // features) habang tumatakbo ang 14-day free trial, para maranasan nila
-  // ang buong app bago pumili ng plan.
+  // Default: TRIAL — buong access habang tumatakbo ang 14-day free trial,
+  // para maranasan nila ang buong app bago pumili ng plan.
   const start = new Date(tenant.trialStartDate || Date.now());
   const now = new Date();
   const daysUsed = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
@@ -76,10 +95,10 @@ export function urgencyLevel(accessInfo) {
   return "fine";
 }
 
-// --- Plan-based feature gating (bago) ---------------------------------
-// Ginagamit ito para sa Repair/Delivery/P.O. Tickets, Low Stock Alerts, at
-// AI features. Core tools (pos/inventory/salesExpenses/cloudBackup) ay
-// hindi dapat i-check dito dahil sadyang laging TRUE ang mga iyon.
+// --- Plan-based feature gating ------------------------------------------
+// Ginagamit para sa Tickets, Low Stock Email, AI features, atbp.
+// Core tools (pos/inventory/salesExpenses/cloudBackup) ay hindi dapat i-check
+// dito dahil laging TRUE ang mga iyon.
 export function hasFeatureAccess(tenant, featureKey) {
   if (!tenant) return false;
 
@@ -92,21 +111,66 @@ export function hasFeatureAccess(tenant, featureKey) {
   }
 
   if (tenant.subscriptionStatus === "MONTHLY") {
-    if (tenant.nextPaymentDue) {
-      const due = new Date(tenant.nextPaymentDue);
-      if (due.getTime() < Date.now()) return false; // overdue na, wala munang access
-    }
+    if (isPastDue(tenant)) return false; // expired na, wala munang access
     return planFeatureList(tenant).includes(featureKey);
   }
 
-  // TRIAL (o walang subscriptionStatus pa) — sinusunod ang parehong 14-day
-  // countdown ng getAiAccess, at buong access sa lahat ng feature habang
-  // tumatakbo ang trial.
+  // TRIAL (o walang subscriptionStatus pa) — buong access habang tumatakbo
+  // ang trial.
   return getAiAccess(tenant).allowed;
 }
 
+// --- Limits (dami ng items, staff, at AI kada buwan) ----------------------
+// Ibinabalik: { key, itemCap, staffCap, ai: { scanCount, chatCount, ... } }
+// key = "basic" | "pro" | "business" | "trial" | "free" | "loading"
+export function getPlanLimits(tenant) {
+  // Wala pang tenant data (naglo-load pa) — huwag muna mag-block.
+  if (!tenant) return { key: "loading", ...TRIAL_LIMITS };
+
+  if (tenant.manuallyDeactivated) return { key: "free", ...FREE_LIMITS };
+
+  if (isPaidStatus(tenant)) {
+    if (isPastDue(tenant)) return { key: "free", ...FREE_LIMITS };
+    const plan = PLANS[paidPlanId(tenant)];
+    return { key: plan.id, itemCap: plan.itemCap, staffCap: plan.staffCap, ai: plan.ai };
+  }
+
+  return getAiAccess(tenant).allowed
+    ? { key: "trial", ...TRIAL_LIMITS }
+    : { key: "free", ...FREE_LIMITS };
+}
+
+// Maikling label para sa Dashboard/Sidebar/Admin.
+// tone: "paid" | "trial" | "free" | "overdue" | "off"
+export function getPlanLabel(tenant) {
+  if (!tenant) return { text: "…", tone: "free" };
+  if (tenant.manuallyDeactivated) return { text: "Deactivated", tone: "off" };
+
+  if (isPaidStatus(tenant)) {
+    const plan = PLANS[paidPlanId(tenant)];
+    const cycle = getBillingCycle(tenant) === "annual" ? " · Annual" : "";
+    if (isPastDue(tenant)) return { text: `${plan.name}${cycle} · Expired`, tone: "overdue" };
+    return { text: `${plan.name}${cycle}`, tone: "paid" };
+  }
+
+  const info = getAiAccess(tenant);
+  if (info.allowed) return { text: `Free Trial · ${info.daysLeft} araw pa`, tone: "trial" };
+  return { text: "Free", tone: "free" };
+}
+
+export function itemCapMessage(cap) {
+  return `Umabot ka na sa ${cap} items na limit ng Free plan. I-upgrade sa Basic (unlimited items) sa Upgrade Plan para makapagdagdag pa. Hindi nawawala ang mga item mo.`;
+}
+
+export function staffCapMessage(cap, planName) {
+  if (cap <= 0) {
+    return "Hindi kasama ang staff logins sa Free plan. I-upgrade sa Basic o mas mataas para makapagdagdag ng staff.";
+  }
+  return `Umabot ka na sa limit na ${cap} staff logins ng ${planName} plan. I-upgrade ang plan para makapagdagdag pa.`;
+}
+
 export const AI_LOCKED_MESSAGE =
-  "Your free AI trial has ended, or your current plan doesn't include AI features. Everything else in UBA keeps working as normal — contact your UBA provider to unlock AI Scanner, Business Analyst, and Assistant again.";
+  "Tapos na ang libreng trial mo, o hindi kasama ng kasalukuyang plan mo ang AI. Gumagana pa rin ang lahat ng iba sa UBA — pumunta sa Upgrade Plan para i-unlock muli ang AI Scanner, Business Analyst, at Assistant.";
 
 export const FEATURE_LOCKED_MESSAGE =
-  "Feature na ito ay bahagi ng Pro/Business plan. I-upgrade ang plan mo o mag-renew para magamit muli — pumunta sa Settings.";
+  "Ang feature na ito ay para sa Pro/Business plan. I-upgrade ang plan mo o mag-renew — pumunta sa Upgrade Plan.";

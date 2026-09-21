@@ -4,7 +4,8 @@ import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { collection, getDocs, doc, updateDoc, query, orderBy } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
-import { getAiAccess, urgencyLevel } from "../lib/subscription";
+import { getAiAccess, urgencyLevel, getPlanLabel } from "../lib/subscription";
+import { PLANS, PLAN_IDS, peso, planPrice, cycleDays, cycleLabel } from "../lib/plans";
 
 type Tenant = {
   id: string;
@@ -14,14 +15,22 @@ type Tenant = {
   trialStartDate?: string;
   nextPaymentDue?: string;
   planId?: "basic" | "pro" | "business" | string;
+  billingCycle?: "monthly" | "annual" | string;
   manuallyDeactivated?: boolean;
 };
 
-const PLAN_OPTIONS: { id: "basic" | "pro" | "business"; label: string; color: string }[] = [
-  { id: "basic", label: "Basic", color: "#64748b" },
-  { id: "pro", label: "Pro", color: "#3b82f6" },
-  { id: "business", label: "Business", color: "#a855f7" },
-];
+type PlanId = "basic" | "pro" | "business";
+type Cycle = "monthly" | "annual";
+
+// Galing sa app/lib/plans.js ang pangalan at presyo — para laging tugma ang Admin
+// sa Pricing page. Baguhin ang presyo doon, hindi dito.
+const PLAN_COLORS: Record<string, string> = { basic: "#64748b", pro: "#3b82f6", business: "#a855f7" };
+const PLAN_OPTIONS = (PLAN_IDS as PlanId[]).map((id) => ({
+  id,
+  label: PLANS[id].name,
+  color: PLAN_COLORS[id],
+}));
+const CYCLES: Cycle[] = ["monthly", "annual"];
 
 type Feedback = {
   id: string;
@@ -39,7 +48,7 @@ const URGENCY_STYLES: Record<string, { bg: string; text: string; label: string }
   urgent: { bg: "rgba(249, 115, 22, 0.15)", text: "#fb923c", label: "Due very soon" },
   soon: { bg: "rgba(250, 204, 21, 0.15)", text: "#facc15", label: "Due this week" },
   fine: { bg: "rgba(34, 197, 94, 0.15)", text: "#4ade80", label: "OK" },
-  none: { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", label: "Lifetime" },
+  none: { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", label: "—" },
 };
 
 const CATEGORY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
@@ -104,13 +113,15 @@ function CountdownBadge({ tenant }: { tenant: Tenant }) {
     );
   }
 
+  // Lumang "Lifetime" record — hindi na inaalok. Pumili ng plan sa kanan para gawin itong
+  // Monthly o Annual na may timer.
   if (isLifetime) {
     return (
       <span
-        className="inline-flex items-center gap-1.5 text-sm font-mono font-bold px-3 py-1.5 rounded-lg tabular-nums"
-        style={{ background: "rgba(59,130,246,0.15)", color: "#60a5fa" }}
+        className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
+        style={{ background: "rgba(250,204,21,0.15)", color: "#facc15" }}
       >
-        ♾️ LIFETIME
+        ⚠️ LUMANG LIFETIME — pumili ng plan
       </span>
     );
   }
@@ -236,17 +247,36 @@ export default function AdminPage() {
 
   const newFeedbackCount = feedbackItems.filter((f) => f.status !== "resolved").length;
 
-  const handleMarkPaidMonthly = async (tenant: Tenant, planId: "basic" | "pro" | "business") => {
+  // Mark Paid: pumili ng plan at cycle (Monthly +30 araw, Annual +365 araw).
+  // Kapag renewal ng parehong plan at cycle na hindi pa expired, idinadagdag sa
+  // kasalukuyang due date (hindi nawawala ang natitirang araw). Kung ibang plan o
+  // expired na, magsisimula sa ngayon.
+  const handleMarkPaid = async (tenant: Tenant, planId: PlanId, cycle: Cycle) => {
+    const price = planPrice(planId, cycle);
+    const ok = window.confirm(
+      `I-mark na bayad ang "${tenant.businessName || tenant.ownerEmail}" sa ${PLANS[planId].name} ${cycleLabel(cycle)} (${peso(price)})?`
+    );
+    if (!ok) return;
+
     setSavingId(tenant.id);
-    const nextDue = new Date();
-    nextDue.setDate(nextDue.getDate() + 30);
+    const now = Date.now();
+    const currentDue = tenant.nextPaymentDue ? new Date(tenant.nextPaymentDue).getTime() : 0;
+    const sameTerm =
+      tenant.subscriptionStatus === "MONTHLY" &&
+      tenant.planId === planId &&
+      (tenant.billingCycle || "monthly") === cycle &&
+      currentDue > now;
+    const base = sameTerm ? currentDue : now;
+    const nextDue = new Date(base + cycleDays(cycle) * 24 * 60 * 60 * 1000).toISOString();
+
     try {
       // Ang pagre-renew/pag-mark-paid ay awtomatikong nag-re-reactivate din
       // (in case may naka-deactivate dati) — bagong bayad, bagong access.
       await updateDoc(doc(db, "tenants", tenant.id), {
-        subscriptionStatus: "MONTHLY",
+        subscriptionStatus: "MONTHLY", // "MONTHLY" = bayad na (monthly o annual, tingnan ang billingCycle)
         planId,
-        nextPaymentDue: nextDue.toISOString(),
+        billingCycle: cycle,
+        nextPaymentDue: nextDue,
         manuallyDeactivated: false,
       });
       setTenants((prev) =>
@@ -256,12 +286,16 @@ export default function AdminPage() {
                 ...t,
                 subscriptionStatus: "MONTHLY",
                 planId,
-                nextPaymentDue: nextDue.toISOString(),
+                billingCycle: cycle,
+                nextPaymentDue: nextDue,
                 manuallyDeactivated: false,
               }
             : t
         )
       );
+    } catch (error) {
+      console.error("Failed to mark paid:", error);
+      alert("Hindi na-save. Tingnan ang koneksyon at subukan ulit.");
     } finally {
       setSavingId(null);
     }
@@ -274,18 +308,6 @@ export default function AdminPage() {
       await updateDoc(doc(db, "tenants", tenant.id), { manuallyDeactivated: nextValue });
       setTenants((prev) =>
         prev.map((t) => (t.id === tenant.id ? { ...t, manuallyDeactivated: nextValue } : t))
-      );
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const handleMarkLifetime = async (tenant: Tenant) => {
-    setSavingId(tenant.id);
-    try {
-      await updateDoc(doc(db, "tenants", tenant.id), { subscriptionStatus: "LIFETIME" });
-      setTenants((prev) =>
-        prev.map((t) => (t.id === tenant.id ? { ...t, subscriptionStatus: "LIFETIME" } : t))
       );
     } finally {
       setSavingId(null);
@@ -390,8 +412,7 @@ export default function AdminPage() {
                         {tenant.ownerEmail || "no email on file"}
                       </p>
                       <p className="text-xs mt-0.5" style={{ color: "#8b9bc4" }}>
-                        {tenant.subscriptionStatus || "TRIAL"}
-                        {tenant.planId && ` · ${tenant.planId.charAt(0).toUpperCase() + tenant.planId.slice(1)}`}
+                        {getPlanLabel(tenant).text}
                       </p>
                       <div className="mt-1.5">
                         <CountdownBadge tenant={tenant} />
@@ -399,38 +420,43 @@ export default function AdminPage() {
                     </div>
 
                     <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[11px] mr-1" style={{ color: "#5b6d94" }}>
-                          Mark Paid:
+                      <div className="flex flex-col items-end gap-1.5">
+                        <span className="text-[11px]" style={{ color: "#5b6d94" }}>
+                          Mark Paid (Monthly +30 araw · Annual +365 araw):
                         </span>
                         {PLAN_OPTIONS.map((plan) => (
-                          <button
-                            key={plan.id}
-                            onClick={() => handleMarkPaidMonthly(tenant, plan.id)}
-                            disabled={savingId === tenant.id}
-                            className="px-3 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
-                            style={{
-                              background: tenant.planId === plan.id && !tenant.manuallyDeactivated ? plan.color : "rgba(255,255,255,0.06)",
-                              color: tenant.planId === plan.id && !tenant.manuallyDeactivated ? "#fff" : "#8b9bc4",
-                              borderWidth: "1px",
-                              borderColor: plan.color,
-                            }}
-                            title={`Mark as ${plan.label} plan, +1 month`}
-                          >
-                            {plan.label}
-                          </button>
+                          <div key={plan.id} className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-semibold w-16 text-right" style={{ color: plan.color }}>
+                              {plan.label}
+                            </span>
+                            {CYCLES.map((cycle) => {
+                              const isCurrent =
+                                tenant.subscriptionStatus === "MONTHLY" &&
+                                tenant.planId === plan.id &&
+                                (tenant.billingCycle || "monthly") === cycle &&
+                                !tenant.manuallyDeactivated;
+                              return (
+                                <button
+                                  key={cycle}
+                                  onClick={() => handleMarkPaid(tenant, plan.id, cycle)}
+                                  disabled={savingId === tenant.id}
+                                  className="px-2.5 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
+                                  style={{
+                                    background: isCurrent ? plan.color : "rgba(255,255,255,0.06)",
+                                    color: isCurrent ? "#fff" : "#8b9bc4",
+                                    borderWidth: "1px",
+                                    borderColor: plan.color,
+                                  }}
+                                  title={`${plan.label} ${cycleLabel(cycle)} · ${peso(planPrice(plan.id, cycle))} · +${cycleDays(cycle)} araw`}
+                                >
+                                  {cycleLabel(cycle)} {peso(planPrice(plan.id, cycle))}
+                                </button>
+                              );
+                            })}
+                          </div>
                         ))}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => handleMarkLifetime(tenant)}
-                          disabled={savingId === tenant.id}
-                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg disabled:opacity-50"
-                          style={{ background: "rgba(168,85,247,0.12)", color: "#c084fc" }}
-                          title="One-time payment — no more monthly renewal needed"
-                        >
-                          💎 Lifetime
-                        </button>
                         <button
                           onClick={() => handleToggleDeactivate(tenant)}
                           disabled={savingId === tenant.id}

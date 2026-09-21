@@ -19,7 +19,7 @@ import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
-import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { getAiAccess, getPlanLabel, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 import {
   ResponsiveContainer,
@@ -360,7 +360,7 @@ function DashboardContent() {
   const runAnalysis = async () => {
     if (!uid || !aiAccess.allowed) return;
 
-    const usage = await checkAndIncrementUsage(uid, "analysisCount");
+    const usage = await checkAndIncrementUsage(uid, "analysisCount", tenant);
     if (!usage.allowed) {
       setInsightError(usageLimitMessage("analysisCount", usage.limit));
       return;
@@ -495,15 +495,24 @@ function DashboardContent() {
                 Welcome back, {tenant.businessName}!
               </h1>
               <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
-                {tenant.subscriptionStatus === "active" ? "Current Plan: " : "Status: "}
-                <span
-                  className="font-semibold"
-                  style={{ color: tenant.subscriptionStatus === "active" ? "#4ade80" : "var(--color-text-secondary)" }}
-                >
-                  {tenant.subscriptionStatus === "active"
-                    ? (tenant as any).planId?.toUpperCase() || "ACTIVE"
-                    : "Free Trial"}
-                </span>
+                
+                
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}></p>
+                Plan:{" "}
+                {(() => {
+                  const planInfo = getPlanLabel(tenant);
+                  const color =
+                    planInfo.tone === "paid"
+                      ? "#4ade80"
+                      : planInfo.tone === "overdue" || planInfo.tone === "off"
+                      ? "#f87171"
+                      : "var(--color-text-secondary)";
+                  return (
+                    <span className="font-semibold" style={{ color }}>
+                      {planInfo.text}
+                    </span>
+                  );
+                })()}
               </p>
             </div>
 

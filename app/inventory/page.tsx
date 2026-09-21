@@ -18,7 +18,7 @@ import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
-import { getAiAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { getAiAccess, hasFeatureAccess, getPlanLimits, itemCapMessage, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 import { can, type Role } from "../lib/permissions";
 
@@ -261,6 +261,8 @@ export default function InventoryPage() {
   const router = useRouter();
 
   const aiAccess = useMemo(() => getAiAccess(tenantData), [tenantData]);
+  // Limit ng items kada plan (Free 50, ang iba unlimited)
+  const planLimits = useMemo(() => getPlanLimits(tenantData), [tenantData]);
 
   const [searchText, setSearchText] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
@@ -388,7 +390,7 @@ export default function InventoryPage() {
   // ---- Low stock email alert ----
   // Fires once per item when it crosses at/below its threshold; resets when restocked
   useEffect(() => {
-    if (!uid || items.length === 0 || !aiAccess.allowed) return;
+    if (!uid || items.length === 0 || !hasFeatureAccess(tenantData, "lowStockEmail")) return;
 
     const newlyLow = items.filter((i) => i.stock <= i.threshold && !i.lowStockAlertSent);
     const restocked = items.filter((i) => i.stock > i.threshold && i.lowStockAlertSent);
@@ -653,6 +655,10 @@ export default function InventoryPage() {
       } else if (editingItemId) {
         await updateDoc(doc(db, "tenants", uid, "inventory", editingItemId), itemData);
       } else {
+        if (items.length >= planLimits.itemCap) {
+          alert(itemCapMessage(planLimits.itemCap));
+          return;
+        }
         await addDoc(collection(db, "tenants", uid, "inventory"), {
           ...itemData,
           createdAt: new Date().toISOString(),
@@ -1068,7 +1074,7 @@ export default function InventoryPage() {
     }
 
     if (needsAi && uid) {
-      const usage = await checkAndIncrementUsage(uid, "scanCount");
+      const usage = await checkAndIncrementUsage(uid, "scanCount", tenantData);
       if (!usage.allowed) {
         setScanError(usageLimitMessage("scanCount", usage.limit));
         setScanning(false);
@@ -1184,9 +1190,18 @@ export default function InventoryPage() {
       return;
     }
 
+    const slotsLeft = planLimits.itemCap - items.length;
+    if (selectedRows.length > slotsLeft) {
+      setBulkMessage(
+        slotsLeft <= 0
+          ? itemCapMessage(planLimits.itemCap)
+          : `Puwede ka na lang magdagdag ng ${slotsLeft} pang item sa Free plan (limit: ${planLimits.itemCap}). Bawasan ang napili mo, o i-upgrade sa Basic para sa unlimited items.`
+      );
+      return;
+    }
+
     setAddingBulk(true);
     setBulkMessage("");
-
     try {
       for (const row of selectedRows) {
         await addDoc(collection(db, "tenants", uid, "inventory"), {

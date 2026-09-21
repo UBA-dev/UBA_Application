@@ -60,7 +60,11 @@ app/
       route.ts
     generate-reorder-summary/
       route.ts
+    generate-shop-code/
+      route.ts
     generate-ticket-message/
+      route.ts
+    revoke-staff-session/
       route.ts
     scan-item/
       route.ts
@@ -529,6 +533,56 @@ Respond with ONLY the summary text. No markdown, no JSON, no extra commentary.`;
 }
 </file>
 
+<file path="app/api/generate-shop-code/route.ts">
+import { NextRequest, NextResponse } from "next/server";
+import { getAuth } from "firebase-admin/auth";
+import { adminDb } from "@/app/lib/firebaseAdmin";
+
+// Hindi kasama ang mga letra na madaling mapagkamalan (0/O, 1/I)
+const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShopCode(): string {
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    const decoded = await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+    // Owner lang ang may Shop Code, hindi ang staff
+    if ((decoded as any).isStaff) {
+      return NextResponse.json({ error: "Only the business owner can do this." }, { status: 403 });
+    }
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const code = generateShopCode();
+      const existing = await adminDb
+        .collection("tenants")
+        .where("shopCode", "==", code)
+        .limit(1)
+        .get();
+      if (existing.empty) {
+        return NextResponse.json({ shopCode: code });
+      }
+    }
+
+    return NextResponse.json({ error: "Could not generate a unique shop code. Try again." }, { status: 500 });
+  } catch (err: any) {
+    console.error("generate-shop-code error:", err);
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
+  }
+}
+</file>
+
 <file path="app/api/generate-ticket-message/route.ts">
 import { NextRequest, NextResponse } from "next/server";
 
@@ -584,6 +638,56 @@ Respond with ONLY the message text. No quotes, no markdown, no extra commentary.
   } catch (err) {
     console.error("generate-ticket-message error:", err);
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
+  }
+}
+</file>
+
+<file path="app/api/revoke-staff-session/route.ts">
+import { NextRequest, NextResponse } from "next/server";
+import { getAuth } from "firebase-admin/auth";
+import { adminDb } from "@/app/lib/firebaseAdmin";
+
+export async function POST(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    const decoded = await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
+
+    // Owner lang ang pwedeng magbawi ng session ng staff
+    if ((decoded as any).isStaff) {
+      return NextResponse.json({ error: "Only the business owner can do this." }, { status: 403 });
+    }
+
+    const { staffId } = await req.json();
+    if (!staffId) {
+      return NextResponse.json({ error: "Missing staffId." }, { status: 400 });
+    }
+
+    // Siguraduhing ang staff na ito ay sa business ng Owner na ito
+    const staffSnap = await adminDb
+      .collection("tenants")
+      .doc(decoded.uid)
+      .collection("staff")
+      .doc(staffId)
+      .get();
+    if (!staffSnap.exists) {
+      return NextResponse.json({ error: "Staff account not found." }, { status: 404 });
+    }
+
+    try {
+      await getAuth().revokeRefreshTokens(`staff_${staffId}`);
+    } catch (err: any) {
+      // Kung hindi pa nakaka-login kailanman ang staff, wala pa siyang Auth account. Ok lang.
+      if (err.code !== "auth/user-not-found") throw err;
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    console.error("revoke-staff-session error:", err);
+    return NextResponse.json({ error: "Something went wrong." }, { status: 500 });
   }
 }
 </file>
@@ -787,76 +891,6 @@ RULES:
       { error: "An unexpected error occurred while processing your request. Please try again later." },
       { status: 500 }
     );
-  }
-}
-</file>
-
-<file path="app/api/update-staff/route.ts">
-import { NextRequest, NextResponse } from "next/server";
-import { getAuth } from "firebase-admin/auth";
-import { adminDb } from "@/app/lib/firebaseAdmin";
-import bcrypt from "bcryptjs";
-
-export async function POST(req: NextRequest) {
-  try {
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-    const idToken = authHeader.split("Bearer ")[1];
-    const decoded = await getAuth().verifyIdToken(idToken);
-
-    if ((decoded as any).isStaff) {
-      return NextResponse.json({ error: "Only the business owner can edit staff." }, { status: 403 });
-    }
-
-    const { staffId, name, username, role, newPin } = await req.json();
-
-    if (!staffId || !name?.trim() || !username?.trim() || !role) {
-      return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
-    }
-    if (!["secretary", "cashier"].includes(role)) {
-      return NextResponse.json({ error: "Invalid role." }, { status: 400 });
-    }
-
-    const staffRef = adminDb.collection("tenants").doc(decoded.uid).collection("staff").doc(staffId);
-    const staffSnap = await staffRef.get();
-    if (!staffSnap.exists) {
-      return NextResponse.json({ error: "Staff account not found." }, { status: 404 });
-    }
-
-    const normalizedUsername = username.trim().toLowerCase();
-
-    // Only check for username conflicts against OTHER staff docs, not this one
-    const existing = await adminDb
-      .collection("tenants")
-      .doc(decoded.uid)
-      .collection("staff")
-      .where("username", "==", normalizedUsername)
-      .get();
-    const conflict = existing.docs.find((d) => d.id !== staffId);
-    if (conflict) {
-      return NextResponse.json({ error: "That username is already taken by another staff member." }, { status: 409 });
-    }
-
-    const updateData: any = {
-      name: name.trim(),
-      username: normalizedUsername,
-      role,
-    };
-
-    if (newPin) {
-      if (!/^\d{4,6}$/.test(newPin)) {
-        return NextResponse.json({ error: "PIN must be 4-6 digits." }, { status: 400 });
-      }
-      updateData.pinHash = await bcrypt.hash(newPin, 10);
-    }
-
-    await staffRef.update(updateData);
-    return NextResponse.json({ success: true });
-  } catch (err: any) {
-    console.error("update-staff error:", err);
-    return NextResponse.json({ error: "Something went wrong updating this staff account." }, { status: 500 });
   }
 }
 </file>
@@ -1511,81 +1545,6 @@ export default function HelpSupport() {
 
       <ContactCard />
     </div>
-  );
-}
-</file>
-
-<file path="app/components/InstallButton.tsx">
-"use client";
-
-import { useEffect, useState } from "react";
-
-// TypeScript doesn't know about this browser event by default.
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-}
-
-export default function InstallButton() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstallable, setIsInstallable] = useState(false);
-  const [isInstalled, setIsInstalled] = useState(false);
-
-  useEffect(() => {
-    // Already running as an installed app? Don't show the button.
-    if (window.matchMedia("(display-mode: standalone)").matches) {
-      setIsInstalled(true);
-      return;
-    }
-
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
-      setIsInstallable(true);
-    };
-
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setIsInstallable(false);
-      setDeferredPrompt(null);
-    };
-
-    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-    window.addEventListener("appinstalled", handleAppInstalled);
-
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-      window.removeEventListener("appinstalled", handleAppInstalled);
-    };
-  }, []);
-
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === "accepted") {
-      setIsInstallable(false);
-    }
-    setDeferredPrompt(null);
-  };
-
-  // Nothing to show: not installable yet (e.g. iOS Safari, or not eligible),
-  // or already installed.
-  if (isInstalled || !isInstallable) return null;
-
-  return (
-    <button
-      onClick={handleInstallClick}
-      className="text-sm font-semibold px-4 py-2 rounded-lg transition hover:opacity-80 flex items-center gap-2"
-      style={{ border: "1px solid var(--lp-border, #2C2438)", color: "var(--lp-text, #F5F1FF)" }}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-      Install UBA
-    </button>
   );
 }
 </file>
@@ -3556,7 +3515,7 @@ Respond ONLY with valid JSON in the shape above. No extra text, no markdown.`;
 }
 </file>
 
-<file path="app/api/staff-login/route.ts">
+<file path="app/api/update-staff/route.ts">
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "firebase-admin/auth";
 import { adminDb } from "@/app/lib/firebaseAdmin";
@@ -3564,87 +3523,300 @@ import bcrypt from "bcryptjs";
 
 export async function POST(req: NextRequest) {
   try {
-    const { shopCode, username, pin } = await req.json();
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+    const idToken = authHeader.split("Bearer ")[1];
+    const decoded = await getAuth().verifyIdToken(idToken);
 
-    if (!shopCode?.trim() || !username?.trim() || !pin) {
-      return NextResponse.json({ error: "Please fill in all fields." }, { status: 400 });
+    if ((decoded as any).isStaff) {
+      return NextResponse.json({ error: "Only the business owner can edit staff." }, { status: 403 });
     }
 
-    const normalizedShopCode = shopCode.trim().toUpperCase();
+    const { staffId, name, username, role, newPin } = await req.json();
+
+    if (!staffId || !name?.trim() || !username?.trim() || !role) {
+      return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
+    }
+    if (!["secretary", "cashier"].includes(role)) {
+      return NextResponse.json({ error: "Invalid role." }, { status: 400 });
+    }
+
+    const staffRef = adminDb.collection("tenants").doc(decoded.uid).collection("staff").doc(staffId);
+    const staffSnap = await staffRef.get();
+    if (!staffSnap.exists) {
+      return NextResponse.json({ error: "Staff account not found." }, { status: 404 });
+    }
+
     const normalizedUsername = username.trim().toLowerCase();
 
-    const tenantQuery = await adminDb
+    // Only check for username conflicts against OTHER staff docs, not this one
+    const existing = await adminDb
       .collection("tenants")
-      .where("shopCode", "==", normalizedShopCode)
-      .limit(1)
-      .get();
-
-    if (tenantQuery.empty) {
-      return NextResponse.json({ error: "Shop code not found. Please check with your owner." }, { status: 404 });
-    }
-
-    const tenantDoc = tenantQuery.docs[0];
-    const tenantId = tenantDoc.id;
-    const businessName = tenantDoc.data().businessName || "";
-
-    const staffQuery = await adminDb
-      .collection("tenants")
-      .doc(tenantId)
+      .doc(decoded.uid)
       .collection("staff")
       .where("username", "==", normalizedUsername)
-      .limit(1)
       .get();
-
-    if (staffQuery.empty) {
-      return NextResponse.json({ error: "Invalid username or PIN." }, { status: 401 });
+    const conflict = existing.docs.find((d) => d.id !== staffId);
+    if (conflict) {
+      return NextResponse.json({ error: "That username is already taken by another staff member." }, { status: 409 });
     }
 
-    const staffDoc = staffQuery.docs[0];
-    const staffData = staffDoc.data();
-
-    if (staffData.active === false) {
-      return NextResponse.json({ error: "This staff account has been deactivated." }, { status: 403 });
-    }
-
-    const pinMatches = await bcrypt.compare(pin, staffData.pinHash);
-    if (!pinMatches) {
-      return NextResponse.json({ error: "Invalid username or PIN." }, { status: 401 });
-    }
-
-    const staffUid = `staff_${staffDoc.id}`;
-    const claims = {
-      isStaff: true,
-      tenantId,
-      role: staffData.role,
-      staffId: staffDoc.id,
-      staffName: staffData.name,
+    const updateData: any = {
+      name: name.trim(),
+      username: normalizedUsername,
+      role,
     };
 
-    // Custom claims passed only to createCustomToken() are transient — they
-    // vanish the moment Firebase silently refreshes the ID token (which
-    // happens on page reload or roughly every hour). Persisting them via
-    // setCustomUserClaims attaches them to the Auth user record itself, so
-    // every future token for this staff account carries them automatically.
-    try {
-      await getAuth().setCustomUserClaims(staffUid, claims);
-    } catch (err: any) {
-      if (err.code === "auth/user-not-found") {
-        // First-ever login for this staff account — the Auth user doesn't
-        // exist yet. Create it, then attach the claims.
-        await getAuth().createUser({ uid: staffUid });
-        await getAuth().setCustomUserClaims(staffUid, claims);
-      } else {
-        throw err;
+    if (newPin) {
+      if (!/^\d{4,6}$/.test(newPin)) {
+        return NextResponse.json({ error: "PIN must be 4-6 digits." }, { status: 400 });
       }
+      updateData.pinHash = await bcrypt.hash(newPin, 10);
     }
 
-    const customToken = await getAuth().createCustomToken(staffUid, claims);
+    await staffRef.update(updateData);
+    
+    // I-update ang claims (role at pangalan) at bawiin ang session, para
+    // tumalab ang bagong role pagka-login ulit ng staff
+    const staffUid = `staff_${staffId}`;
+    try {
+      await getAuth().setCustomUserClaims(staffUid, {
+        isStaff: true,
+        tenantId: decoded.uid,
+        role,
+        staffId,
+        staffName: name.trim(),
+      });
+      await getAuth().revokeRefreshTokens(staffUid);
+    } catch (err: any) {
+      // Kung hindi pa nakaka-login kailanman ang staff, wala pang Auth account. Ok lang.
+      if (err.code !== "auth/user-not-found") throw err;
+    }
 
-    return NextResponse.json({ token: customToken, businessName, staffName: staffData.name, role: staffData.role });
+    
+    return NextResponse.json({ success: true });
   } catch (err: any) {
-    console.error("staff-login error:", err);
-    return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
+    console.error("update-staff error:", err);
+    return NextResponse.json({ error: "Something went wrong updating this staff account." }, { status: 500 });
   }
+}
+</file>
+
+<file path="app/components/InstallButton.tsx">
+"use client";
+
+// Ilagay ang file na ito sa: app/components/InstallButton.tsx
+// (palitan ang lumang laman)
+
+import { useEffect, useState } from "react";
+
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
+
+type Platform = "ios" | "android" | "desktop";
+
+// ─────────────────────────────────────────────────────────────
+// Hinuhuli natin ang "beforeinstallprompt" sa labas ng component.
+// Ang browser ay pinapadala ito nang isang beses lang, at kadalasan
+// bago pa lumabas ang button. Kung sa loob ng component natin ito
+// hinuli, madalas na hindi na aabot, kaya nawawala ang button.
+// ─────────────────────────────────────────────────────────────
+let savedPrompt: InstallPromptEvent | null = null;
+const subscribers = new Set<() => void>();
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    savedPrompt = e as InstallPromptEvent;
+    subscribers.forEach((notify) => notify());
+  });
+  window.addEventListener("appinstalled", () => {
+    savedPrompt = null;
+    subscribers.forEach((notify) => notify());
+  });
+}
+
+const HELP_STEPS: Record<Platform, { title: string; steps: string[] }> = {
+  ios: {
+    title: "Install UBA on your iPhone or iPad",
+    steps: [
+      "Open this page in Safari.",
+      "Tap the Share button at the bottom of the screen.",
+      "Scroll down and tap Add to Home Screen.",
+      "Tap Add. UBA now opens like any other app.",
+    ],
+  },
+  android: {
+    title: "Install UBA on your Android phone",
+    steps: [
+      "Open this page in Chrome.",
+      "Tap the menu button (three dots) at the top right.",
+      "Tap Install app or Add to Home screen.",
+      "Tap Install. UBA now opens like any other app.",
+    ],
+  },
+  desktop: {
+    title: "Install UBA on your computer",
+    steps: [
+      "Open this page in Chrome or Edge.",
+      "Click the install icon at the right end of the address bar.",
+      "Click Install. UBA now opens in its own window.",
+    ],
+  },
+};
+
+type Props = {
+  variant?: "header" | "hero";
+};
+
+export default function InstallButton({ variant = "hero" }: Props) {
+  const [, refresh] = useState(0);
+  const [installed, setInstalled] = useState(false);
+  const [platform, setPlatform] = useState<Platform>("desktop");
+  const [showHelp, setShowHelp] = useState(false);
+
+  useEffect(() => {
+    // Naka-install na ba? Kung oo, hindi na natin ipapakita ang button.
+    const isStandalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (navigator as any).standalone === true;
+    setInstalled(isStandalone);
+
+    const ua = navigator.userAgent;
+    const isIOS =
+      /iphone|ipad|ipod/i.test(ua) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    setPlatform(isIOS ? "ios" : /android/i.test(ua) ? "android" : "desktop");
+
+    const update = () => refresh((n) => n + 1);
+    const handleInstalled = () => setInstalled(true);
+
+    subscribers.add(update);
+    window.addEventListener("appinstalled", handleInstalled);
+    return () => {
+      subscribers.delete(update);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
+  }, []);
+
+  // Isara ang instructions gamit ang Escape key
+  useEffect(() => {
+    if (!showHelp) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowHelp(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showHelp]);
+
+  const handleClick = async () => {
+    if (savedPrompt) {
+      // May native na install prompt ang browser: gamitin ito
+      await savedPrompt.prompt();
+      await savedPrompt.userChoice;
+      savedPrompt = null;
+      refresh((n) => n + 1);
+    } else {
+      // Wala (halimbawa: iPhone Safari): ipakita ang mga hakbang
+      setShowHelp(true);
+    }
+  };
+
+  if (installed) return null;
+
+  const sizeClasses =
+    variant === "hero" ? "px-6 py-3 text-sm" : "px-3.5 py-2 text-sm";
+  const help = HELP_STEPS[platform];
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        className={`${sizeClasses} inline-flex items-center gap-2 rounded-lg font-semibold transition-colors hover:bg-white/5`}
+        style={{
+          border: "1px solid var(--lp-line, #2C2438)",
+          color: "var(--lp-text, #F5F1FF)",
+        }}
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="6" y="2" width="12" height="20" rx="2.5" />
+          <path d="M12 8v6" />
+          <path d="M9.5 11.5 12 14l2.5-2.5" />
+        </svg>
+        Install app
+      </button>
+
+      {showHelp && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.65)" }}
+          onClick={() => setShowHelp(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="install-help-title"
+            className="w-full max-w-md p-6"
+            style={{
+              background: "var(--lp-surface, #1C1626)",
+              border: "1px solid var(--lp-line, #2C2438)",
+              borderRadius: "16px",
+              color: "var(--lp-text, #F5F1FF)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <h2 id="install-help-title" className="text-lg font-semibold">
+                {help.title}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowHelp(false)}
+                aria-label="Close"
+                className="text-2xl leading-none px-1"
+                style={{ color: "var(--lp-muted, #B8AFD1)" }}
+              >
+                ×
+              </button>
+            </div>
+
+            <ol
+              className="mt-4 space-y-3 text-sm list-decimal pl-5"
+              style={{ color: "var(--lp-muted, #B8AFD1)" }}
+            >
+              {help.steps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+
+            <button
+              type="button"
+              onClick={() => setShowHelp(false)}
+              className="mt-6 w-full py-2.5 rounded-lg text-sm font-semibold text-white"
+              style={{ background: "var(--lp-primary, #7C3AED)" }}
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 </file>
 
@@ -5240,6 +5412,140 @@ export default function AdminPage() {
 }
 </file>
 
+<file path="app/api/staff-login/route.ts">
+import { NextRequest, NextResponse } from "next/server";
+import { getAuth } from "firebase-admin/auth";
+import type { DocumentReference } from "firebase-admin/firestore";
+import { adminDb } from "@/app/lib/firebaseAdmin";
+import bcrypt from "bcryptjs";
+import { createHash } from "crypto";
+
+const MAX_ATTEMPTS = 5;
+const LOCK_MINUTES = 15;
+
+// Dagdagan ang bilang ng maling subok. Kapag umabot sa limit, i-lock.
+async function recordFailedAttempt(ref: DocumentReference) {
+  await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const count = (snap.exists ? snap.data()?.count || 0 : 0) + 1;
+
+    if (count >= MAX_ATTEMPTS) {
+      tx.set(ref, { count: 0, lockedUntil: Date.now() + LOCK_MINUTES * 60 * 1000 });
+    } else {
+      tx.set(ref, { count, lockedUntil: 0 });
+    }
+  });
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { shopCode, username, pin } = await req.json();
+
+    if (!shopCode?.trim() || !username?.trim() || !pin) {
+      return NextResponse.json({ error: "Please fill in all fields." }, { status: 400 });
+    }
+
+    const normalizedShopCode = shopCode.trim().toUpperCase();
+    const normalizedUsername = username.trim().toLowerCase();
+
+    const tenantQuery = await adminDb
+      .collection("tenants")
+      .where("shopCode", "==", normalizedShopCode)
+      .limit(1)
+      .get();
+
+    if (tenantQuery.empty) {
+      return NextResponse.json({ error: "Shop code not found. Please check with your owner." }, { status: 404 });
+    }
+
+    const tenantDoc = tenantQuery.docs[0];
+    const tenantId = tenantDoc.id;
+    const businessName = tenantDoc.data().businessName || "";
+
+    // Ang bilang ng maling subok ay per shop + username. Binibilang kahit
+    // hindi totoong username, para pareho ang sagot at hindi mahulaan
+    // kung sino ang totoong staff.
+    const attemptKey = createHash("sha256")
+      .update(`${tenantId}:${normalizedUsername}`)
+      .digest("hex");
+    const attemptRef = adminDb.collection("loginAttempts").doc(attemptKey);
+
+    const attemptSnap = await attemptRef.get();
+    const lockedUntil: number = attemptSnap.exists ? attemptSnap.data()?.lockedUntil || 0 : 0;
+    if (lockedUntil > Date.now()) {
+      const minutesLeft = Math.ceil((lockedUntil - Date.now()) / 60000);
+      return NextResponse.json(
+        { error: `Too many wrong attempts. Please try again in ${minutesLeft} minute(s).` },
+        { status: 429 }
+      );
+    }
+
+    const staffQuery = await adminDb
+      .collection("tenants")
+      .doc(tenantId)
+      .collection("staff")
+      .where("username", "==", normalizedUsername)
+      .limit(1)
+      .get();
+
+    if (staffQuery.empty) {
+      await recordFailedAttempt(attemptRef);
+      return NextResponse.json({ error: "Invalid username or PIN." }, { status: 401 });
+    }
+
+    const staffDoc = staffQuery.docs[0];
+    const staffData = staffDoc.data();
+
+    if (staffData.active === false) {
+      return NextResponse.json({ error: "This staff account has been deactivated." }, { status: 403 });
+    }
+
+    const pinMatches = await bcrypt.compare(pin, staffData.pinHash);
+    if (!pinMatches) {
+      await recordFailedAttempt(attemptRef);
+      return NextResponse.json({ error: "Invalid username or PIN." }, { status: 401 });
+    }
+
+    // Tamang PIN: burahin ang bilang ng maling subok
+    await attemptRef.delete();
+
+    const staffUid = `staff_${staffDoc.id}`;
+    const claims = {
+      isStaff: true,
+      tenantId,
+      role: staffData.role,
+      staffId: staffDoc.id,
+      staffName: staffData.name,
+    };
+
+    // Custom claims passed only to createCustomToken() are transient — they
+    // vanish the moment Firebase silently refreshes the ID token (which
+    // happens on page reload or roughly every hour). Persisting them via
+    // setCustomUserClaims attaches them to the Auth user record itself, so
+    // every future token for this staff account carries them automatically.
+    try {
+      await getAuth().setCustomUserClaims(staffUid, claims);
+    } catch (err: any) {
+      if (err.code === "auth/user-not-found") {
+        // First-ever login for this staff account — the Auth user doesn't
+        // exist yet. Create it, then attach the claims.
+        await getAuth().createUser({ uid: staffUid });
+        await getAuth().setCustomUserClaims(staffUid, claims);
+      } else {
+        throw err;
+      }
+    }
+
+    const customToken = await getAuth().createCustomToken(staffUid, claims);
+
+    return NextResponse.json({ token: customToken, businessName, staffName: staffData.name, role: staffData.role });
+  } catch (err: any) {
+    console.error("staff-login error:", err);
+    return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
+  }
+}
+</file>
+
 <file path="app/components/ReorderSummary.jsx">
 "use client";
 
@@ -6754,161 +7060,6 @@ export default function LoginPage() {
 }
 </file>
 
-<file path="app/onboarding/page.tsx">
-"use client";
-
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { defaultThemeId } from "../lib/themes";
-
-// Excludes visually ambiguous characters (0/O, 1/I) since owners will read
-// this code aloud or type it manually on a shared device.
-const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateShopCode(): string {
-  let code = "";
-  for (let i = 0; i < 6; i++) {
-    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
-  }
-  return code;
-}
-
-async function generateUniqueShopCode(): Promise<string> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = generateShopCode();
-    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
-    if (existing.empty) return code;
-  }
-  // Extremely unlikely fallback — timestamp-based suffix guarantees uniqueness
-  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
-}
-
-export default function OnboardingPage() {
-  const [step, setStep] = useState(1);
-  const [businessName, setBusinessName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const router = useRouter();
-
-  // Protect this page: if nobody is logged in, send them back to sign up
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      if (!user) {
-        router.push("/signup");
-      }
-    });
-    return () => unsubscribe();
-  }, [router]);
-
-  const handleFinish = async () => {
-    setError("");
-    setLoading(true);
-    try {
-      const user = auth.currentUser;
-      if (!user) throw new Error("No logged-in user found.");
-
-      const shopCode = await generateUniqueShopCode();
-
-      await setDoc(doc(db, "tenants", user.uid), {
-        businessName,
-        theme: defaultThemeId,
-        subscriptionStatus: "TRIAL",
-        trialStartDate: new Date().toISOString(),
-        ownerUid: user.uid,
-        ownerEmail: user.email,
-        shopCode,
-      });
-
-      router.push("/dashboard");
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8">
-        {/* Progress dots */}
-        <div className="flex justify-center gap-2 mb-6">
-          {[1, 2].map((s) => (
-            <div
-              key={s}
-              className={`h-2 w-8 rounded-full ${
-                s <= step ? "bg-blue-600" : "bg-gray-200"
-              }`}
-            />
-          ))}
-        </div>
-
-        {/* Step 1: Business Name */}
-        {step === 1 && (
-          <div>
-            <h1 className="text-xl font-bold text-gray-800 mb-2">
-              What's your business name?
-            </h1>
-            <p className="text-sm text-gray-500 mb-4">
-              This will appear on your dashboard and receipts.
-            </p>
-            <input
-              type="text"
-              value={businessName}
-              onChange={(e) => setBusinessName(e.target.value)}
-              placeholder="Enter your business name"
-              className="w-full px-4 py-2 border rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 mb-6"
-            />
-            <button
-              disabled={!businessName.trim()}
-              onClick={() => setStep(2)}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
-        )}
-
-        {/* Step 2: Confirm */}
-        {step === 2 && (
-          <div className="text-center">
-            <h1 className="text-xl font-bold text-gray-800 mb-2">
-              You're all set, {businessName}!
-            </h1>
-            <p className="text-sm text-gray-500 mb-6">
-              Let's start managing your business smarter.
-            </p>
-
-            {error && (
-              <p className="text-sm text-red-500 bg-red-50 p-2 rounded-lg mb-4">
-                {error}
-              </p>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => setStep(1)}
-                className="flex-1 border border-gray-300 text-gray-600 font-semibold py-2 rounded-lg"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleFinish}
-                disabled={loading}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-50"
-              >
-                {loading ? "Setting up..." : "Get Started"}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="app/layout.tsx">
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Orbitron, Cinzel, Inter } from "next/font/google";
@@ -7765,6 +7916,166 @@ export default function DeliveryTicketsPage() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+</file>
+
+<file path="app/onboarding/page.tsx">
+"use client";
+
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { defaultThemeId } from "../lib/themes";
+
+// Excludes visually ambiguous characters (0/O, 1/I) since owners will read
+// this code aloud or type it manually on a shared device.
+const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShopCode(): string {
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+async function generateUniqueShopCode(): Promise<string> {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No logged-in user found.");
+
+  const idToken = await user.getIdToken();
+  const res = await fetch("/api/generate-shop-code", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not generate a shop code.");
+  return data.shopCode;
+}
+
+
+export default function OnboardingPage() {
+  const [step, setStep] = useState(1);
+  const [businessName, setBusinessName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const router = useRouter();
+
+  // Protect this page: if nobody is logged in, send them back to sign up
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (!user) {
+        router.push("/signup");
+      }
+    });
+    return () => unsubscribe();
+  }, [router]);
+
+  const handleFinish = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("No logged-in user found.");
+
+      const shopCode = await generateUniqueShopCode();
+
+      await setDoc(doc(db, "tenants", user.uid), {
+        businessName,
+        theme: defaultThemeId,
+        subscriptionStatus: "TRIAL",
+        trialStartDate: new Date().toISOString(),
+        ownerUid: user.uid,
+        ownerEmail: user.email,
+        shopCode,
+      });
+
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-8">
+        {/* Progress dots */}
+        <div className="flex justify-center gap-2 mb-6">
+          {[1, 2].map((s) => (
+            <div
+              key={s}
+              className={`h-2 w-8 rounded-full ${
+                s <= step ? "bg-blue-600" : "bg-gray-200"
+              }`}
+            />
+          ))}
+        </div>
+
+        {/* Step 1: Business Name */}
+        {step === 1 && (
+          <div>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">
+              What's your business name?
+            </h1>
+            <p className="text-sm text-gray-500 mb-4">
+              This will appear on your dashboard and receipts.
+            </p>
+            <input
+              type="text"
+              value={businessName}
+              onChange={(e) => setBusinessName(e.target.value)}
+              placeholder="Enter your business name"
+              className="w-full px-4 py-2 border rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 mb-6"
+            />
+            <button
+              disabled={!businessName.trim()}
+              onClick={() => setStep(2)}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        )}
+
+        {/* Step 2: Confirm */}
+        {step === 2 && (
+          <div className="text-center">
+            <h1 className="text-xl font-bold text-gray-800 mb-2">
+              You're all set, {businessName}!
+            </h1>
+            <p className="text-sm text-gray-500 mb-6">
+              Let's start managing your business smarter.
+            </p>
+
+            {error && (
+              <p className="text-sm text-red-500 bg-red-50 p-2 rounded-lg mb-4">
+                {error}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setStep(1)}
+                className="flex-1 border border-gray-300 text-gray-600 font-semibold py-2 rounded-lg"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleFinish}
+                disabled={loading}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-50"
+              >
+                {loading ? "Setting up..." : "Get Started"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -8862,386 +9173,6 @@ h1, h2, h3, h4 {
 }
 </file>
 
-<file path="app/page.tsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "./lib/firebase";
-import { getSessionInfo } from "./lib/staffAuth";
-import Link from "next/link";
-import { Fraunces } from "next/font/google";
-
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  weight: ["500", "600", "700"],
-  variable: "--font-fraunces",
-});
-
-const PAGE_VARS = {
-  "--lp-bg": "#120E1A",
-  "--lp-surface": "#1C1626",
-  "--lp-border": "#2C2438",
-  "--lp-primary": "#8B5CF6",
-  "--lp-accent": "#D946EF",
-  "--lp-warm": "#FBBF77",
-  "--lp-text": "#F5F1FF",
-  "--lp-text-secondary": "#B8AFD1",
-} as React.CSSProperties;
-
-const features = [
-  {
-    title: "Keeps selling when the power doesn't",
-    body: "Brownouts and dead zones don't have to mean lost sales. UBA's POS keeps working offline and syncs everything automatically once you're back online.",
-    featured: true,
-  },
-  {
-    title: "AI Business Analyst",
-    body: "Monthly breakdowns of your sales, expenses, and profit — with specific, actionable suggestions based on your shop's real data.",
-  },
-  {
-    title: "Inventory that watches your stock for you",
-    body: "Get alerted before an item actually runs out, not after a customer walks away empty-handed.",
-  },
-  {
-    title: "Repairs, deliveries, and purchase orders — one place",
-    body: "Stop juggling notebooks and group chats. Track every job, delivery, and order from a single dashboard.",
-  },
-  {
-    title: "Receipts and backups, handled",
-    body: "Every sale prints a proper receipt, and every record is backed up to the cloud automatically.",
-  },
-];
-
-const steps = [
-  { step: "1", title: "Create your account", body: "Takes a few minutes. No technical background needed." },
-  { step: "2", title: "Add your products", body: "Set up pricing, stock levels, and categories once." },
-  { step: "3", title: "Start selling", body: "Open the POS and ring up sales — online or off." },
-];
-
-const plans = [
-  { name: "Basic", price: "₱299", tagline: "Core POS and inventory tools" },
-  { name: "Pro", price: "₱499", tagline: "Adds AI insights, repairs & deliveries", featured: true },
-  { name: "Business", price: "₱999", tagline: "Multi-branch, unlimited AI analysis" },
-];
-
-export default function RootPage() {
-  const [checkingAuth, setCheckingAuth] = useState(true);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const router = useRouter();
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) {
-        setIsLoggedIn(false);
-        setCheckingAuth(false);
-        return;
-      }
-
-      setIsLoggedIn(true);
-
-      const session = await getSessionInfo(user);
-
-      if (session.isStaff) {
-        // Staff accounts have no email and never go through onboarding —
-        // route them straight in based on their role.
-        router.push(session.role === "cashier" ? "/pos" : "/dashboard");
-        return;
-      }
-
-      await user.reload();
-      if (!auth.currentUser?.emailVerified) {
-        router.push("/verify-email");
-        return;
-      }
-
-      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
-      if (tenantDoc.exists()) {
-        router.push("/dashboard");
-      } else {
-        router.push("/onboarding");
-      }
-    });
-
-    return () => unsubscribe();
-  }, [router]);
-
-  if (checkingAuth || isLoggedIn) {
-    return (
-      <div
-        className="min-h-screen flex items-center justify-center"
-        style={{ background: "#120E1A" }}
-      >
-        <p className="text-sm" style={{ color: "#B8AFD1" }}>Loading...</p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={`${fraunces.variable} min-h-screen`}
-      style={{ ...PAGE_VARS, background: "var(--lp-bg)", color: "var(--lp-text)" }}
-    >
-      <header
-        className="sticky top-0 z-30 backdrop-blur-md"
-        style={{ background: "rgba(18, 14, 26, 0.85)", borderBottom: "1px solid var(--lp-border)" }}
-      >
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <span className="text-lg font-semibold tracking-tight" style={{ fontFamily: "var(--font-fraunces)" }}>
-            UBA
-          </span>
-          <nav className="hidden sm:flex items-center gap-8 text-sm" style={{ color: "var(--lp-text-secondary)" }}>
-            <a href="#features" className="hover:opacity-80 transition">Features</a>
-            <a href="#how-it-works" className="hover:opacity-80 transition">How it works</a>
-            <a href="#pricing" className="hover:opacity-80 transition">Pricing</a>
-          </nav>
-          <div className="flex items-center gap-3">
-            <Link href="/login" className="text-sm hidden sm:inline" style={{ color: "var(--lp-text-secondary)" }}>
-              Log in
-            </Link>
-            <Link
-              href="/signup"
-              className="text-sm font-semibold px-4 py-2 rounded-lg text-white transition hover:opacity-90"
-              style={{ background: "linear-gradient(135deg, var(--lp-primary), var(--lp-accent))" }}
-            >
-              Get Started Free
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      <section className="max-w-6xl mx-auto px-6 pt-16 pb-20 lg:pt-24 lg:pb-28 grid lg:grid-cols-[1.1fr_0.9fr] gap-14 items-center">
-        <div>
-          <h1
-            className="text-4xl sm:text-5xl lg:text-[3.4rem] leading-[1.08] font-semibold"
-            style={{ fontFamily: "var(--font-fraunces)" }}
-          >
-            Keep selling. Even when the power doesn't.
-          </h1>
-          <p className="mt-6 text-lg leading-relaxed max-w-lg" style={{ color: "var(--lp-text-secondary)" }}>
-            UBA is a point-of-sale and business management app built for shop owners and repair
-            businesses — designed to keep working through brownouts and dead zones, then quietly
-            sync everything once you're back online.
-          </p>
-          <div className="mt-9 flex flex-wrap items-center gap-4">
-            <Link
-              href="/signup"
-              className="px-6 py-3 rounded-lg text-white font-semibold text-sm transition hover:opacity-90"
-              style={{ background: "linear-gradient(135deg, var(--lp-primary), var(--lp-accent))" }}
-            >
-              Get Started Free
-            </Link>
-            <a
-              href="#pricing"
-              className="px-6 py-3 rounded-lg font-semibold text-sm transition hover:opacity-80"
-              style={{ border: "1px solid var(--lp-border)", color: "var(--lp-text)" }}
-            >
-              See Pricing
-            </a>
-          </div>
-          <p className="mt-6 text-xs" style={{ color: "var(--lp-text-secondary)" }}>
-            No credit card required to start.
-          </p>
-        </div>
-
-        <div className="relative">
-          <div
-            className="mx-auto w-full max-w-sm p-6"
-            style={{
-              background: "var(--lp-surface)",
-              border: "1px solid var(--lp-border)",
-              borderRadius: "20px",
-              boxShadow: "0 30px 60px -20px rgba(139, 92, 246, 0.25)",
-            }}
-          >
-            <div className="flex items-center justify-between pb-4" style={{ borderBottom: "1px dashed var(--lp-border)" }}>
-              <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
-                Sales Receipt
-              </span>
-              <span
-                className="text-[10px] font-semibold px-2 py-1 rounded-full"
-                style={{ background: "rgba(74, 222, 128, 0.15)", color: "#4ade80" }}
-              >
-                ● Offline — Saved
-              </span>
-            </div>
-            <div className="py-4 space-y-2.5 text-sm" style={{ fontFamily: "var(--font-geist-mono)" }}>
-              <div className="flex justify-between">
-                <span style={{ color: "var(--lp-text-secondary)" }}>Prepaid Load × 1</span>
-                <span>₱20.00</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: "var(--lp-text-secondary)" }}>Snacks × 3</span>
-                <span>₱45.00</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: "var(--lp-text-secondary)" }}>Soft Drinks × 2</span>
-                <span>₱60.00</span>
-              </div>
-            </div>
-            <div
-              className="pt-4 flex justify-between items-center"
-              style={{ borderTop: "1px dashed var(--lp-border)", fontFamily: "var(--font-geist-mono)" }}
-            >
-              <span className="text-sm" style={{ color: "var(--lp-text-secondary)" }}>Total</span>
-              <span className="text-xl font-semibold" style={{ color: "var(--lp-warm)" }}>₱125.00</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <div className="max-w-6xl mx-auto px-6">
-        <div style={{ borderTop: "1px solid var(--lp-border)" }} />
-      </div>
-
-      <section className="max-w-6xl mx-auto px-6 py-20 grid md:grid-cols-2 gap-10">
-        <div>
-          <h2 className="text-2xl font-semibold mb-4" style={{ fontFamily: "var(--font-fraunces)" }}>
-            We know what running a shop actually looks like.
-          </h2>
-          <ul className="space-y-4 text-sm" style={{ color: "var(--lp-text-secondary)" }}>
-            <li>The power or internet cuts out mid-day — and so does your ability to sell.</li>
-            <li>Stock counts done by hand, with mistakes that cost you money.</li>
-            <li>No clear picture of what's actually profitable and what isn't.</li>
-            <li>Repair jobs and deliveries scattered across notebooks and chat threads.</li>
-          </ul>
-        </div>
-        <div>
-          <h2 className="text-2xl font-semibold mb-4" style={{ fontFamily: "var(--font-fraunces)" }}>
-            Here's what changes with UBA.
-          </h2>
-          <ul className="space-y-4 text-sm" style={{ color: "var(--lp-text)" }}>
-            <li>Your POS keeps working offline, and syncs the moment you're back online.</li>
-            <li>Stock updates automatically with every sale, with alerts before you run out.</li>
-            <li>An AI analyst reviews your profit, expenses, and trends for you.</li>
-            <li>One app for point-of-sale, repairs, deliveries, and purchase orders.</li>
-          </ul>
-        </div>
-      </section>
-
-      <section id="features" className="max-w-6xl mx-auto px-6 py-20">
-        <h2 className="text-2xl font-semibold mb-10" style={{ fontFamily: "var(--font-fraunces)" }}>
-          Everything your shop needs, in one app
-        </h2>
-        <div className="grid md:grid-cols-2 gap-5">
-          {features.map((f) => (
-            <div
-              key={f.title}
-              className={`p-6 ${f.featured ? "md:col-span-2" : ""}`}
-              style={{
-                background: "var(--lp-surface)",
-                border: f.featured ? "1px solid var(--lp-primary)" : "1px solid var(--lp-border)",
-                borderRadius: "14px",
-              }}
-            >
-              <h3 className="text-base font-semibold mb-2">{f.title}</h3>
-              <p className="text-sm leading-relaxed" style={{ color: "var(--lp-text-secondary)" }}>
-                {f.body}
-              </p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section id="how-it-works" className="max-w-6xl mx-auto px-6 py-20">
-        <h2 className="text-2xl font-semibold mb-10" style={{ fontFamily: "var(--font-fraunces)" }}>
-          Get started in three steps
-        </h2>
-        <div className="grid sm:grid-cols-3 gap-8 relative">
-          {steps.map((s) => (
-            <div key={s.step}>
-              <span
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold mb-4"
-                style={{ background: "var(--lp-surface)", border: "1px solid var(--lp-primary)", color: "var(--lp-primary)" }}
-              >
-                {s.step}
-              </span>
-              <h3 className="text-base font-semibold mb-1.5">{s.title}</h3>
-              <p className="text-sm" style={{ color: "var(--lp-text-secondary)" }}>{s.body}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section id="pricing" className="max-w-6xl mx-auto px-6 py-20">
-        <h2 className="text-2xl font-semibold mb-2" style={{ fontFamily: "var(--font-fraunces)" }}>
-          Simple, transparent pricing
-        </h2>
-        <p className="text-sm mb-10" style={{ color: "var(--lp-text-secondary)" }}>
-          Pick the plan that fits your business today. Switch anytime as you grow.
-        </p>
-        <div className="grid sm:grid-cols-3 gap-5">
-          {plans.map((p) => (
-            <div
-              key={p.name}
-              className="p-6"
-              style={{
-                background: "var(--lp-surface)",
-                border: p.featured ? "1px solid var(--lp-primary)" : "1px solid var(--lp-border)",
-                borderRadius: "14px",
-              }}
-            >
-              <h3 className="text-sm font-semibold mb-1">{p.name}</h3>
-              <p className="text-2xl font-semibold mb-1" style={{ fontFamily: "var(--font-geist-mono)" }}>
-                {p.price}<span className="text-xs font-normal" style={{ color: "var(--lp-text-secondary)" }}>/month</span>
-              </p>
-              <p className="text-xs mb-4" style={{ color: "var(--lp-text-secondary)" }}>{p.tagline}</p>
-              <Link
-                href="/signup"
-                className="block text-center text-sm font-semibold py-2 rounded-lg transition hover:opacity-90"
-                style={{
-                  background: p.featured ? "linear-gradient(135deg, var(--lp-primary), var(--lp-accent))" : "transparent",
-                  border: p.featured ? "none" : "1px solid var(--lp-border)",
-                  color: p.featured ? "#fff" : "var(--lp-text)",
-                }}
-              >
-                Choose {p.name}
-              </Link>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="max-w-6xl mx-auto px-6 py-20">
-        <div
-          className="px-8 py-14 text-center"
-          style={{
-            background: "linear-gradient(135deg, rgba(139,92,246,0.15), rgba(217,70,239,0.15))",
-            border: "1px solid var(--lp-border)",
-            borderRadius: "20px",
-          }}
-        >
-          <h2 className="text-2xl sm:text-3xl font-semibold mb-4" style={{ fontFamily: "var(--font-fraunces)" }}>
-            Ready to run a smarter shop?
-          </h2>
-          <p className="text-sm mb-8 max-w-md mx-auto" style={{ color: "var(--lp-text-secondary)" }}>
-            Set up your account in minutes and see how much easier the day-to-day gets.
-          </p>
-          <Link
-            href="/signup"
-            className="inline-block px-7 py-3 rounded-lg text-white font-semibold text-sm transition hover:opacity-90"
-            style={{ background: "linear-gradient(135deg, var(--lp-primary), var(--lp-accent))" }}
-          >
-            Get Started Free
-          </Link>
-        </div>
-      </section>
-
-      <footer style={{ borderTop: "1px solid var(--lp-border)" }}>
-        <div className="max-w-6xl mx-auto px-6 py-10 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs" style={{ color: "var(--lp-text-secondary)" }}>
-          <span>© {new Date().getFullYear()} UBA — Universal Business Assistant</span>
-          <div className="flex gap-6">
-            <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
-            <Link href="/terms" className="hover:opacity-80">Terms</Link>
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
-}
-</file>
-
 <file path="package.json">
 {
   "name": "uba-app",
@@ -9997,6 +9928,608 @@ export default function PosPage() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+</file>
+
+<file path="app/page.tsx">
+"use client";
+
+// Ilagay ang file na ito sa: app/page.tsx
+// (palitan ang buong lumang laman)
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "./lib/firebase";
+import { getSessionInfo } from "./lib/staffAuth";
+import Link from "next/link";
+import { Fraunces } from "next/font/google";
+import InstallButton from "./components/InstallButton";
+
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  weight: ["500", "600", "700"],
+  variable: "--font-fraunces",
+});
+
+const PAGE_VARS = {
+  "--lp-bg": "#120E1A",
+  "--lp-surface": "#1C1626",
+  "--lp-line": "#2C2438",
+  "--lp-primary": "#7C3AED",
+  "--lp-lavender": "#C4B5FD",
+  "--lp-warm": "#FBBF77",
+  "--lp-text": "#F5F1FF",
+  "--lp-muted": "#B8AFD1",
+} as React.CSSProperties;
+
+const comparison = [
+  {
+    before: "The power or internet cuts out, and so does your ability to sell.",
+    after: "The POS keeps recording sales offline and syncs when you reconnect.",
+  },
+  {
+    before: "Stock is counted by hand, with mistakes that cost you money.",
+    after: "Stock goes down with every sale, and you get alerts before you run out.",
+  },
+  {
+    before: "You can't tell what is profitable and what isn't.",
+    after: "An AI analyst reviews your sales, expenses, and profit every month.",
+  },
+  {
+    before: "Repair jobs and deliveries are scattered across notebooks and chat threads.",
+    after: "Repairs, deliveries, and purchase orders live in one app.",
+  },
+];
+
+const roles = [
+  { role: "Owner", pos: "Full", inventory: "Add, edit, delete", sales: "Full access" },
+  { role: "Secretary", pos: "Full", inventory: "Add, with your approval", sales: "View sales, add expenses" },
+  { role: "Cashier", pos: "Full", inventory: "View only", sales: "No access" },
+];
+
+const moreFeatures = [
+  {
+    title: "AI business analyst",
+    body: "Monthly breakdowns of your sales, expenses, and profit, with specific suggestions based on your shop's real numbers.",
+  },
+  {
+    title: "Stock alerts",
+    body: "Get warned before an item runs out, not after a customer walks away empty-handed.",
+  },
+  {
+    title: "Repairs, deliveries, and purchase orders",
+    body: "Track every job, delivery, and order from one dashboard instead of juggling notebooks and group chats.",
+  },
+];
+
+const steps = [
+  { title: "Create your account", body: "It takes a few minutes. No technical background needed." },
+  { title: "Add your products", body: "Set up prices, stock levels, and categories once." },
+  { title: "Start selling", body: "Open the POS and ring up sales, online or offline." },
+];
+
+const plans = [
+  { name: "Basic", price: "₱299", tagline: "Core POS and inventory tools" },
+  { name: "Pro", price: "₱499", tagline: "Adds AI insights, repairs, and deliveries", featured: true },
+  { name: "Business", price: "₱999", tagline: "Multi-branch, unlimited AI analysis" },
+];
+
+const faqs = [
+  {
+    q: "Does UBA really work without internet?",
+    a: "Yes. The POS keeps recording sales on your device during a brownout or dead zone, then syncs everything automatically when you're back online.",
+  },
+  {
+    q: "Can my staff have their own logins?",
+    a: "Yes. Add a secretary or cashier from Settings. They sign in with your Shop Code, their username, and a PIN, and they only see what their role allows.",
+  },
+  {
+    q: "Can I install UBA on my phone?",
+    a: "Yes. UBA installs like an app on Android, iPhone, and desktop, with no app store needed. Tap Install app at the top of this page.",
+  },
+  {
+    q: "Do I need a credit card to start?",
+    a: "No. You can create an account and start without a credit card.",
+  },
+  {
+    q: "Is my data safe if my phone breaks?",
+    a: "Every record is backed up to the cloud automatically, so signing in on another device brings your shop back.",
+  },
+];
+
+function OfflineDemo() {
+  const [mode, setMode] = useState<"offline" | "online">("offline");
+  const isOffline = mode === "offline";
+
+  return (
+    <div className="mx-auto w-full max-w-sm">
+      <div
+        className="p-5"
+        style={{
+          background: "var(--lp-surface)",
+          border: "1px solid var(--lp-line)",
+          borderRadius: "16px",
+        }}
+      >
+        <div
+          className="flex items-center justify-between gap-3 pb-4"
+          style={{ borderBottom: "1px dashed var(--lp-line)" }}
+        >
+          <div>
+            <p className="text-sm font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
+              Sales receipt
+            </p>
+            <p className="text-xs" style={{ color: "var(--lp-muted)" }}>
+              Rung up by Ana, Cashier
+            </p>
+          </div>
+
+          <div
+            role="group"
+            aria-label="Connection status"
+            className="inline-flex p-0.5 rounded-full"
+            style={{ background: "var(--lp-bg)", border: "1px solid var(--lp-line)" }}
+          >
+            {(["offline", "online"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={mode === m}
+                onClick={() => setMode(m)}
+                className="px-3 py-1 text-xs font-medium rounded-full"
+                style={{
+                  background: mode === m ? "var(--lp-primary)" : "transparent",
+                  color: mode === m ? "#fff" : "var(--lp-muted)",
+                }}
+              >
+                {m === "offline" ? "Offline" : "Online"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="py-4 space-y-2.5 text-sm" style={{ fontFamily: "var(--font-geist-mono)" }}>
+          <div className="flex justify-between">
+            <span style={{ color: "var(--lp-muted)" }}>Prepaid load × 1</span>
+            <span>₱20.00</span>
+          </div>
+          <div className="flex justify-between">
+            <span style={{ color: "var(--lp-muted)" }}>Snacks × 3</span>
+            <span>₱45.00</span>
+          </div>
+          <div className="flex justify-between">
+            <span style={{ color: "var(--lp-muted)" }}>Soft drinks × 2</span>
+            <span>₱60.00</span>
+          </div>
+        </div>
+
+        <div
+          className="pt-4 flex justify-between items-center"
+          style={{ borderTop: "1px dashed var(--lp-line)", fontFamily: "var(--font-geist-mono)" }}
+        >
+          <span className="text-sm" style={{ color: "var(--lp-muted)" }}>Total</span>
+          <span className="text-xl font-semibold" style={{ color: "var(--lp-warm)" }}>₱125.00</span>
+        </div>
+
+        <div
+          className="mt-4 flex items-start gap-2 text-xs leading-snug"
+          aria-live="polite"
+          style={{ color: "var(--lp-muted)" }}
+        >
+          <span
+            className="mt-1 inline-block w-2 h-2 rounded-full shrink-0"
+            style={{ background: isOffline ? "var(--lp-warm)" : "#4ade80" }}
+          />
+          <span>
+            {isOffline
+              ? "Saved on this phone. It will sync when you're back online."
+              : "Synced to the cloud. Your stock is up to date."}
+          </span>
+        </div>
+      </div>
+
+      <p className="mt-3 text-xs text-center" style={{ color: "var(--lp-muted)" }}>
+        Try the switch. This is what your cashier sees during a brownout.
+      </p>
+    </div>
+  );
+}
+
+export default function RootPage() {
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const router = useRouter();
+
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        setIsLoggedIn(false);
+        setCheckingAuth(false);
+        return;
+      }
+
+      setIsLoggedIn(true);
+
+      const session = await getSessionInfo(user);
+
+      if (session.isStaff) {
+        // Staff accounts have no email and never go through onboarding.
+        // Route them straight in based on their role.
+        router.push(session.role === "cashier" ? "/pos" : "/dashboard");
+        return;
+      }
+
+      await user.reload();
+      if (!auth.currentUser?.emailVerified) {
+        router.push("/verify-email");
+        return;
+      }
+
+      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
+      if (tenantDoc.exists()) {
+        router.push("/dashboard");
+      } else {
+        router.push("/onboarding");
+      }
+    });
+
+    return () => unsubscribe();
+  }, [router]);
+
+  // Naka-login na: ire-redirect na siya, kaya loading screen lang ang ipapakita.
+  // Ang bisita na hindi naka-login ay nakikita agad ang landing page.
+  if (isLoggedIn) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "#120E1A" }}>
+        <p className="text-sm" style={{ color: "#B8AFD1" }}>Loading...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`${fraunces.variable} lp min-h-screen`}
+      style={{ ...PAGE_VARS, background: "var(--lp-bg)", color: "var(--lp-text)" }}
+    >
+      <style>{`
+        .lp { font-family: var(--font-inter), system-ui, sans-serif; }
+        .lp section[id] { scroll-margin-top: 88px; }
+        .lp a:focus-visible,
+        .lp button:focus-visible,
+        .lp summary:focus-visible {
+          outline: 2px solid var(--lp-lavender);
+          outline-offset: 2px;
+        }
+        .lp-primary { background: var(--lp-primary); color: #fff; }
+        .lp-primary:hover { background: #6D28D9; }
+        .lp-ghost { border: 1px solid var(--lp-line); color: var(--lp-text); }
+        .lp-ghost:hover { background: rgba(255, 255, 255, 0.05); }
+        .lp-link:hover { color: var(--lp-text); }
+        .lp details > summary { list-style: none; cursor: pointer; }
+        .lp details > summary::-webkit-details-marker { display: none; }
+        .lp details[open] .lp-chevron { transform: rotate(180deg); }
+        @media (prefers-reduced-motion: no-preference) {
+          html { scroll-behavior: smooth; }
+          .lp-primary, .lp-ghost, .lp-link, .lp-chevron { transition: background-color .15s ease, color .15s ease, transform .15s ease; }
+        }
+      `}</style>
+
+      {/* ───────── Header ───────── */}
+      <header
+        className="sticky top-0 z-30 backdrop-blur-md"
+        style={{ background: "rgba(18, 14, 26, 0.9)", borderBottom: "1px solid var(--lp-line)" }}
+      >
+        <div className="max-w-6xl mx-auto px-5 sm:px-6 h-16 flex items-center justify-between gap-4">
+          <Link href="/" className="flex items-center gap-2.5" aria-label="UBA home">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/icon-192.png" alt="" width={32} height={32} className="rounded-lg" />
+            <span className="text-lg font-semibold tracking-tight" style={{ fontFamily: "var(--font-fraunces)" }}>
+              UBA
+            </span>
+          </Link>
+
+          <nav
+            className="hidden md:flex items-center gap-8 text-sm"
+            style={{ color: "var(--lp-muted)" }}
+            aria-label="Main"
+          >
+            <a href="#features" className="lp-link">Features</a>
+            <a href="#how-it-works" className="lp-link">How it works</a>
+            <a href="#pricing" className="lp-link">Pricing</a>
+            <a href="#faq" className="lp-link">FAQ</a>
+          </nav>
+
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="hidden sm:block">
+              <InstallButton variant="header" />
+            </div>
+            <Link href="/login" className="lp-ghost px-3.5 py-2 rounded-lg text-sm font-semibold">
+              Log in
+            </Link>
+            <Link href="/signup" className="lp-primary px-3.5 py-2 rounded-lg text-sm font-semibold">
+              Get started
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      {/* ───────── Hero ───────── */}
+      <section className="max-w-6xl mx-auto px-5 sm:px-6 pt-14 pb-20 lg:pt-20 lg:pb-28 grid lg:grid-cols-[1.05fr_0.95fr] gap-12 lg:gap-16 items-center">
+        <div>
+          <h1
+            className="text-4xl sm:text-5xl lg:text-[3.4rem] leading-[1.08] font-semibold"
+            style={{ fontFamily: "var(--font-fraunces)" }}
+          >
+            Keep selling. Even when the power doesn't.
+          </h1>
+          <p className="mt-6 text-lg leading-relaxed max-w-xl" style={{ color: "var(--lp-muted)" }}>
+            UBA is a point-of-sale and business management app for shop owners and repair
+            businesses. It keeps working through brownouts and dead zones, then syncs everything
+            once you're back online.
+          </p>
+
+          <div className="mt-9 flex flex-wrap items-center gap-3">
+            <Link href="/signup" className="lp-primary px-6 py-3 rounded-lg text-sm font-semibold">
+              Get started free
+            </Link>
+            <InstallButton variant="hero" />
+          </div>
+
+          <p className="mt-5 text-sm" style={{ color: "var(--lp-muted)" }}>
+            No credit card needed. Works on Android, iPhone, and desktop.
+          </p>
+        </div>
+
+        <OfflineDemo />
+      </section>
+
+      {/* ───────── Before / after ───────── */}
+      <section className="max-w-6xl mx-auto px-5 sm:px-6 py-16 lg:py-24">
+        <h2 className="text-3xl font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
+          What changes with UBA
+        </h2>
+        <p className="mt-3 max-w-xl text-base" style={{ color: "var(--lp-muted)" }}>
+          You already know the daily problems of running a shop. Here is how each one gets handled.
+        </p>
+
+        <div
+          className="mt-10 overflow-hidden"
+          style={{ border: "1px solid var(--lp-line)", borderRadius: "14px" }}
+        >
+          <div
+            className="hidden md:grid md:grid-cols-2 gap-10 px-6 py-3 text-sm font-semibold"
+            style={{ background: "var(--lp-surface)" }}
+          >
+            <span style={{ color: "var(--lp-muted)" }}>Without UBA</span>
+            <span style={{ color: "var(--lp-lavender)" }}>With UBA</span>
+          </div>
+
+          {comparison.map((row) => (
+            <div
+              key={row.before}
+              className="grid md:grid-cols-2 gap-3 md:gap-10 px-6 py-5"
+              style={{ borderTop: "1px solid var(--lp-line)" }}
+            >
+              <p className="text-sm leading-relaxed" style={{ color: "var(--lp-muted)" }}>
+                <span className="md:hidden block text-xs font-semibold mb-1">Without UBA</span>
+                {row.before}
+              </p>
+              <p className="text-sm leading-relaxed">
+                <span className="md:hidden block text-xs font-semibold mb-1" style={{ color: "var(--lp-lavender)" }}>
+                  With UBA
+                </span>
+                {row.after}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ───────── Features ───────── */}
+      <section id="features" className="max-w-6xl mx-auto px-5 sm:px-6 py-16 lg:py-24">
+        <h2 className="text-3xl font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
+          Built for how shops actually run
+        </h2>
+
+        <div className="mt-10 grid lg:grid-cols-12 gap-5">
+          <div
+            className="lg:col-span-5 p-7"
+            style={{ background: "var(--lp-surface)", border: "1px solid var(--lp-primary)", borderRadius: "14px" }}
+          >
+            <h3 className="text-lg font-semibold">Keeps selling when the power doesn't</h3>
+            <p className="mt-3 text-sm leading-relaxed" style={{ color: "var(--lp-muted)" }}>
+              Brownouts and dead zones don't have to mean lost sales. The POS keeps working offline
+              and syncs automatically once you're back online. Every sale prints a proper receipt,
+              and every record is backed up to the cloud.
+            </p>
+          </div>
+
+          <div
+            className="lg:col-span-7 p-7"
+            style={{ background: "var(--lp-surface)", border: "1px solid var(--lp-line)", borderRadius: "14px" }}
+          >
+            <h3 className="text-lg font-semibold">Staff logins with limits you set</h3>
+            <p className="mt-3 text-sm leading-relaxed" style={{ color: "var(--lp-muted)" }}>
+              Add a secretary or cashier in minutes. They sign in with your Shop Code and a PIN, and
+              only see what their role allows. New items and price changes from your secretary wait
+              for your approval.
+            </p>
+
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full text-left text-sm min-w-[460px]">
+                <thead>
+                  <tr style={{ color: "var(--lp-muted)" }}>
+                    <th className="py-2 pr-4 font-medium">Role</th>
+                    <th className="py-2 pr-4 font-medium">POS</th>
+                    <th className="py-2 pr-4 font-medium">Inventory</th>
+                    <th className="py-2 font-medium">Sales and expenses</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roles.map((r) => (
+                    <tr key={r.role} style={{ borderTop: "1px solid var(--lp-line)" }}>
+                      <td className="py-2.5 pr-4 font-semibold">{r.role}</td>
+                      <td className="py-2.5 pr-4" style={{ color: "var(--lp-muted)" }}>{r.pos}</td>
+                      <td className="py-2.5 pr-4" style={{ color: "var(--lp-muted)" }}>{r.inventory}</td>
+                      <td className="py-2.5" style={{ color: "var(--lp-muted)" }}>{r.sales}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 grid md:grid-cols-3">
+          {moreFeatures.map((f, i) => (
+            <div
+              key={f.title}
+              className={`py-6 md:py-2 md:px-7 ${i === 0 ? "md:pl-0" : "md:border-l"} ${i > 0 ? "border-t md:border-t-0" : ""}`}
+              style={{ borderColor: "var(--lp-line)" }}
+            >
+              <h3 className="text-base font-semibold">{f.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--lp-muted)" }}>
+                {f.body}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ───────── How it works ───────── */}
+      <section id="how-it-works" className="max-w-6xl mx-auto px-5 sm:px-6 py-16 lg:py-24">
+        <h2 className="text-3xl font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
+          Get started in three steps
+        </h2>
+        <ol className="mt-10 grid sm:grid-cols-3 gap-8">
+          {steps.map((s, i) => (
+            <li key={s.title}>
+              <span
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full text-sm font-semibold mb-4"
+                style={{ border: "1px solid var(--lp-primary)", color: "var(--lp-lavender)" }}
+                aria-hidden="true"
+              >
+                {i + 1}
+              </span>
+              <h3 className="text-base font-semibold mb-1.5">{s.title}</h3>
+              <p className="text-sm leading-relaxed" style={{ color: "var(--lp-muted)" }}>{s.body}</p>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      {/* ───────── Pricing ───────── */}
+      <section id="pricing" className="max-w-6xl mx-auto px-5 sm:px-6 py-16 lg:py-24">
+        <h2 className="text-3xl font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
+          Simple pricing
+        </h2>
+        <p className="mt-3 text-base" style={{ color: "var(--lp-muted)" }}>
+          Pick the plan that fits your business today. Switch anytime as you grow.
+        </p>
+
+        <div className="mt-10 grid sm:grid-cols-3 gap-5">
+          {plans.map((p) => (
+            <div
+              key={p.name}
+              className="p-6 flex flex-col"
+              style={{
+                background: "var(--lp-surface)",
+                border: p.featured ? "1px solid var(--lp-primary)" : "1px solid var(--lp-line)",
+                borderRadius: "14px",
+              }}
+            >
+              <h3 className="text-base font-semibold">{p.name}</h3>
+              <p className="mt-2 text-3xl font-semibold" style={{ fontFamily: "var(--font-geist-mono)" }}>
+                {p.price}
+                <span className="text-sm font-normal" style={{ color: "var(--lp-muted)" }}> /month</span>
+              </p>
+              <p className="mt-2 mb-6 text-sm flex-1" style={{ color: "var(--lp-muted)" }}>{p.tagline}</p>
+              <Link
+                href="/signup"
+                className={`${p.featured ? "lp-primary" : "lp-ghost"} block text-center text-sm font-semibold py-2.5 rounded-lg`}
+              >
+                Choose {p.name}
+              </Link>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ───────── FAQ ───────── */}
+      <section id="faq" className="max-w-3xl mx-auto px-5 sm:px-6 py-16 lg:py-24">
+        <h2 className="text-3xl font-semibold" style={{ fontFamily: "var(--font-fraunces)" }}>
+          Questions shop owners ask
+        </h2>
+        <div className="mt-8" style={{ borderTop: "1px solid var(--lp-line)" }}>
+          {faqs.map((f) => (
+            <details key={f.q} style={{ borderBottom: "1px solid var(--lp-line)" }}>
+              <summary className="flex items-center justify-between gap-4 py-5 text-base font-medium">
+                {f.q}
+                <svg
+                  className="lp-chevron shrink-0"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  style={{ color: "var(--lp-muted)" }}
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <p className="pb-5 text-sm leading-relaxed" style={{ color: "var(--lp-muted)" }}>
+                {f.a}
+              </p>
+            </details>
+          ))}
+        </div>
+      </section>
+
+      {/* ───────── Final CTA ───────── */}
+      <section className="max-w-6xl mx-auto px-5 sm:px-6 pb-20 lg:pb-28">
+        <div
+          className="px-6 sm:px-10 py-12 sm:py-14"
+          style={{ background: "var(--lp-surface)", border: "1px solid var(--lp-line)", borderRadius: "16px" }}
+        >
+          <h2 className="text-3xl font-semibold max-w-lg" style={{ fontFamily: "var(--font-fraunces)" }}>
+            Ready to run a smarter shop?
+          </h2>
+          <p className="mt-3 text-base max-w-md" style={{ color: "var(--lp-muted)" }}>
+            Set up your account in minutes and see how much easier the day-to-day gets.
+          </p>
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <Link href="/signup" className="lp-primary px-6 py-3 rounded-lg text-sm font-semibold">
+              Get started free
+            </Link>
+            <Link href="/login" className="lp-ghost px-6 py-3 rounded-lg text-sm font-semibold">
+              Log in
+            </Link>
+            <InstallButton variant="hero" />
+          </div>
+        </div>
+      </section>
+
+      {/* ───────── Footer ───────── */}
+      <footer style={{ borderTop: "1px solid var(--lp-line)" }}>
+        <div
+          className="max-w-6xl mx-auto px-5 sm:px-6 py-10 flex flex-col sm:flex-row justify-between items-center gap-4 text-sm"
+          style={{ color: "var(--lp-muted)" }}
+        >
+          <span>© {new Date().getFullYear()} UBA, Universal Business Assistant</span>
+          <div className="flex gap-6">
+            <Link href="/login" className="lp-link">Log in</Link>
+            <Link href="/privacy" className="lp-link">Privacy</Link>
+            <Link href="/terms" className="lp-link">Terms</Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -12407,763 +12940,6 @@ export default function RepairTicketsPage() {
 }
 </file>
 
-<file path="app/settings/page.jsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { doc, getDoc, updateDoc, collection, addDoc, deleteDoc, onSnapshot, query, orderBy, where, getDocs, updateDoc as updateDocFs } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
-import { getSessionInfo } from "../lib/staffAuth";
-import Sidebar from "../components/Sidebar";
-import ThemeSwitcher from "../components/ThemeSwitcher";
-import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
-import ReorderSummary from "../components/ReorderSummary";
-import HelpSupport from "../components/HelpSupport";
-import { useTheme } from "../context/ThemeContext";
-import { getTheme } from "../lib/themes";
-import { canAccessPage, homeFor } from "../lib/permissions";
-
-const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generateShopCode() {
-  let code = "";
-  for (let i = 0; i < 6; i++) {
-    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
-  }
-  return code;
-}
-
-async function generateUniqueShopCode() {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = generateShopCode();
-    const existing = await getDocs(query(collection(db, "tenants"), where("shopCode", "==", code)));
-    if (existing.empty) return code;
-  }
-  return generateShopCode() + Date.now().toString(36).slice(-2).toUpperCase();
-}
-
-const ROLE_LABELS = { secretary: "Secretary", cashier: "Cashier" };
-
-const TOGGLEABLE_FEATURES = [
-  { key: "repairTickets", label: "Repair Tickets", description: "Track customer repairs from drop-off to pickup." },
-  { key: "deliveryTickets", label: "Delivery Tickets", description: "Track customer orders from preparation to delivery." },
-  { key: "poTickets", label: "P.O. / Purchase Orders", description: "Track purchase orders from buyers, item by item." },
-];
-
-export default function SettingsPage() {
-  const [checking, setChecking] = useState(true);
-  const [uid, setUid] = useState(null);
-  const [enabledFeatures, setEnabledFeatures] = useState({});
-  const [savingFeature, setSavingFeature] = useState(null);
-  const [shopCode, setShopCode] = useState("");
-  const [staffList, setStaffList] = useState([]);
-  const [showAddStaff, setShowAddStaff] = useState(false);
-  const [newStaffName, setNewStaffName] = useState("");
-  const [newStaffUsername, setNewStaffUsername] = useState("");
-  const [newStaffPin, setNewStaffPin] = useState("");
-  const [newStaffRole, setNewStaffRole] = useState("cashier");
-  const [savingStaff, setSavingStaff] = useState(false);
-  const [staffError, setStaffError] = useState("");
-  const [copyFeedback, setCopyFeedback] = useState(false);
-  const [regeneratingCode, setRegeneratingCode] = useState(false);
-  const [editingStaff, setEditingStaff] = useState(null);
-  const [editStaffName, setEditStaffName] = useState("");
-  const [editStaffUsername, setEditStaffUsername] = useState("");
-  const [editStaffRole, setEditStaffRole] = useState("cashier");
-  const [editStaffNewPin, setEditStaffNewPin] = useState("");
-  const [savingStaffEdit, setSavingStaffEdit] = useState(false);
-  const [editStaffError, setEditStaffError] = useState("");
-  const [deletingStaffId, setDeletingStaffId] = useState(null);
-  const router = useRouter();
-  const { themeId } = useTheme();
-  const theme = getTheme(themeId);
-
-  useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      const session = await getSessionInfo(user);
-            if (!canAccessPage(session.role, "/sales")) {
-        router.push(homeFor(session.role));
-        return;
-      }
-      const tenantId = session.tenantId;
-      setUid(tenantId);
-
-      try {
-        const snap = await getDoc(doc(db, "tenants", tenantId));
-        if (snap.exists()) {
-          setEnabledFeatures(snap.data().enabledFeatures || {});
-
-          // Backfill: accounts created before Shop Code existed won't have
-          // one saved yet. Generate and persist it the first time the
-          // Owner lands on Settings, so every business ends up with a code.
-          let code = snap.data().shopCode;
-          if (!code && !session.isStaff) {
-            code = await generateUniqueShopCode();
-            await updateDoc(doc(db, "tenants", tenantId), { shopCode: code });
-          }
-          setShopCode(code || "");
-        }
-      } catch (err) {
-        console.error("Failed to load feature settings:", err);
-      }
-
-      const staffQuery = query(collection(db, "tenants", tenantId, "staff"), orderBy("createdAt", "desc"));
-      onSnapshot(staffQuery, (snapshot) => {
-        setStaffList(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
-      });
-
-      setChecking(false);
-    });
-    return () => unsubscribe();
-  }, [router]);
-
-  const handleAddStaff = async (e) => {
-    e.preventDefault();
-    if (!uid) return;
-    setSavingStaff(true);
-    setStaffError("");
-    try {
-      const idToken = await auth.currentUser.getIdToken();
-      const res = await fetch("/api/create-staff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({
-          name: newStaffName,
-          username: newStaffUsername,
-          pin: newStaffPin,
-          role: newStaffRole,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setStaffError(data.error || "Couldn't create staff account.");
-        return;
-      }
-      setNewStaffName("");
-      setNewStaffUsername("");
-      setNewStaffPin("");
-      setNewStaffRole("cashier");
-      setShowAddStaff(false);
-    } catch (err) {
-      console.error(err);
-      setStaffError("Something went wrong. Please try again.");
-    } finally {
-      setSavingStaff(false);
-    }
-  };
-
-  const handleToggleStaffActive = async (staff) => {
-    if (!uid) return;
-    await updateDocFs(doc(db, "tenants", uid, "staff", staff.id), { active: staff.active === false });
-  };
-
-
-  const handleRegenerateShopCode = async () => {
-    if (!uid) return;
-    const confirmed = window.confirm(
-      "Generate a new Shop Code? The current code will stop working immediately — you'll need to share the new one with your staff before they can log in again."
-    );
-    if (!confirmed) return;
-
-    setRegeneratingCode(true);
-    try {
-      const newCode = await generateUniqueShopCode();
-      await updateDoc(doc(db, "tenants", uid), { shopCode: newCode });
-      setShopCode(newCode);
-    } catch (err) {
-      console.error("Failed to regenerate shop code:", err);
-      window.alert("Something went wrong. Please try again.");
-    } finally {
-      setRegeneratingCode(false);
-    }
-  };
-
-
-
-    const openEditStaff = (staff) => {
-    setEditingStaff(staff);
-    setEditStaffName(staff.name);
-    setEditStaffUsername(staff.username);
-    setEditStaffRole(staff.role);
-    setEditStaffNewPin("");
-    setEditStaffError("");
-  };
-
-  const handleSaveStaffEdit = async (e) => {
-    e.preventDefault();
-    if (!uid || !editingStaff) return;
-    setSavingStaffEdit(true);
-    setEditStaffError("");
-    try {
-      const idToken = await auth.currentUser.getIdToken();
-      const res = await fetch("/api/update-staff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({
-          staffId: editingStaff.id,
-          name: editStaffName,
-          username: editStaffUsername,
-          role: editStaffRole,
-          newPin: editStaffNewPin || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setEditStaffError(data.error || "Couldn't update this staff account.");
-        return;
-      }
-      setEditingStaff(null);
-    } catch (err) {
-      console.error(err);
-      setEditStaffError("Something went wrong. Please try again.");
-    } finally {
-      setSavingStaffEdit(false);
-    }
-  };
-
-  const handleDeleteStaff = async (staff) => {
-    if (!uid) return;
-    const confirmed = window.confirm(
-      `Remove "${staff.name}" (@${staff.username}) permanently? They will no longer be able to log in. This cannot be undone.`
-    );
-    if (!confirmed) return;
-
-    setDeletingStaffId(staff.id);
-    try {
-      await deleteDoc(doc(db, "tenants", uid, "staff", staff.id));
-    } catch (err) {
-      console.error("Failed to delete staff:", err);
-      window.alert("Something went wrong removing this staff account. Please try again.");
-    } finally {
-      setDeletingStaffId(null);
-    }
-  };
-
-
-
-
-  // Defaults to enabled (true) when the field hasn't been set yet, so
-  // existing tenants don't suddenly lose access to features they already use.
-  const isFeatureEnabled = (key) => enabledFeatures[key] !== false;
-
-  const handleToggleFeature = async (key) => {
-    if (!uid) return;
-    const nextValue = !isFeatureEnabled(key);
-    setSavingFeature(key);
-    try {
-      const updated = { ...enabledFeatures, [key]: nextValue };
-      await updateDoc(doc(db, "tenants", uid), { enabledFeatures: updated });
-      setEnabledFeatures(updated);
-    } catch (err) {
-      console.error("Failed to update feature setting:", err);
-    } finally {
-      setSavingFeature(null);
-    }
-  };
-
-  if (checking) {
-    return (
-      <div
-        className="min-h-screen flex items-center justify-center"
-        style={{ background: theme.colors.bgPrimary }}
-      >
-        <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
-          Loading settings...
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="flex min-h-screen"
-      style={{ background: theme.colors.bgPrimary }}
-    >
-      <Sidebar />
-      <div className="flex-1">
-        <header
-          className="px-6 py-4 flex justify-between items-center border-b"
-          style={{
-            background: theme.colors.bgSecondary,
-            borderColor: theme.colors.border,
-          }}
-        >
-          <div>
-            <h1
-              className="text-lg font-bold"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Settings
-            </h1>
-            <p className="text-xs" style={{ color: theme.colors.textSecondary }}>
-              Personalize how your dashboard looks
-            </p>
-          </div>
-        </header>
-
-        <main className="p-6 space-y-10 max-w-2xl">
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Choose Your Theme
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              Pick the look that fits your shop's vibe. Changes apply instantly across
-              the whole app.
-            </p>
-            <ThemeSwitcher />
-          </section>
-
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Graph Style
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              Choose how your Dashboard trend chart is drawn.
-            </p>
-            <GraphStyleSwitcher />
-          </section>
-
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Staff Management
-            </h2>
-            <p
-              className="text-sm mb-3"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              Give your Secretary and Cashiers their own login — no need to share your account.
-              Share this Shop Code with them along with their username and PIN:
-            </p>
-            <div
-              className="flex items-center justify-between p-4 mb-4"
-              style={{ background: theme.colors.bgSecondary, borderRadius: "12px" }}
-            >
-              <span
-                className="text-lg font-mono font-bold tracking-widest"
-                style={{ color: theme.colors.primary }}
-              >
-                {shopCode || "..."}
-              </span>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(shopCode);
-                    setCopyFeedback(true);
-                    setTimeout(() => setCopyFeedback(false), 1500);
-                  }}
-                  className="text-xs font-medium hover:underline"
-                  style={{ color: theme.colors.textSecondary }}
-                >
-                  {copyFeedback ? "✓ Copied!" : "📋 Copy"}
-                </button>
-                <button
-                  onClick={handleRegenerateShopCode}
-                  disabled={regeneratingCode}
-                  className="text-xs font-medium hover:underline disabled:opacity-50"
-                  style={{ color: theme.colors.textSecondary }}
-                >
-                  {regeneratingCode ? "..." : "🔄 Regenerate"}
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-2 mb-4">
-              {staffList.length === 0 ? (
-                <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
-                  No staff accounts yet.
-                </p>
-              ) : (
-                staffList.map((staff) => (
-                  <div
-                    key={staff.id}
-                    className="flex items-center justify-between p-3"
-                    style={{
-                      background: theme.colors.bgSecondary,
-                      borderRadius: "12px",
-                      opacity: staff.active === false ? 0.5 : 1,
-                    }}
-                  >
-                    <div>
-                      <p className="text-sm font-medium" style={{ color: theme.colors.textPrimary }}>
-                        {staff.name}{" "}
-                        <span
-                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full ml-1"
-                          style={{ background: theme.colors.primary, color: "#fff" }}
-                        >
-                          {ROLE_LABELS[staff.role] || staff.role}
-                        </span>
-                      </p>
-                      <p className="text-xs" style={{ color: theme.colors.textSecondary }}>
-                        @{staff.username} {staff.active === false && "· Deactivated"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3 flex-shrink-0">
-                      <button
-                        onClick={() => openEditStaff(staff)}
-                        className="text-xs font-medium hover:underline"
-                        style={{ color: theme.colors.primaryLight }}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleToggleStaffActive(staff)}
-                        className="text-xs font-medium hover:underline"
-                        style={{ color: staff.active === false ? "#4ade80" : "#facc15" }}
-                      >
-                        {staff.active === false ? "Reactivate" : "Deactivate"}
-                      </button>
-                      <button
-                        onClick={() => handleDeleteStaff(staff)}
-                        disabled={deletingStaffId === staff.id}
-                        className="text-xs font-medium hover:underline disabled:opacity-50"
-                        style={{ color: "#f87171" }}
-                      >
-                        {deletingStaffId === staff.id ? "..." : "Delete"}
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {!showAddStaff ? (
-              <button
-                onClick={() => setShowAddStaff(true)}
-                className="text-sm font-semibold px-4 py-2 hover:opacity-90"
-                style={{
-                  background: theme.accentGradient,
-                  color: "#fff",
-                  borderRadius: theme.radiusButton,
-                }}
-              >
-                + Add Staff
-              </button>
-            ) : (
-              <form
-                onSubmit={handleAddStaff}
-                autoComplete="off"
-                className="p-4 space-y-3"
-                style={{ background: theme.colors.bgSecondary, borderRadius: "12px" }}
-              >
-                <input
-                  required
-                  autoComplete="off"
-                  name="staff-full-name"
-                  value={newStaffName}
-                  onChange={(e) => setNewStaffName(e.target.value)}
-                  placeholder="Full name"
-                  className="w-full px-3 py-2 text-sm"
-                  style={{
-                    background: theme.colors.surface,
-                    color: theme.colors.textPrimary,
-                    borderRadius: theme.radiusButton,
-                    borderWidth: "1px",
-                    borderColor: theme.colors.border,
-                  }}
-                />
-                <input
-                  required
-                  autoComplete="off"
-                  name="staff-login-username"
-                  value={newStaffUsername}
-                  onChange={(e) => setNewStaffUsername(e.target.value)}
-                  placeholder="Username (no spaces)"
-                  className="w-full px-3 py-2 text-sm"
-                  style={{
-                    background: theme.colors.surface,
-                    color: theme.colors.textPrimary,
-                    borderRadius: theme.radiusButton,
-                    borderWidth: "1px",
-                    borderColor: theme.colors.border,
-                  }}
-                />
-                <input
-                  required
-                  type="password"
-                  autoComplete="new-password"
-                  name="staff-access-pin"
-                  inputMode="numeric"
-                  value={newStaffPin}
-                  onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  placeholder="4-6 digit PIN"
-                  className="w-full px-3 py-2 text-sm"
-                  style={{
-                    background: theme.colors.surface,
-                    color: theme.colors.textPrimary,
-                    borderRadius: theme.radiusButton,
-                    borderWidth: "1px",
-                    borderColor: theme.colors.border,
-                  }}
-                />
-                <select
-                  value={newStaffRole}
-                  onChange={(e) => setNewStaffRole(e.target.value)}
-                  className="w-full px-3 py-2 text-sm"
-                  style={{
-                    background: theme.colors.surface,
-                    color: theme.colors.textPrimary,
-                    borderRadius: theme.radiusButton,
-                    borderWidth: "1px",
-                    borderColor: theme.colors.border,
-                  }}
-                >
-                  <option value="cashier">Cashier</option>
-                  <option value="secretary">Secretary</option>
-                </select>
-
-                {staffError && (
-                  <p className="text-xs" style={{ color: "#f87171" }}>{staffError}</p>
-                )}
-
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowAddStaff(false)}
-                    className="flex-1 text-sm font-medium py-2"
-                    style={{ color: theme.colors.textSecondary }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={savingStaff}
-                    className="flex-1 text-sm font-semibold py-2 disabled:opacity-50"
-                    style={{ background: theme.accentGradient, color: "#fff", borderRadius: theme.radiusButton }}
-                  >
-                    {savingStaff ? "Creating..." : "Create Staff Account"}
-                  </button>
-                </div>
-              </form>
-            )}
-          </section>
-
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Modules
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              Turn off features you don't use to simplify your navigation. You can turn
-              them back on anytime — nothing is deleted.
-            </p>
-            <div className="space-y-3">
-              {TOGGLEABLE_FEATURES.map((feature) => {
-                const enabled = isFeatureEnabled(feature.key);
-                return (
-                  <div
-                    key={feature.key}
-                    className="flex items-center justify-between p-4"
-                    style={{
-                      background: theme.colors.bgSecondary,
-                      borderRadius: "12px",
-                      borderWidth: "1px",
-                      borderColor: theme.colors.border,
-                    }}
-                  >
-                    <div className="pr-4">
-                      <p className="text-sm font-medium" style={{ color: theme.colors.textPrimary }}>
-                        {feature.label}
-                      </p>
-                      <p className="text-xs mt-0.5" style={{ color: theme.colors.textSecondary }}>
-                        {feature.description}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => handleToggleFeature(feature.key)}
-                      disabled={savingFeature === feature.key}
-                      className="relative flex-shrink-0 w-12 h-7 rounded-full transition disabled:opacity-50"
-                      style={{ background: enabled ? "#4ade80" : "rgba(148, 163, 184, 0.3)" }}
-                      aria-label={`Toggle ${feature.label}`}
-                    >
-                      <span
-                        className="absolute top-1 w-5 h-5 rounded-full bg-white transition-all"
-                        style={{ left: enabled ? "24px" : "4px" }}
-                      />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-         
-            <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Reorder Summary
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              UBA automatically identifies items that need restocking, organized by supplier.
-            </p>
-            <ReorderSummary />
-          </section>
-
-          <section>
-            <h2
-              className="text-base font-semibold mb-1"
-              style={{ color: theme.colors.textPrimary }}
-            >
-              Help &amp; Support
-            </h2>
-            <p
-              className="text-sm mb-5"
-              style={{ color: theme.colors.textSecondary }}
-            >
-              May tanong? Basahin ang FAQ, mag-chat sa AI support, o direktang i-message ang developer.
-            </p>
-            <HelpSupport />
-          </section>
-        </main>
-
-        {editingStaff && (
-          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <form
-              onSubmit={handleSaveStaffEdit}
-              autoComplete="off"
-              className="w-full max-w-md p-6 space-y-3"
-              style={{
-                background: theme.colors.bgSecondary,
-                borderRadius: "16px",
-                borderWidth: "1px",
-                borderColor: theme.colors.border,
-              }}
-            >
-              <div className="flex justify-between items-center mb-1">
-                <p className="text-sm font-semibold" style={{ color: theme.colors.textPrimary }}>
-                  Edit Staff
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setEditingStaff(null)}
-                  className="text-xl leading-none hover:opacity-70"
-                  style={{ color: theme.colors.textSecondary }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <input
-                required
-                autoComplete="off"
-                name="edit-staff-name"
-                value={editStaffName}
-                onChange={(e) => setEditStaffName(e.target.value)}
-                placeholder="Full name"
-                className="w-full px-3 py-2 text-sm"
-                style={{
-                  background: theme.colors.surface,
-                  color: theme.colors.textPrimary,
-                  borderRadius: theme.radiusButton,
-                  borderWidth: "1px",
-                  borderColor: theme.colors.border,
-                }}
-              />
-              <input
-                required
-                autoComplete="off"
-                name="edit-staff-username"
-                value={editStaffUsername}
-                onChange={(e) => setEditStaffUsername(e.target.value)}
-                placeholder="Username"
-                className="w-full px-3 py-2 text-sm"
-                style={{
-                  background: theme.colors.surface,
-                  color: theme.colors.textPrimary,
-                  borderRadius: theme.radiusButton,
-                  borderWidth: "1px",
-                  borderColor: theme.colors.border,
-                }}
-              />
-              <select
-                value={editStaffRole}
-                onChange={(e) => setEditStaffRole(e.target.value)}
-                className="w-full px-3 py-2 text-sm"
-                style={{
-                  background: theme.colors.surface,
-                  color: theme.colors.textPrimary,
-                  borderRadius: theme.radiusButton,
-                  borderWidth: "1px",
-                  borderColor: theme.colors.border,
-                }}
-              >
-                <option value="cashier">Cashier</option>
-                <option value="secretary">Secretary</option>
-              </select>
-              <div>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  name="edit-staff-new-pin"
-                  inputMode="numeric"
-                  value={editStaffNewPin}
-                  onChange={(e) => setEditStaffNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  placeholder="New PIN (leave blank to keep current)"
-                  className="w-full px-3 py-2 text-sm"
-                  style={{
-                    background: theme.colors.surface,
-                    color: theme.colors.textPrimary,
-                    borderRadius: theme.radiusButton,
-                    borderWidth: "1px",
-                    borderColor: theme.colors.border,
-                  }}
-                />
-                <p className="text-[11px] mt-1" style={{ color: theme.colors.textSecondary }}>
-                  Only fill this in if you want to reset their PIN.
-                </p>
-              </div>
-
-              {editStaffError && (
-                <p className="text-xs" style={{ color: "#f87171" }}>{editStaffError}</p>
-              )}
-
-              <button
-                type="submit"
-                disabled={savingStaffEdit}
-                className="w-full text-sm font-semibold py-2.5 disabled:opacity-50"
-                style={{ background: theme.accentGradient, color: "#fff", borderRadius: theme.radiusButton }}
-              >
-                {savingStaffEdit ? "Saving..." : "Save Changes"}
-              </button>
-            </form>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="app/components/Sidebar.tsx">
 "use client";
 
@@ -14704,6 +14480,794 @@ export default function DashboardPage() {
     <Suspense fallback={null}>
       <DashboardContent />
     </Suspense>
+  );
+}
+</file>
+
+<file path="app/settings/page.jsx">
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { doc, getDoc, updateDoc, collection, addDoc, deleteDoc, onSnapshot, query, orderBy, where, getDocs, updateDoc as updateDocFs } from "firebase/firestore";
+import { auth, db } from "../lib/firebase";
+import { getSessionInfo } from "../lib/staffAuth";
+import Sidebar from "../components/Sidebar";
+import ThemeSwitcher from "../components/ThemeSwitcher";
+import GraphStyleSwitcher from "../components/GraphStyleSwitcher";
+import ReorderSummary from "../components/ReorderSummary";
+import HelpSupport from "../components/HelpSupport";
+import { useTheme } from "../context/ThemeContext";
+import { getTheme } from "../lib/themes";
+import { canAccessPage, homeFor } from "../lib/permissions";
+
+const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateShopCode() {
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += SHOP_CODE_CHARS[Math.floor(Math.random() * SHOP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+async function generateUniqueShopCode() {
+  const user = auth.currentUser;
+  if (!user) throw new Error("No logged-in user found.");
+
+  const idToken = await user.getIdToken();
+  const res = await fetch("/api/generate-shop-code", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Could not generate a shop code.");
+  return data.shopCode;
+}
+
+
+async function revokeStaffSession(staffId) {
+  const user = auth.currentUser;
+  if (!user) return;
+
+  const idToken = await user.getIdToken();
+  const res = await fetch("/api/revoke-staff-session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ staffId }),
+  });
+  if (!res.ok) throw new Error("Could not revoke staff session.");
+}
+
+
+
+const ROLE_LABELS = { secretary: "Secretary", cashier: "Cashier" };
+
+const TOGGLEABLE_FEATURES = [
+  { key: "repairTickets", label: "Repair Tickets", description: "Track customer repairs from drop-off to pickup." },
+  { key: "deliveryTickets", label: "Delivery Tickets", description: "Track customer orders from preparation to delivery." },
+  { key: "poTickets", label: "P.O. / Purchase Orders", description: "Track purchase orders from buyers, item by item." },
+];
+
+export default function SettingsPage() {
+  const [checking, setChecking] = useState(true);
+  const [uid, setUid] = useState(null);
+  const [enabledFeatures, setEnabledFeatures] = useState({});
+  const [savingFeature, setSavingFeature] = useState(null);
+  const [shopCode, setShopCode] = useState("");
+  const [staffList, setStaffList] = useState([]);
+  const [showAddStaff, setShowAddStaff] = useState(false);
+  const [newStaffName, setNewStaffName] = useState("");
+  const [newStaffUsername, setNewStaffUsername] = useState("");
+  const [newStaffPin, setNewStaffPin] = useState("");
+  const [newStaffRole, setNewStaffRole] = useState("cashier");
+  const [savingStaff, setSavingStaff] = useState(false);
+  const [staffError, setStaffError] = useState("");
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const [regeneratingCode, setRegeneratingCode] = useState(false);
+  const [editingStaff, setEditingStaff] = useState(null);
+  const [editStaffName, setEditStaffName] = useState("");
+  const [editStaffUsername, setEditStaffUsername] = useState("");
+  const [editStaffRole, setEditStaffRole] = useState("cashier");
+  const [editStaffNewPin, setEditStaffNewPin] = useState("");
+  const [savingStaffEdit, setSavingStaffEdit] = useState(false);
+  const [editStaffError, setEditStaffError] = useState("");
+  const [deletingStaffId, setDeletingStaffId] = useState(null);
+  const router = useRouter();
+  const { themeId } = useTheme();
+  const theme = getTheme(themeId);
+
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const session = await getSessionInfo(user);
+            if (!canAccessPage(session.role, "/sales")) {
+        router.push(homeFor(session.role));
+        return;
+      }
+      const tenantId = session.tenantId;
+      setUid(tenantId);
+
+      try {
+        const snap = await getDoc(doc(db, "tenants", tenantId));
+        if (snap.exists()) {
+          setEnabledFeatures(snap.data().enabledFeatures || {});
+
+          // Backfill: accounts created before Shop Code existed won't have
+          // one saved yet. Generate and persist it the first time the
+          // Owner lands on Settings, so every business ends up with a code.
+          let code = snap.data().shopCode;
+          if (!code && !session.isStaff) {
+            code = await generateUniqueShopCode();
+            await updateDoc(doc(db, "tenants", tenantId), { shopCode: code });
+          }
+          setShopCode(code || "");
+        }
+      } catch (err) {
+        console.error("Failed to load feature settings:", err);
+      }
+
+      const staffQuery = query(collection(db, "tenants", tenantId, "staff"), orderBy("createdAt", "desc"));
+      onSnapshot(staffQuery, (snapshot) => {
+        setStaffList(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+      });
+
+      setChecking(false);
+    });
+    return () => unsubscribe();
+  }, [router]);
+
+  const handleAddStaff = async (e) => {
+    e.preventDefault();
+    if (!uid) return;
+    setSavingStaff(true);
+    setStaffError("");
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/create-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          name: newStaffName,
+          username: newStaffUsername,
+          pin: newStaffPin,
+          role: newStaffRole,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStaffError(data.error || "Couldn't create staff account.");
+        return;
+      }
+      setNewStaffName("");
+      setNewStaffUsername("");
+      setNewStaffPin("");
+      setNewStaffRole("cashier");
+      setShowAddStaff(false);
+    } catch (err) {
+      console.error(err);
+      setStaffError("Something went wrong. Please try again.");
+    } finally {
+      setSavingStaff(false);
+    }
+  };
+
+  const handleToggleStaffActive = async (staff) => {
+    if (!uid) return;
+    const willDeactivate = staff.active !== false;
+    await updateDocFs(doc(db, "tenants", uid, "staff", staff.id), { active: staff.active === false });
+    // Kapag dine-deactivate, bawiin agad ang session niya
+    if (willDeactivate) {
+      try {
+        await revokeStaffSession(staff.id);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+
+  const handleRegenerateShopCode = async () => {
+    if (!uid) return;
+    const confirmed = window.confirm(
+      "Generate a new Shop Code? The current code will stop working immediately — you'll need to share the new one with your staff before they can log in again."
+    );
+    if (!confirmed) return;
+
+    setRegeneratingCode(true);
+    try {
+      const newCode = await generateUniqueShopCode();
+      await updateDoc(doc(db, "tenants", uid), { shopCode: newCode });
+      setShopCode(newCode);
+    } catch (err) {
+      console.error("Failed to regenerate shop code:", err);
+      window.alert("Something went wrong. Please try again.");
+    } finally {
+      setRegeneratingCode(false);
+    }
+  };
+
+
+
+    const openEditStaff = (staff) => {
+    setEditingStaff(staff);
+    setEditStaffName(staff.name);
+    setEditStaffUsername(staff.username);
+    setEditStaffRole(staff.role);
+    setEditStaffNewPin("");
+    setEditStaffError("");
+  };
+
+  const handleSaveStaffEdit = async (e) => {
+    e.preventDefault();
+    if (!uid || !editingStaff) return;
+    setSavingStaffEdit(true);
+    setEditStaffError("");
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/update-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          staffId: editingStaff.id,
+          name: editStaffName,
+          username: editStaffUsername,
+          role: editStaffRole,
+          newPin: editStaffNewPin || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEditStaffError(data.error || "Couldn't update this staff account.");
+        return;
+      }
+      setEditingStaff(null);
+    } catch (err) {
+      console.error(err);
+      setEditStaffError("Something went wrong. Please try again.");
+    } finally {
+      setSavingStaffEdit(false);
+    }
+  };
+
+  const handleDeleteStaff = async (staff) => {
+    if (!uid) return;
+    const confirmed = window.confirm(
+      `Remove "${staff.name}" (@${staff.username}) permanently? They will no longer be able to log in. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingStaffId(staff.id);
+    try {
+      await revokeStaffSession(staff.id);
+      await deleteDoc(doc(db, "tenants", uid, "staff", staff.id));
+    } catch (err) {
+      console.error("Failed to delete staff:", err);
+      window.alert("Something went wrong removing this staff account. Please try again.");
+    } finally {
+      setDeletingStaffId(null);
+    }
+  };
+
+
+
+
+  // Defaults to enabled (true) when the field hasn't been set yet, so
+  // existing tenants don't suddenly lose access to features they already use.
+  const isFeatureEnabled = (key) => enabledFeatures[key] !== false;
+
+  const handleToggleFeature = async (key) => {
+    if (!uid) return;
+    const nextValue = !isFeatureEnabled(key);
+    setSavingFeature(key);
+    try {
+      const updated = { ...enabledFeatures, [key]: nextValue };
+      await updateDoc(doc(db, "tenants", uid), { enabledFeatures: updated });
+      setEnabledFeatures(updated);
+    } catch (err) {
+      console.error("Failed to update feature setting:", err);
+    } finally {
+      setSavingFeature(null);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center"
+        style={{ background: theme.colors.bgPrimary }}
+      >
+        <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
+          Loading settings...
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex min-h-screen"
+      style={{ background: theme.colors.bgPrimary }}
+    >
+      <Sidebar />
+      <div className="flex-1">
+        <header
+          className="px-6 py-4 flex justify-between items-center border-b"
+          style={{
+            background: theme.colors.bgSecondary,
+            borderColor: theme.colors.border,
+          }}
+        >
+          <div>
+            <h1
+              className="text-lg font-bold"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Settings
+            </h1>
+            <p className="text-xs" style={{ color: theme.colors.textSecondary }}>
+              Personalize how your dashboard looks
+            </p>
+          </div>
+        </header>
+
+        <main className="p-6 space-y-10 max-w-2xl">
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Choose Your Theme
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Pick the look that fits your shop's vibe. Changes apply instantly across
+              the whole app.
+            </p>
+            <ThemeSwitcher />
+          </section>
+
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Graph Style
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Choose how your Dashboard trend chart is drawn.
+            </p>
+            <GraphStyleSwitcher />
+          </section>
+
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Staff Management
+            </h2>
+            <p
+              className="text-sm mb-3"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Give your Secretary and Cashiers their own login — no need to share your account.
+              Share this Shop Code with them along with their username and PIN:
+            </p>
+            <div
+              className="flex items-center justify-between p-4 mb-4"
+              style={{ background: theme.colors.bgSecondary, borderRadius: "12px" }}
+            >
+              <span
+                className="text-lg font-mono font-bold tracking-widest"
+                style={{ color: theme.colors.primary }}
+              >
+                {shopCode || "..."}
+              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(shopCode);
+                    setCopyFeedback(true);
+                    setTimeout(() => setCopyFeedback(false), 1500);
+                  }}
+                  className="text-xs font-medium hover:underline"
+                  style={{ color: theme.colors.textSecondary }}
+                >
+                  {copyFeedback ? "✓ Copied!" : "📋 Copy"}
+                </button>
+                <button
+                  onClick={handleRegenerateShopCode}
+                  disabled={regeneratingCode}
+                  className="text-xs font-medium hover:underline disabled:opacity-50"
+                  style={{ color: theme.colors.textSecondary }}
+                >
+                  {regeneratingCode ? "..." : "🔄 Regenerate"}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2 mb-4">
+              {staffList.length === 0 ? (
+                <p className="text-sm" style={{ color: theme.colors.textSecondary }}>
+                  No staff accounts yet.
+                </p>
+              ) : (
+                staffList.map((staff) => (
+                  <div
+                    key={staff.id}
+                    className="flex items-center justify-between p-3"
+                    style={{
+                      background: theme.colors.bgSecondary,
+                      borderRadius: "12px",
+                      opacity: staff.active === false ? 0.5 : 1,
+                    }}
+                  >
+                    <div>
+                      <p className="text-sm font-medium" style={{ color: theme.colors.textPrimary }}>
+                        {staff.name}{" "}
+                        <span
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full ml-1"
+                          style={{ background: theme.colors.primary, color: "#fff" }}
+                        >
+                          {ROLE_LABELS[staff.role] || staff.role}
+                        </span>
+                      </p>
+                      <p className="text-xs" style={{ color: theme.colors.textSecondary }}>
+                        @{staff.username} {staff.active === false && "· Deactivated"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <button
+                        onClick={() => openEditStaff(staff)}
+                        className="text-xs font-medium hover:underline"
+                        style={{ color: theme.colors.primaryLight }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleToggleStaffActive(staff)}
+                        className="text-xs font-medium hover:underline"
+                        style={{ color: staff.active === false ? "#4ade80" : "#facc15" }}
+                      >
+                        {staff.active === false ? "Reactivate" : "Deactivate"}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteStaff(staff)}
+                        disabled={deletingStaffId === staff.id}
+                        className="text-xs font-medium hover:underline disabled:opacity-50"
+                        style={{ color: "#f87171" }}
+                      >
+                        {deletingStaffId === staff.id ? "..." : "Delete"}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {!showAddStaff ? (
+              <button
+                onClick={() => setShowAddStaff(true)}
+                className="text-sm font-semibold px-4 py-2 hover:opacity-90"
+                style={{
+                  background: theme.accentGradient,
+                  color: "#fff",
+                  borderRadius: theme.radiusButton,
+                }}
+              >
+                + Add Staff
+              </button>
+            ) : (
+              <form
+                onSubmit={handleAddStaff}
+                autoComplete="off"
+                className="p-4 space-y-3"
+                style={{ background: theme.colors.bgSecondary, borderRadius: "12px" }}
+              >
+                <input
+                  required
+                  autoComplete="off"
+                  name="staff-full-name"
+                  value={newStaffName}
+                  onChange={(e) => setNewStaffName(e.target.value)}
+                  placeholder="Full name"
+                  className="w-full px-3 py-2 text-sm"
+                  style={{
+                    background: theme.colors.surface,
+                    color: theme.colors.textPrimary,
+                    borderRadius: theme.radiusButton,
+                    borderWidth: "1px",
+                    borderColor: theme.colors.border,
+                  }}
+                />
+                <input
+                  required
+                  autoComplete="off"
+                  name="staff-login-username"
+                  value={newStaffUsername}
+                  onChange={(e) => setNewStaffUsername(e.target.value)}
+                  placeholder="Username (no spaces)"
+                  className="w-full px-3 py-2 text-sm"
+                  style={{
+                    background: theme.colors.surface,
+                    color: theme.colors.textPrimary,
+                    borderRadius: theme.radiusButton,
+                    borderWidth: "1px",
+                    borderColor: theme.colors.border,
+                  }}
+                />
+                <input
+                  required
+                  type="password"
+                  autoComplete="new-password"
+                  name="staff-access-pin"
+                  inputMode="numeric"
+                  value={newStaffPin}
+                  onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="4-6 digit PIN"
+                  className="w-full px-3 py-2 text-sm"
+                  style={{
+                    background: theme.colors.surface,
+                    color: theme.colors.textPrimary,
+                    borderRadius: theme.radiusButton,
+                    borderWidth: "1px",
+                    borderColor: theme.colors.border,
+                  }}
+                />
+                <select
+                  value={newStaffRole}
+                  onChange={(e) => setNewStaffRole(e.target.value)}
+                  className="w-full px-3 py-2 text-sm"
+                  style={{
+                    background: theme.colors.surface,
+                    color: theme.colors.textPrimary,
+                    borderRadius: theme.radiusButton,
+                    borderWidth: "1px",
+                    borderColor: theme.colors.border,
+                  }}
+                >
+                  <option value="cashier">Cashier</option>
+                  <option value="secretary">Secretary</option>
+                </select>
+
+                {staffError && (
+                  <p className="text-xs" style={{ color: "#f87171" }}>{staffError}</p>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddStaff(false)}
+                    className="flex-1 text-sm font-medium py-2"
+                    style={{ color: theme.colors.textSecondary }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingStaff}
+                    className="flex-1 text-sm font-semibold py-2 disabled:opacity-50"
+                    style={{ background: theme.accentGradient, color: "#fff", borderRadius: theme.radiusButton }}
+                  >
+                    {savingStaff ? "Creating..." : "Create Staff Account"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </section>
+
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Modules
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Turn off features you don't use to simplify your navigation. You can turn
+              them back on anytime — nothing is deleted.
+            </p>
+            <div className="space-y-3">
+              {TOGGLEABLE_FEATURES.map((feature) => {
+                const enabled = isFeatureEnabled(feature.key);
+                return (
+                  <div
+                    key={feature.key}
+                    className="flex items-center justify-between p-4"
+                    style={{
+                      background: theme.colors.bgSecondary,
+                      borderRadius: "12px",
+                      borderWidth: "1px",
+                      borderColor: theme.colors.border,
+                    }}
+                  >
+                    <div className="pr-4">
+                      <p className="text-sm font-medium" style={{ color: theme.colors.textPrimary }}>
+                        {feature.label}
+                      </p>
+                      <p className="text-xs mt-0.5" style={{ color: theme.colors.textSecondary }}>
+                        {feature.description}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleToggleFeature(feature.key)}
+                      disabled={savingFeature === feature.key}
+                      className="relative flex-shrink-0 w-12 h-7 rounded-full transition disabled:opacity-50"
+                      style={{ background: enabled ? "#4ade80" : "rgba(148, 163, 184, 0.3)" }}
+                      aria-label={`Toggle ${feature.label}`}
+                    >
+                      <span
+                        className="absolute top-1 w-5 h-5 rounded-full bg-white transition-all"
+                        style={{ left: enabled ? "24px" : "4px" }}
+                      />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+         
+            <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Reorder Summary
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              UBA automatically identifies items that need restocking, organized by supplier.
+            </p>
+            <ReorderSummary />
+          </section>
+
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Help &amp; Support
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              May tanong? Basahin ang FAQ, mag-chat sa AI support, o direktang i-message ang developer.
+            </p>
+            <HelpSupport />
+          </section>
+        </main>
+
+        {editingStaff && (
+          <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+            <form
+              onSubmit={handleSaveStaffEdit}
+              autoComplete="off"
+              className="w-full max-w-md p-6 space-y-3"
+              style={{
+                background: theme.colors.bgSecondary,
+                borderRadius: "16px",
+                borderWidth: "1px",
+                borderColor: theme.colors.border,
+              }}
+            >
+              <div className="flex justify-between items-center mb-1">
+                <p className="text-sm font-semibold" style={{ color: theme.colors.textPrimary }}>
+                  Edit Staff
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditingStaff(null)}
+                  className="text-xl leading-none hover:opacity-70"
+                  style={{ color: theme.colors.textSecondary }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <input
+                required
+                autoComplete="off"
+                name="edit-staff-name"
+                value={editStaffName}
+                onChange={(e) => setEditStaffName(e.target.value)}
+                placeholder="Full name"
+                className="w-full px-3 py-2 text-sm"
+                style={{
+                  background: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radiusButton,
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              />
+              <input
+                required
+                autoComplete="off"
+                name="edit-staff-username"
+                value={editStaffUsername}
+                onChange={(e) => setEditStaffUsername(e.target.value)}
+                placeholder="Username"
+                className="w-full px-3 py-2 text-sm"
+                style={{
+                  background: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radiusButton,
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              />
+              <select
+                value={editStaffRole}
+                onChange={(e) => setEditStaffRole(e.target.value)}
+                className="w-full px-3 py-2 text-sm"
+                style={{
+                  background: theme.colors.surface,
+                  color: theme.colors.textPrimary,
+                  borderRadius: theme.radiusButton,
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              >
+                <option value="cashier">Cashier</option>
+                <option value="secretary">Secretary</option>
+              </select>
+              <div>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  name="edit-staff-new-pin"
+                  inputMode="numeric"
+                  value={editStaffNewPin}
+                  onChange={(e) => setEditStaffNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="New PIN (leave blank to keep current)"
+                  className="w-full px-3 py-2 text-sm"
+                  style={{
+                    background: theme.colors.surface,
+                    color: theme.colors.textPrimary,
+                    borderRadius: theme.radiusButton,
+                    borderWidth: "1px",
+                    borderColor: theme.colors.border,
+                  }}
+                />
+                <p className="text-[11px] mt-1" style={{ color: theme.colors.textSecondary }}>
+                  Only fill this in if you want to reset their PIN.
+                </p>
+              </div>
+
+              {editStaffError && (
+                <p className="text-xs" style={{ color: "#f87171" }}>{editStaffError}</p>
+              )}
+
+              <button
+                type="submit"
+                disabled={savingStaffEdit}
+                className="w-full text-sm font-semibold py-2.5 disabled:opacity-50"
+                style={{ background: theme.accentGradient, color: "#fff", borderRadius: theme.radiusButton }}
+              >
+                {savingStaffEdit ? "Saving..." : "Save Changes"}
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 </file>
