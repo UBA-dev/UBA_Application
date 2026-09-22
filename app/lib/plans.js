@@ -5,7 +5,7 @@
 //
 // Kapag gusto mong baguhin ang presyo o limits sa future, DITO LANG ang edit.
 
-export const TRIAL_DAYS = 14;
+export const TRIAL_DAYS = 7;
 
 // 25% off sa annual = 9 buwan ang bayad, 12 buwan ang gamit ("3 months free").
 export const ANNUAL_DISCOUNT_PERCENT = 25;

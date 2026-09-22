@@ -39,7 +39,7 @@ export default function TermsPage() {
               <strong>Plans.</strong> UBA offers three paid plans — Basic, Pro, and Business —
               each with different limits on staff logins, UBA usage, and features such as Repair,
               Delivery, and P.O. Tickets. Current prices and what's included in each plan are
-              shown on the Pricing page inside the app. New accounts get a 14-day free trial with
+              shown on the Pricing page inside the app. New accounts get a 7-day free trial with
               full access before choosing a plan.
             </p>
             <p className="mt-2">

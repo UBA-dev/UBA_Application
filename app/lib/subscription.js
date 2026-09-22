@@ -12,7 +12,7 @@
 // file na ito. Limits lang sa dami (items, staff) at AI/tickets ang naka-gate.
 //
 // subscriptionStatus values sa database:
-//   "TRIAL"    — 14-day free trial, buong access
+//   "TRIAL"    — 7-day free trial, buong access
 //   "MONTHLY"  — bayad na (monthly O annual — tingnan ang billingCycle at
 //                nextPaymentDue). Pinanatili ang pangalan para hindi masira
 //                ang mga lumang tenant record.
@@ -87,7 +87,7 @@ export function getAiAccess(tenant) {
     return { allowed: planIncludesAi && daysLeft >= 0, status: "MONTHLY", daysLeft };
   }
 
-  // Default: TRIAL — buong access habang tumatakbo ang 14-day free trial,
+  // Default: TRIAL — buong access habang tumatakbo ang 7-day free trial,
   // para maranasan nila ang buong app bago pumili ng plan.
   const start = toDate(tenant.trialStartDate);
   const now = new Date();
