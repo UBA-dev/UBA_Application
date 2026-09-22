@@ -21,6 +21,7 @@ import Sidebar from "../components/Sidebar";
 import AiSpinner from "../components/AiSpinner";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
+import PHAddressInput from "../components/PHAddressInput";
 import { canAccessPage, homeFor } from "../lib/permissions";
 import { authedFetch } from "../lib/authedFetch";
 
@@ -194,6 +195,7 @@ export default function POTicketsPage() {
   const [showNewForm, setShowNewForm] = useState(false);
   const [buyerName, setBuyerName] = useState("");
   const [buyerAddress, setBuyerAddress] = useState("");
+  const [addressResetKey, setAddressResetKey] = useState(0);
   const [buyerContact, setBuyerContact] = useState("");
   const [prNumber, setPrNumber] = useState("");
   const [poNumber, setPoNumber] = useState("");
@@ -324,6 +326,7 @@ export default function POTicketsPage() {
   const resetNewForm = () => {
     setBuyerName("");
     setBuyerAddress("");
+    setAddressResetKey((k) => k + 1);
     setBuyerContact("");
     setPrNumber("");
     setPoNumber("");
@@ -811,7 +814,9 @@ export default function POTicketsPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>Address</label>
-                <input required value={buyerAddress} onChange={(e) => setBuyerAddress(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter address" />
+                <div className="mt-1">
+                  <PHAddressInput key={addressResetKey} required onChange={setBuyerAddress} inputStyle={inputStyle} />
+                </div>
               </div>
 
               <div>

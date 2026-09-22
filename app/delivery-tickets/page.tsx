@@ -20,6 +20,7 @@ import Sidebar from "../components/Sidebar";
 import AiSpinner from "../components/AiSpinner";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
+import PHAddressInput from "../components/PHAddressInput";
 import { canAccessPage, homeFor } from "../lib/permissions";
 import { authedFetch } from "../lib/authedFetch";
 
@@ -129,6 +130,7 @@ export default function DeliveryTicketsPage() {
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [addressResetKey, setAddressResetKey] = useState(0);
   const [orderNotes, setOrderNotes] = useState("");
   const [savingTicket, setSavingTicket] = useState(false);
 
@@ -217,6 +219,7 @@ export default function DeliveryTicketsPage() {
     setCustomerName("");
     setCustomerPhone("");
     setDeliveryAddress("");
+    setAddressResetKey((k) => k + 1);
     setOrderNotes("");
   };
 
@@ -544,7 +547,9 @@ export default function DeliveryTicketsPage() {
 
               <div>
                 <label className="text-sm" style={labelStyle}>Delivery Address</label>
-                <input required value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} className="w-full mt-1 px-3 py-2" style={inputStyle} placeholder="Enter delivery address" />
+                <div className="mt-1">
+                  <PHAddressInput key={addressResetKey} required onChange={setDeliveryAddress} inputStyle={inputStyle} />
+                </div>
               </div>
 
               <div>
