@@ -165,6 +165,8 @@ export default function RepairTicketsPage() {
   const [draftingMessage, setDraftingMessage] = useState(false);
   const [draftedMessage, setDraftedMessage] = useState("");
   const [messageError, setMessageError] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [messageSent, setMessageSent] = useState(false);
 
   // Looks across past tickets for recurring issues so common parts can be
   // pre-stocked. Lives at component scope so the button in the JSX can see it.
@@ -403,6 +405,7 @@ export default function RepairTicketsPage() {
     setLaborInput(String(ticket.laborPayment || 0));
     setDraftedMessage("");
     setMessageError("");
+    setMessageSent(false);
   };
 
   const partsCostOf = (ticket: RepairTicket) =>
@@ -552,6 +555,7 @@ export default function RepairTicketsPage() {
     setDraftingMessage(true);
     setMessageError("");
     setDraftedMessage("");
+    setMessageSent(false);
     try {
       const res = await authedFetch("/api/generate-ticket-message", {
         method: "POST",
@@ -574,6 +578,33 @@ export default function RepairTicketsPage() {
       setMessageError("Couldn't draft a message right now.");
     } finally {
       setDraftingMessage(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!detail || !draftedMessage.trim()) return;
+    setSendingMessage(true);
+    setMessageError("");
+    try {
+      const res = await authedFetch("/api/send-ticket-message", {
+        method: "POST",
+        body: JSON.stringify({
+          ticketType: "repair",
+          ticketId: detail.id,
+          message: draftedMessage,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessageError(data.error || "Couldn't send the text message.");
+        return;
+      }
+      setMessageSent(true);
+    } catch (err) {
+      console.error(err);
+      setMessageError("Couldn't send the text message.");
+    } finally {
+      setSendingMessage(false);
     }
   };
 
@@ -1187,13 +1218,32 @@ export default function RepairTicketsPage() {
                       className="w-full px-3 py-2 text-sm"
                       style={inputStyle}
                     />
-                    <button
-                      onClick={() => navigator.clipboard.writeText(draftedMessage)}
-                      className="text-xs font-medium mt-2 hover:underline"
-                      style={{ color: "var(--color-primary-light)" }}
-                    >
-                      📋 Copy to Clipboard
-                    </button>
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => navigator.clipboard.writeText(draftedMessage)}
+                        className="text-xs font-medium hover:underline"
+                        style={{ color: "var(--color-primary-light)" }}
+                      >
+                        📋 Copy to Clipboard
+                      </button>
+                      <button
+                        onClick={handleSendMessage}
+                        disabled={sendingMessage || !detail.customerPhone}
+                        title={!detail.customerPhone ? "No contact number saved on this ticket" : undefined}
+                        className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
+                        style={{ background: "var(--gradient-accent)", color: "#fff" }}
+                      >
+                        {sendingMessage ? (
+                          <span className="inline-flex items-center gap-2">
+                            <AiSpinner /> Sending...
+                          </span>
+                        ) : messageSent ? (
+                          "✅ Sent"
+                        ) : (
+                          "📲 Send via SMS"
+                        )}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
