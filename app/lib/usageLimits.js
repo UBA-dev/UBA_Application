@@ -11,6 +11,7 @@ export const LIMIT_LABELS = {
   chatCount: "assistant messages",
   analysisCount: "business analyses",
   notificationCount: "customer notifications",
+  smsCount: "text messages sent",
 };
 
 export function usageLimitMessage(feature, limit) {

@@ -51,7 +51,7 @@ export const PLANS = {
     annual: 499 * ANNUAL_MONTHS_PAID, // ₱4,491
     staffCap: 3,
     itemCap: Infinity,
-    ai: { scanCount: 10, chatCount: 20, analysisCount: 0, notificationCount: 0 },
+    ai: { scanCount: 10, chatCount: 20, analysisCount: 0, notificationCount: 0, smsCount: 0 },
     features: BASIC_FEATURES,
     highlights: [
       "POS that works even offline",
@@ -71,14 +71,14 @@ export const PLANS = {
     annual: 999 * ANNUAL_MONTHS_PAID, // ₱8,991
     staffCap: 8,
     itemCap: Infinity,
-    ai: { scanCount: 60, chatCount: 100, analysisCount: 20, notificationCount: 60 },
+    ai: { scanCount: 60, chatCount: 100, analysisCount: 20, notificationCount: 60, smsCount: 30 },
     features: PRO_FEATURES,
     highlights: [
       "Everything in Basic",
       "Repair, Delivery, and P.O. Tickets",
       "UBA Business Analyst (20 per month)",
       "UBA Scanner (60) and Assistant (100) per month",
-      "UBA-drafted messages to customers",
+      "UBA-drafted messages to customers (30 sent via SMS per month)",
       ...(EMAIL_ALERTS_READY ? ["Low-stock alert by email"] : []),
       "Up to 8 staff logins",
       "Faster support (~1 business day)",
@@ -92,11 +92,11 @@ export const PLANS = {
     annual: 1499 * ANNUAL_MONTHS_PAID, // ₱13,491
     staffCap: 25,
     itemCap: Infinity,
-    ai: { scanCount: 120, chatCount: 200, analysisCount: 40, notificationCount: 120 },
+    ai: { scanCount: 120, chatCount: 200, analysisCount: 40, notificationCount: 120, smsCount: 100 },
     features: BUSINESS_FEATURES,
     highlights: [
       "Everything in Pro",
-      "2× the UBA allowance (120 scans, 200 messages, 40 analyses)",
+      "2× the UBA allowance (120 scans, 200 messages, 40 analyses, 100 SMS)",
       "Up to 25 staff logins",
       "Priority support (~4 business hours)",
       "Free assisted setup: we import your inventory for you",
@@ -109,7 +109,7 @@ export const PLANS = {
 export const FREE_LIMITS = {
   itemCap: 50,
   staffCap: 0,
-  ai: { scanCount: 0, chatCount: 0, analysisCount: 0, notificationCount: 0 },
+  ai: { scanCount: 0, chatCount: 0, analysisCount: 0, notificationCount: 0, smsCount: 0 },
   features: CORE,
 };
 

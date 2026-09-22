@@ -6,7 +6,7 @@ function currentMonthKey(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-type UsageFeature = "scanCount" | "chatCount" | "analysisCount" | "notificationCount";
+type UsageFeature = "scanCount" | "chatCount" | "analysisCount" | "notificationCount" | "smsCount";
 
 // Server-side, transactional equivalent of checkAndIncrementUsage in
 // usageLimits.js. THIS is the one that actually gates the AI routes now —

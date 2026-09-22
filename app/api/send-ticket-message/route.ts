@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { adminDb } from "../../lib/firebaseAdmin";
 import { requireSession } from "../../lib/apiAuth";
 import { sendSms } from "../../lib/semaphore";
+import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
+import { usageLimitMessage } from "../../lib/usageLimits";
 
 const TICKET_COLLECTIONS: Record<string, string> = {
   repair: "repairTickets",
@@ -33,6 +35,16 @@ export async function POST(req: NextRequest) {
     const phoneField = PHONE_FIELDS[ticketType];
     if (!collectionName || !ticketId || !message?.trim()) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
+    }
+
+    // Each SMS costs real money from the Owner's own Semaphore balance —
+    // enforce the plan's monthly cap the same way the AI routes do, so
+    // heavy use by one tenant can't run up an unbounded bill.
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+    const usage = await checkAndIncrementUsageServer(tenantId, "smsCount", tenant);
+    if (!usage.allowed) {
+      return NextResponse.json({ error: usageLimitMessage("smsCount", usage.limit) }, { status: 403 });
     }
 
     // The phone number always comes from the ticket record itself, never
