@@ -42,10 +42,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
-        const prompt = `You are a professional but plain-spoken business analyst for a small electronics repair/retail shop owner in the Philippines. The owner is busy and not an accountant — they want direct, specific, short advice, not a long explanation.
+        const prompt = `You are a friendly helper for a small electronics repair/retail shop owner in the Philippines — a small local shop with mostly walk-in and regular customers, NOT a mall store or a big-city chain. The owner is busy, is not an accountant, and may not know business terms. Explain things the way you'd explain them to a friend, not the way a consultant writes a report.
 
 Current month: ${currentMonth}
-(Consider Philippine seasonal patterns if relevant — e.g. back-to-school demand around June, holiday shopping peak around October-December, lean months typically January-February.)
+(Consider Philippine seasonal patterns if relevant — e.g. back-to-school demand around June, holiday shopping peak around October-December, lean months typically January-February. But keep every suggestion sized to a SMALL LOCAL shop with a limited, mostly nearby customer base — don't suggest big-city-scale marketing pushes, large ad budgets, or assume a large customer surge is realistic just because it's the holidays.)
 
 Time range being analyzed: ${rangeLabel}
 
@@ -88,10 +88,11 @@ Respond with ONLY this exact JSON shape, no markdown, no extra text:
 }
 
 Rules:
-- "summary": ONE short sentence stating whether the business is trending up or down and by roughly how much, weighing both retail sales AND repair activity if relevant. Mention the seasonal context only if it's genuinely relevant to explain the trend. No fluff.
-- "tasks": Give AT MOST 5 tasks total, and ONLY the highest-impact ones. Draw from ALL the data provided — stock issues, pricing/margin issues, recurring repair patterns, weekday/date patterns, and seasonal timing are all fair game, not just sales totals. Under 15 words each. Reference actual item names, device names, issues, or numbers. Assign "priority": "high" for urgent/time-sensitive items, "medium" for important but not urgent. Skip "low" priority items entirely. Never give vague advice. If there's truly only 1-2 high-value issues, give just those instead of padding to 5.
-- "suggestedGoal": A realistic, slightly challenging revenue or profit target for next month based on the current trend AND seasonal context (retail + repair labor combined). "label" should be short like "Sales Target Next Month". "value" should be a peso amount like "₱145,000".
-- Keep everything short. The owner should be able to read this in 10 seconds.`;
+- Use SIMPLE, EVERYDAY words only. Avoid business jargon like "visibility," "implement," "capture data," "leverage," "optimize," "trending," "strategy," "engagement." Say things plainly instead — e.g. "post on Facebook" instead of "increase visibility," "write it down" instead of "capture data." If a shop owner with no business background wouldn't instantly understand a word, don't use it.
+- "summary": ONE short, plain sentence saying whether the shop did better or worse this period, in numbers, weighing both retail sales AND repair activity if relevant. Mention the season only if it's genuinely relevant. No fluff, no jargon.
+- "tasks": Give AT MOST 5 tasks total, and ONLY the highest-impact ones. Draw from ALL the data provided — stock issues, pricing/margin issues, recurring repair patterns, weekday/date patterns, and seasonal timing are all fair game, not just sales totals. Under 15 words each, plain language, something the owner can literally just go do. Reference actual item names, device names, issues, or numbers. Assign "priority": "high" for urgent/time-sensitive items, "medium" for important but not urgent. Skip "low" priority items entirely. Never give vague advice. If there's truly only 1-2 high-value issues, give just those instead of padding to 5.
+- "suggestedGoal": A realistic, slightly challenging revenue or profit target for next month based on the current trend and season, sized to what a small local shop could actually reach — not a generic big-growth number. "label" should be short like "Sales Target Next Month". "value" should be a peso amount like "₱145,000".
+- Keep everything short and simple enough that someone with zero business background can read it in 10 seconds and immediately understand what to do.`;
 
 
     const response = await fetchGeminiWithRetry(geminiUrl(apiKey), {

@@ -814,7 +814,6 @@ export default function RepairTicketsPage() {
                   onChange={(e) => setCustomerName(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. Juan Dela Cruz"
                 />
               </div>
 
@@ -833,7 +832,6 @@ export default function RepairTicketsPage() {
                   onChange={(e) => setDeviceInfo(e.target.value)}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. HP Pavilion 14 Laptop"
                 />
               </div>
 
@@ -846,7 +844,6 @@ export default function RepairTicketsPage() {
                   rows={3}
                   className="w-full mt-1 px-3 py-2"
                   style={inputStyle}
-                  placeholder="e.g. Won't turn on, no display"
                 />
               </div>
 

@@ -2,27 +2,25 @@
 
 import { useState } from "react";
 
-export type CountryCode = "PH" | "US" | "OTHER";
+// UBA is a Philippines-only product, so this only accepts PH mobile
+// numbers — no country picker. A PH mobile number is always 10 digits
+// starting with 9 after the +63 (e.g. 9171234567 -> +639171234567).
+// Landline numbers don't fit this pattern, but that's intentional: only
+// mobile numbers can receive SMS, which matters once UBA can message
+// customers directly.
+const DIAL_CODE = "+63";
+const MAX_DIGITS = 10;
+const PH_MOBILE_PATTERN = /^9\d{9}$/;
 
-type PhoneConfig = {
-  label: string;
-  dialCode: string;
-  maxDigits: number;
-  placeholder: string;
-};
+export function isValidPhMobile(digits: string): boolean {
+  return PH_MOBILE_PATTERN.test(digits);
+}
 
-export const COUNTRY_PHONE_CONFIGS: Record<CountryCode, PhoneConfig> = {
-  PH: { label: "🇵🇭 +63", dialCode: "+63", maxDigits: 10, placeholder: "9171234567" },
-  US: { label: "🇺🇸 +1", dialCode: "+1", maxDigits: 10, placeholder: "2025551234" },
-  OTHER: { label: "🌐 Other", dialCode: "", maxDigits: 15, placeholder: "Enter number" },
-};
-
-// Splits a stored value like "+639171234567" back into country + digits,
-// so editing an existing phone number pre-fills the right country and digits.
-export function parsePhoneValue(value: string): { country: CountryCode; digits: string } {
-  if (value.startsWith("+63")) return { country: "PH", digits: value.slice(3) };
-  if (value.startsWith("+1")) return { country: "US", digits: value.slice(2) };
-  return { country: "OTHER", digits: value.replace(/\D/g, "") };
+// Splits a stored value like "+639171234567" back into just the local
+// digits, so editing an existing phone number pre-fills correctly.
+export function parsePhoneValue(value: string): string {
+  const trimmed = value.startsWith(DIAL_CODE) ? value.slice(DIAL_CODE.length) : value;
+  return trimmed.replace(/\D/g, "").slice(-MAX_DIGITS);
 }
 
 interface PhoneNumberInputProps {
@@ -33,55 +31,48 @@ interface PhoneNumberInputProps {
 }
 
 export default function PhoneNumberInput({ value, onChange, inputStyle, required }: PhoneNumberInputProps) {
-  const initial = parsePhoneValue(value);
-  const [country, setCountry] = useState<CountryCode>(initial.country);
-  const [digits, setDigits] = useState(initial.digits);
+  const [digits, setDigits] = useState(() => parsePhoneValue(value));
+  const [touched, setTouched] = useState(false);
 
-  const config = COUNTRY_PHONE_CONFIGS[country];
-
-  const emitChange = (nextCountry: CountryCode, nextDigits: string) => {
-    const nextConfig = COUNTRY_PHONE_CONFIGS[nextCountry];
-    onChange(nextConfig.dialCode ? `${nextConfig.dialCode}${nextDigits}` : nextDigits);
-  };
+  const showError = touched && digits.length > 0 && !isValidPhMobile(digits);
 
   const handleDigitsChange = (raw: string) => {
-    const onlyDigits = raw.replace(/\D/g, "").slice(0, config.maxDigits);
+    const onlyDigits = raw.replace(/\D/g, "").slice(0, MAX_DIGITS);
     setDigits(onlyDigits);
-    emitChange(country, onlyDigits);
-  };
-
-  const handleCountryChange = (next: CountryCode) => {
-    setCountry(next);
-    const nextConfig = COUNTRY_PHONE_CONFIGS[next];
-    const trimmed = digits.slice(0, nextConfig.maxDigits);
-    setDigits(trimmed);
-    emitChange(next, trimmed);
+    onChange(onlyDigits ? `${DIAL_CODE}${onlyDigits}` : "");
   };
 
   return (
-    <div className="flex gap-2">
-      <select
-        value={country}
-        onChange={(e) => handleCountryChange(e.target.value as CountryCode)}
-        className="px-2 py-2 text-sm flex-shrink-0"
-        style={inputStyle}
-      >
-        {(Object.keys(COUNTRY_PHONE_CONFIGS) as CountryCode[]).map((c) => (
-          <option key={c} value={c}>
-            {COUNTRY_PHONE_CONFIGS[c].label}
-          </option>
-        ))}
-      </select>
-      <input
-        type="tel"
-        inputMode="numeric"
-        required={required}
-        value={digits}
-        onChange={(e) => handleDigitsChange(e.target.value)}
-        placeholder={config.placeholder}
-        className="flex-1 px-3 py-2"
-        style={inputStyle}
-      />
+    <div>
+      <div className="flex gap-2">
+        <span
+          className="px-3 py-2 text-sm flex-shrink-0 flex items-center gap-1"
+          style={inputStyle}
+        >
+          🇵🇭 +63
+        </span>
+        <input
+          type="tel"
+          inputMode="numeric"
+          required={required}
+          pattern="9[0-9]{9}"
+          title="10-digit PH mobile number starting with 9 (e.g. 9171234567)"
+          value={digits}
+          onChange={(e) => handleDigitsChange(e.target.value)}
+          onBlur={() => setTouched(true)}
+          placeholder="9171234567"
+          className="flex-1 px-3 py-2"
+          style={{
+            ...inputStyle,
+            borderColor: showError ? "#f87171" : (inputStyle as React.CSSProperties).borderColor,
+          }}
+        />
+      </div>
+      {showError && (
+        <p className="text-xs mt-1" style={{ color: "#f87171" }}>
+          Not a valid PH mobile number — needs 10 digits starting with 9 (e.g. 9171234567).
+        </p>
+      )}
     </div>
   );
 }
