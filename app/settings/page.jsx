@@ -14,6 +14,7 @@ import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
 import { canAccessPage, homeFor } from "../lib/permissions";
 import { authedFetch } from "../lib/authedFetch";
+import { usePhProvincesAndCities } from "../lib/phLocations";
 
 const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -57,6 +58,10 @@ export default function SettingsPage() {
   const [enabledFeatures, setEnabledFeatures] = useState({});
   const [savingFeature, setSavingFeature] = useState(null);
   const [shopCode, setShopCode] = useState("");
+  const [businessProvinceId, setBusinessProvinceId] = useState("");
+  const [businessCityId, setBusinessCityId] = useState("");
+  const [savingLocation, setSavingLocation] = useState(false);
+  const { provinces, cities } = usePhProvincesAndCities();
   const [staffList, setStaffList] = useState([]);
   const [showAddStaff, setShowAddStaff] = useState(false);
   const [newStaffName, setNewStaffName] = useState("");
@@ -98,6 +103,8 @@ export default function SettingsPage() {
         const snap = await getDoc(doc(db, "tenants", tenantId));
         if (snap.exists()) {
           setEnabledFeatures(snap.data().enabledFeatures || {});
+          setBusinessProvinceId(snap.data().businessProvinceId || "");
+          setBusinessCityId(snap.data().businessCityId || "");
 
           // Backfill: accounts created before Shop Code existed won't have
           // one saved yet. Generate and persist it the first time the
@@ -122,6 +129,21 @@ export default function SettingsPage() {
     });
     return () => unsubscribe();
   }, [router]);
+
+  const handleSaveLocation = async (nextProvinceId, nextCityId) => {
+    if (!uid) return;
+    setSavingLocation(true);
+    try {
+      await updateDoc(doc(db, "tenants", uid), {
+        businessProvinceId: nextProvinceId,
+        businessCityId: nextCityId,
+      });
+    } catch (err) {
+      console.error("Failed to save business location:", err);
+    } finally {
+      setSavingLocation(false);
+    }
+  };
 
   const handleAddStaff = async (e) => {
     e.preventDefault();
@@ -314,6 +336,80 @@ export default function SettingsPage() {
         </header>
 
         <main className="p-6 space-y-10 max-w-2xl">
+          <section>
+            <h2
+              className="text-base font-semibold mb-1"
+              style={{ color: theme.colors.textPrimary }}
+            >
+              Business Location
+            </h2>
+            <p
+              className="text-sm mb-5"
+              style={{ color: theme.colors.textSecondary }}
+            >
+              Where your shop is located. UBA Business Analyst uses this to give
+              advice that fits a shop your size in your area, instead of generic
+              big-city suggestions.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select
+                value={businessProvinceId}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setBusinessProvinceId(next);
+                  setBusinessCityId("");
+                  handleSaveLocation(next, "");
+                }}
+                className="w-full px-3 py-2"
+                style={{
+                  background: theme.colors.bgSecondary,
+                  color: theme.colors.textPrimary,
+                  borderRadius: "10px",
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              >
+                <option value="">Province</option>
+                {provinces.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={businessCityId}
+                disabled={!businessProvinceId}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setBusinessCityId(next);
+                  handleSaveLocation(businessProvinceId, next);
+                }}
+                className="w-full px-3 py-2 disabled:opacity-50"
+                style={{
+                  background: theme.colors.bgSecondary,
+                  color: theme.colors.textPrimary,
+                  borderRadius: "10px",
+                  borderWidth: "1px",
+                  borderColor: theme.colors.border,
+                }}
+              >
+                <option value="">{businessProvinceId ? "City / Municipality" : "Select province first"}</option>
+                {cities
+                  .filter((c) => c.provinceId === businessProvinceId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            {savingLocation && (
+              <p className="text-xs mt-2" style={{ color: theme.colors.textSecondary }}>
+                Saving...
+              </p>
+            )}
+          </section>
+
           <section>
             <h2
               className="text-base font-semibold mb-1"

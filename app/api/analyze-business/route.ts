@@ -5,6 +5,8 @@ import { requireSession } from "../../lib/apiAuth";
 import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
 import { usageLimitMessage } from "../../lib/usageLimits";
 import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
+import phProvinces from "../../../public/ph-locations/provinces.json";
+import phCities from "../../../public/ph-locations/cities.json";
 
 export async function POST(req: NextRequest) {
   try {
@@ -42,10 +44,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
+    // Resolve the shop's actual city/province (set in Settings > Business
+    // Location) so the analysis is sized to a real place instead of a
+    // generic assumption — a shop in a small town shouldn't get advice
+    // written for a Metro Manila mall.
+    const city = (phCities as { id: string; provinceId: string; name: string }[]).find(
+      (c) => c.id === (tenant as any)?.businessCityId
+    );
+    const province = (phProvinces as { id: string; name: string }[]).find(
+      (p) => p.id === (tenant as any)?.businessProvinceId
+    );
+    const locationLabel = city && province ? `${city.name}, ${province.name}` : null;
+
         const prompt = `You are a friendly helper for a small electronics repair/retail shop owner in the Philippines — a small local shop with mostly walk-in and regular customers, NOT a mall store or a big-city chain. The owner is busy, is not an accountant, and may not know business terms. Explain things the way you'd explain them to a friend, not the way a consultant writes a report.
 
 Current month: ${currentMonth}
-(Consider Philippine seasonal patterns if relevant — e.g. back-to-school demand around June, holiday shopping peak around October-December, lean months typically January-February. But keep every suggestion sized to a SMALL LOCAL shop with a limited, mostly nearby customer base — don't suggest big-city-scale marketing pushes, large ad budgets, or assume a large customer surge is realistic just because it's the holidays.)
+(Consider Philippine seasonal patterns if relevant — e.g. back-to-school demand around June, holiday shopping peak around October-December, lean months typically January-February. ${
+      locationLabel
+        ? `This shop is specifically in ${locationLabel}, Philippines. Size every suggestion realistically to a shop of this scale in ${locationLabel} — don't assume Metro Manila or big-city-level foot traffic, ad budgets, or customer surges unless that's genuinely realistic for this area.`
+        : `This shop's exact city isn't set yet, so assume a small local Philippine town rather than a big city, and keep suggestions realistic for that scale.`
+    })
 
 Time range being analyzed: ${rangeLabel}
 

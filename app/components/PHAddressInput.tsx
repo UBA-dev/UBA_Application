@@ -1,15 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
-type Province = { id: string; regionCode: string; name: string };
-type City = { id: string; provinceId: string; name: string };
-type Barangay = { id: string; name: string };
-
-// Loaded once and shared across every instance on the page — provinces
-// and cities are small enough to just keep in memory for the session.
-let provincesCache: Province[] | null = null;
-let citiesCache: City[] | null = null;
+import { useState } from "react";
+import { usePhProvincesAndCities, usePhBarangays } from "../lib/phLocations";
 
 interface PHAddressInputProps {
   onChange: (composedAddress: string) => void;
@@ -23,49 +15,16 @@ interface PHAddressInputProps {
 // addressing — e.g. "malapit sa basketball court"). Composes these into
 // one formatted address string via onChange, the same shape the rest of
 // the app already stores and displays, so nothing downstream needs to
-// change. Barangays load lazily per city (one small file per city under
-// /public/ph-locations/barangays/) instead of shipping all ~42,000
-// barangays up front.
+// change.
 export default function PHAddressInput({ onChange, inputStyle, required }: PHAddressInputProps) {
-  const [provinces, setProvinces] = useState<Province[]>(provincesCache || []);
-  const [cities, setCities] = useState<City[]>(citiesCache || []);
-  const [barangays, setBarangays] = useState<Barangay[]>([]);
-  const [loadingBarangays, setLoadingBarangays] = useState(false);
+  const { provinces, cities } = usePhProvincesAndCities();
 
   const [provinceId, setProvinceId] = useState("");
   const [cityId, setCityId] = useState("");
   const [barangayName, setBarangayName] = useState("");
   const [landmark, setLandmark] = useState("");
 
-  useEffect(() => {
-    if (provincesCache && citiesCache) {
-      setProvinces(provincesCache);
-      setCities(citiesCache);
-      return;
-    }
-    Promise.all([
-      fetch("/ph-locations/provinces.json").then((r) => r.json()),
-      fetch("/ph-locations/cities.json").then((r) => r.json()),
-    ]).then(([p, c]) => {
-      provincesCache = p;
-      citiesCache = c;
-      setProvinces(p);
-      setCities(c);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!cityId) {
-      setBarangays([]);
-      return;
-    }
-    setLoadingBarangays(true);
-    fetch(`/ph-locations/barangays/${cityId}.json`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then(setBarangays)
-      .catch(() => setBarangays([]))
-      .finally(() => setLoadingBarangays(false));
-  }, [cityId]);
+  const { barangays, loading: loadingBarangays } = usePhBarangays(cityId);
 
   const citiesForProvince = provinceId ? cities.filter((c) => c.provinceId === provinceId) : [];
 
