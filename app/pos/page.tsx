@@ -352,9 +352,9 @@ export default function PosPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6 flex flex-col lg:flex-row gap-6">
+      <main className="flex-1 min-w-0 p-6 flex flex-col lg:flex-row gap-6">
         {/* Product picker */}
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           {(!isOnline || pendingCount > 0) && (
             <div
               className="flex items-center justify-between gap-3 px-4 py-2.5 mb-4 text-sm font-medium"
@@ -588,7 +588,7 @@ export default function PosPage() {
                 className="text-sm font-medium"
                 style={{ color: change >= 0 ? "#fff" : "#f87171" }}
               >
-                {change >= 0 ? "Change" : "Insufficient"}
+                {change >= 0 ? "Change" : "Not Enough"}
               </span>
               <span
                 className="text-lg font-bold"

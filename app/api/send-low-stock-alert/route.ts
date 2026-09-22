@@ -1,17 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const { ownerEmail, businessName, items } = await req.json();
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
 
-    if (!ownerEmail || !Array.isArray(items) || items.length === 0) {
+    const { items } = await req.json();
+    if (!Array.isArray(items) || items.length === 0) {
       return NextResponse.json({ error: "Missing data" }, { status: 400 });
     }
 
+    // Owner email, business name, and plan all come from Firestore, never
+    // from the request body — otherwise anyone could make this endpoint
+    // email any address, on the Owner's Resend account, regardless of plan.
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+
+    if (!hasFeatureAccess(tenant, "lowStockEmail")) {
+      return NextResponse.json(
+        { error: "This feature is for the Pro/Business plan." },
+        { status: 403 }
+      );
+    }
+
+    const ownerEmail = tenant?.ownerEmail;
+    if (!ownerEmail) {
+      return NextResponse.json({ error: "No email on file for this account." }, { status: 400 });
+    }
+    const businessName = tenant?.businessName;
+
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
     const resend = new Resend(apiKey);
@@ -19,13 +51,13 @@ export async function POST(req: NextRequest) {
     const itemRows = items
       .map(
         (i: any) =>
-          `<tr><td style="padding:8px 12px;border-bottom:1px solid #eee;">${i.name}</td><td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">${i.stock}</td><td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">${i.threshold}</td></tr>`
+          `<tr><td style="padding:8px 12px;border-bottom:1px solid #eee;">${escapeHtml(i.name)}</td><td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">${Number(i.stock) || 0}</td><td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">${Number(i.threshold) || 0}</td></tr>`
       )
       .join("");
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto;">
-        <h2 style="color:#1e293b;">⚠️ Low Stock Alert — ${businessName || "Your Shop"}</h2>
+        <h2 style="color:#1e293b;">⚠️ Low Stock Alert — ${escapeHtml(businessName || "Your Shop")}</h2>
         <p style="color:#475569;">These items are at or below their low-stock threshold:</p>
         <table style="width:100%; border-collapse:collapse; margin-top:12px;">
           <thead>

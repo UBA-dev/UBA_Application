@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb } from "../../lib/firebaseAdmin";
 import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
+import { usageLimitMessage } from "../../lib/usageLimits";
+import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 
 // In-memory cache para sa identical prompt queries
 const responseCache = new Map<string, { reply: string; timestamp: number }>();
@@ -18,48 +22,51 @@ function needsWebSearch(message: string): boolean {
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId, message, history, businessContext } = await req.json();
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
+
+    const { message, history, businessContext } = await req.json();
 
     if (!message || typeof message !== "string") {
       return NextResponse.json(
-        { error: "Invalid input. Please provide a valid message." },
+        { error: "That message isn't valid. Please type a message." },
         { status: 400 }
       );
     }
 
-    if (!userId) {
-      return NextResponse.json(
-        { error: "Authentication required. Please log in to continue." },
-        { status: 401 }
-      );
-    }
-
-    // --- 0. Server-side plan/subscription check (HINDI dapat basta pagkatiwalaan
-    // ang client) — kailangang Pro/Business plan pa rin, at hindi expired/deactivated.
+    // --- 0. Server-side plan/subscription check (never trust the client for
+    // this) — still needs a Pro/Business plan, and not expired/deactivated.
+    let tenant: any = null;
     try {
-      const tenantSnap = await adminDb.collection("tenants").doc(userId).get();
-      const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+      const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+      tenant = tenantSnap.exists ? tenantSnap.data() : null;
       if (!hasFeatureAccess(tenant, "aiFeatures")) {
         return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
       }
     } catch (accessErr) {
       console.error("uba-assistant access check failed:", accessErr);
       return NextResponse.json(
-        { error: "Unable to verify your access right now. Please try again shortly." },
+        { error: "Couldn't check your access right now. Please try again shortly." },
         { status: 500 }
       );
+    }
+
+    const usage = await checkAndIncrementUsageServer(tenantId, "chatCount", tenant);
+    if (!usage.allowed) {
+      return NextResponse.json({ error: usageLimitMessage("chatCount", usage.limit) }, { status: 403 });
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "System configuration error. Please contact the administrator." },
+        { error: "Something's wrong on our end. Please contact support." },
         { status: 500 }
       );
     }
 
     // --- 1. Cache Check ---
-    const cacheKey = `${userId}:${message.trim().toLowerCase()}`;
+    const cacheKey = `${tenantId}:${message.trim().toLowerCase()}`;
     const cached = responseCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       return NextResponse.json({ reply: cached.reply, cached: true });
@@ -141,16 +148,7 @@ ${JSON.stringify(trimmedContext)}`;
     }
 
     // --- 4. Gemini API Call ---
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      }
-    );
+    const response = await fetchGeminiWithRetry(geminiUrl(apiKey), requestBody);
 
     if (!response.ok) {
       const errText = await response.text();
@@ -159,7 +157,7 @@ ${JSON.stringify(trimmedContext)}`;
       if (response.status === 429) {
         return NextResponse.json(
           { 
-            error: "The AI assistant is currently experiencing high request volume or usage limits. Please try again in a few moments." 
+            error: "The UBA Assistant is very busy right now. Please try again in a few moments."
           },
           { status: 429 }
         );
@@ -167,7 +165,7 @@ ${JSON.stringify(trimmedContext)}`;
 
       return NextResponse.json(
         { 
-          error: "Unable to process your request at this time. Please try again shortly." 
+          error: "Couldn't handle your request right now. Please try again shortly."
         },
         { status: 502 }
       );
@@ -184,7 +182,7 @@ ${JSON.stringify(trimmedContext)}`;
     if (!replyText) {
       console.error("Unexpected Gemini response shape:", JSON.stringify(data));
       return NextResponse.json(
-        { error: "The assistant was unable to generate a response. Please rephrase your query." },
+        { error: "The assistant couldn't come up with an answer. Please try asking in a different way." },
         { status: 502 }
       );
     }
@@ -196,7 +194,7 @@ ${JSON.stringify(trimmedContext)}`;
   } catch (err) {
     console.error("uba-assistant error:", err);
     return NextResponse.json(
-      { error: "An unexpected error occurred while processing your request. Please try again later." },
+      { error: "Something went wrong. Please try again later." },
       { status: 500 }
     );
   }

@@ -301,12 +301,12 @@ export default function Sidebar() {
   const hasLockedNavItem = navItems.some((item) => item.locked);
   let lockBannerMessage: string | null = null;
   if (manuallyDeactivated) {
-    lockBannerMessage = "🚫 Na-deactivate ang account mo. Makipag-ugnayan sa developer (Settings > Help & Support) para ma-restore.";
+    lockBannerMessage = "🚫 Your account has been deactivated. Contact the developer (Settings > Help & Support) to restore it.";
   } else if (hasLockedNavItem) {
     lockBannerMessage =
       subscriptionStatus === "MONTHLY"
-        ? "⚠️ Naka-lock ang ilang features (hindi kasama sa Basic plan mo, o na-expire na). I-upgrade o mag-renew sa Upgrade Plan."
-        : "⏳ Naka-lock ang ilang Pro/Business features (tapos na ang trial o Basic ka pa lang). Pumunta sa Upgrade Plan.";
+        ? "⚠️ Some features are locked (not included in your Basic plan, or your plan has expired). Upgrade or renew in Upgrade Plan."
+        : "⏳ Some Pro/Business features are locked (your trial has ended or you're still on Basic). Go to Upgrade Plan.";
   }
 
   const planLabel: { text: string; bg: string; color: string } = (() => {
@@ -384,16 +384,16 @@ export default function Sidebar() {
             className="relative w-72 max-w-[80vw] h-full flex flex-col p-4 overflow-y-auto"
             style={{ background: "var(--color-bg-secondary)" }}
           >
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex justify-between items-center gap-2 mb-6">
               <p
-                className="text-sm font-semibold"
+                className="text-sm font-semibold truncate min-w-0"
                 style={{ color: "var(--color-text-primary)" }}
               >
                 {businessName || "My Shop"}
               </p>
               <button
                 onClick={() => setMobileMenuOpen(false)}
-                className="text-2xl leading-none"
+                className="text-2xl leading-none flex-shrink-0"
                 style={{ color: "var(--color-text-secondary)" }}
                 aria-label="Close menu"
               >
@@ -423,7 +423,7 @@ export default function Sidebar() {
                         setMobileMenuOpen(false);
                         router.push("/pricing");
                       }}
-                      title="Naka-lock — pumunta sa Upgrade Plan"
+                      title="Locked — go to Upgrade Plan"
                       className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded-lg text-sm font-medium opacity-60"
                       style={{ color: "var(--color-text-secondary)" }}
                     >
@@ -470,7 +470,7 @@ export default function Sidebar() {
       <aside
         className={`${
           collapsed ? "w-16" : "w-64"
-        } min-h-screen p-3 hidden sm:flex sm:flex-col transition-all duration-200 border-r relative`}
+        } h-screen sticky top-0 self-start overflow-y-auto p-3 hidden sm:flex sm:flex-col transition-all duration-200 border-r relative`}
         style={{
           background: "var(--color-bg-secondary)",
           borderColor: "var(--color-border)",
@@ -479,15 +479,15 @@ export default function Sidebar() {
         {/* Header Section (May UPGRADE button sa Top Right) */}
         <div className="flex items-center justify-between mb-4 px-1 relative">
           {!collapsed ? (
-            <div className="flex items-center justify-between w-full">
+            <div className="flex items-center justify-between gap-2 w-full">
               <p
-                className="text-xs font-semibold uppercase tracking-wide"
+                className="text-xs font-semibold uppercase tracking-wide truncate min-w-0"
                 style={{ color: "var(--color-text-secondary)" }}
               >
                 {session?.isStaff ? `${session.staffName} · ${session.role}` : "My Shop"}
               </p>
 
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-shrink-0">
                 <button
                   onClick={() => setCollapsed(!collapsed)}
                   className="p-1 rounded-lg transition hover:opacity-80"
@@ -620,7 +620,7 @@ export default function Sidebar() {
                 <button
                   key={item.href}
                   onClick={() => router.push("/pricing")}
-                  title={collapsed ? `${item.label} (naka-lock)` : "Naka-lock — i-click para mag-upgrade"}
+                  title={collapsed ? `${item.label} (locked)` : "Locked — click to upgrade"}
                   className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition opacity-50 ${
                     collapsed ? "justify-center" : "justify-between"
                   }`}

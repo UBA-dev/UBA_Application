@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { auth } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
+import { authedFetch } from "../lib/authedFetch";
+import TypingDots from "./TypingDots";
 
 export default function SupportAssistant() {
   const [uid, setUid] = useState(null);
@@ -29,7 +31,7 @@ export default function SupportAssistant() {
         {
           role: "assistant",
           content:
-            "Hi! Ako si UBA Support. Pwede mo akong tanungin kung paano gamitin ang app — settings, features, o kung paano mag-troubleshoot ng common issues.",
+            "Hi! I'm UBA Support. You can ask me how to use the app — settings, features, or how to troubleshoot common issues.",
         },
       ]);
     }
@@ -49,11 +51,9 @@ export default function SupportAssistant() {
     setSending(true);
 
     try {
-      const res = await fetch("/api/support-assistant", {
+      const res = await authedFetch("/api/support-assistant", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: uid,
           message: text,
           history: newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
         }),
@@ -64,7 +64,7 @@ export default function SupportAssistant() {
       if (!res.ok) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: data.error || "May problema sa pag-process, subukan ulit." },
+          { role: "assistant", content: data.error || "Something went wrong. Please try again." },
         ]);
         return;
       }
@@ -74,7 +74,7 @@ export default function SupportAssistant() {
       console.error(err);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "May problema sa koneksyon, subukan ulit." },
+        { role: "assistant", content: "There was a connection problem. Please try again." },
       ]);
     } finally {
       setSending(false);
@@ -119,7 +119,7 @@ export default function SupportAssistant() {
               className="px-3 py-2 rounded-2xl text-sm"
               style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
             >
-              ...
+              <TypingDots />
             </div>
           </div>
         )}
@@ -131,7 +131,7 @@ export default function SupportAssistant() {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={!uid}
-          placeholder={uid ? "Magtanong tungkol sa paggamit ng app..." : "Mag-log in muna..."}
+          placeholder={uid ? "Ask about how to use the app..." : "Please log in first..."}
           className="flex-1 px-3 py-2 text-sm"
           style={{
             background: "var(--color-bg-secondary)",

@@ -5,6 +5,8 @@ import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../lib/subscription";
+import { authedFetch } from "../lib/authedFetch";
+import TypingDots from "./TypingDots";
 
 export default function UbaAssistant() {
   const [uid, setUid] = useState<string | null>(null);
@@ -64,12 +66,9 @@ export default function UbaAssistant() {
     setSending(true);
 
     try {
-      // Magpapadala ng request sa ating Server Route kasama ang User ID
-      const res = await fetch("/api/uba-assistant", {
+      const res = await authedFetch("/api/uba-assistant", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: uid,
           message: text,
           history: newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
         }),
@@ -80,7 +79,7 @@ export default function UbaAssistant() {
       if (!res.ok) {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: data.error || "May problema sa pag-process, subukan ulit." },
+          { role: "assistant", content: data.error || "Something went wrong. Please try again." },
         ]);
         return;
       }
@@ -90,7 +89,7 @@ export default function UbaAssistant() {
       console.error(err);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "May problema sa koneksyon, subukan ulit." },
+        { role: "assistant", content: "There was a connection problem. Please try again." },
       ]);
     } finally {
       setSending(false);
@@ -116,7 +115,7 @@ export default function UbaAssistant() {
           background: "var(--gradient-accent)",
           boxShadow: "var(--glow-shadow)",
         }}
-        title={aiAllowed ? "UBA Assistant" : "UBA Assistant (naka-lock — Pro/Business feature)"}
+        title={aiAllowed ? "UBA Assistant" : "UBA Assistant (locked — Pro/Business feature)"}
       >
         <span className="text-2xl">{open ? "×" : aiAllowed ? "🤖" : "🔒"}</span>
       </button>
@@ -164,7 +163,7 @@ export default function UbaAssistant() {
                   className="px-3 py-2 rounded-2xl text-sm"
                   style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
                 >
-                  ...
+                  <TypingDots />
                 </div>
               </div>
             )}
@@ -206,7 +205,7 @@ export default function UbaAssistant() {
                 className="block text-center px-4 py-2 text-sm font-semibold rounded-lg"
                 style={{ background: "var(--gradient-accent)", color: "#fff", borderRadius: "var(--radius-button)" }}
               >
-                Mag-upgrade sa Settings
+                Upgrade in Settings
               </a>
             </div>
           )}

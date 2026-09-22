@@ -6,6 +6,7 @@ import { collection, getDocs, doc, updateDoc, query, orderBy } from "firebase/fi
 import { auth, db } from "../lib/firebase";
 import { getAiAccess, urgencyLevel, getPlanLabel } from "../lib/subscription";
 import { PLANS, PLAN_IDS, peso, planPrice, cycleDays, cycleLabel } from "../lib/plans";
+import { authedFetch } from "../lib/authedFetch";
 
 type Tenant = {
   id: string;
@@ -121,7 +122,7 @@ function CountdownBadge({ tenant }: { tenant: Tenant }) {
         className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg"
         style={{ background: "rgba(250,204,21,0.15)", color: "#facc15" }}
       >
-        ⚠️ LUMANG LIFETIME — pumili ng plan
+        ⚠️ Old Lifetime plan — pick a plan
       </span>
     );
   }
@@ -129,7 +130,7 @@ function CountdownBadge({ tenant }: { tenant: Tenant }) {
   if (!tenant.nextPaymentDue || remainingMs === null) {
     return (
       <span className="text-xs" style={{ color: "#8b9bc4" }}>
-        Walang due date na naka-set
+        No due date set
       </span>
     );
   }
@@ -172,11 +173,7 @@ export default function AdminPage() {
       }
 
       try {
-        const res = await fetch("/api/check-admin", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: user.uid }),
-        });
+        const res = await authedFetch("/api/check-admin", { method: "POST" });
 
         const data = await res.json();
 
@@ -254,7 +251,7 @@ export default function AdminPage() {
   const handleMarkPaid = async (tenant: Tenant, planId: PlanId, cycle: Cycle) => {
     const price = planPrice(planId, cycle);
     const ok = window.confirm(
-      `I-mark na bayad ang "${tenant.businessName || tenant.ownerEmail}" sa ${PLANS[planId].name} ${cycleLabel(cycle)} (${peso(price)})?`
+      `Mark "${tenant.businessName || tenant.ownerEmail}" as paid for ${PLANS[planId].name} ${cycleLabel(cycle)} (${peso(price)})?`
     );
     if (!ok) return;
 
@@ -295,7 +292,7 @@ export default function AdminPage() {
       );
     } catch (error) {
       console.error("Failed to mark paid:", error);
-      alert("Hindi na-save. Tingnan ang koneksyon at subukan ulit.");
+      alert("Couldn't save. Check your connection and try again.");
     } finally {
       setSavingId(null);
     }
@@ -404,11 +401,11 @@ export default function AdminPage() {
               {sortedTenants.map((tenant) => {
                 return (
                   <div key={tenant.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={cardStyle}>
-                    <div>
-                      <p className="font-semibold" style={{ color: "#e8edf9" }}>
+                    <div className="min-w-0">
+                      <p className="font-semibold break-words" style={{ color: "#e8edf9" }}>
                         {tenant.businessName || "(No name set)"}
                       </p>
-                      <p className="text-xs" style={{ color: "#8b9bc4" }}>
+                      <p className="text-xs break-words" style={{ color: "#8b9bc4" }}>
                         {tenant.ownerEmail || "no email on file"}
                       </p>
                       <p className="text-xs mt-0.5" style={{ color: "#8b9bc4" }}>
@@ -422,10 +419,10 @@ export default function AdminPage() {
                     <div className="flex flex-col items-end gap-2 flex-shrink-0">
                       <div className="flex flex-col items-end gap-1.5">
                         <span className="text-[11px]" style={{ color: "#5b6d94" }}>
-                          Mark Paid (Monthly +30 araw · Annual +365 araw):
+                          Mark Paid (Monthly +30 days · Annual +365 days):
                         </span>
                         {PLAN_OPTIONS.map((plan) => (
-                          <div key={plan.id} className="flex items-center gap-1.5">
+                          <div key={plan.id} className="flex flex-wrap items-center justify-end gap-1.5">
                             <span className="text-[11px] font-semibold w-16 text-right" style={{ color: plan.color }}>
                               {plan.label}
                             </span>
@@ -447,7 +444,7 @@ export default function AdminPage() {
                                     borderWidth: "1px",
                                     borderColor: plan.color,
                                   }}
-                                  title={`${plan.label} ${cycleLabel(cycle)} · ${peso(planPrice(plan.id, cycle))} · +${cycleDays(cycle)} araw`}
+                                  title={`${plan.label} ${cycleLabel(cycle)} · ${peso(planPrice(plan.id, cycle))} · +${cycleDays(cycle)} days`}
                                 >
                                   {cycleLabel(cycle)} {peso(planPrice(plan.id, cycle))}
                                 </button>
@@ -467,8 +464,8 @@ export default function AdminPage() {
                           }}
                           title={
                             tenant.manuallyDeactivated
-                              ? "I-restore ang access nang hindi kailangang i-renew"
-                              : "Instant lock — para sa abuse, chargeback, o hindi pagbayad"
+                              ? "Restore access without needing to renew"
+                              : "Instant lock — for abuse, chargeback, or non-payment"
                           }
                         >
                           {tenant.manuallyDeactivated ? "✅ Reactivate" : "🚫 Deactivate"}
@@ -486,12 +483,12 @@ export default function AdminPage() {
       {activeTab === "feedback" && (
         <>
           <p className="text-sm mb-4" style={{ color: "#8b9bc4" }}>
-            Mga suggestion/bug report na isinumite ng mga users mula sa Settings &gt; Help &amp; Support.
+            Suggestions/bug reports sent in by users from Settings &gt; Help &amp; Support.
           </p>
           {loadingFeedback ? (
             <p style={{ color: "#8b9bc4" }}>Loading feedback...</p>
           ) : sortedFeedback.length === 0 ? (
-            <p style={{ color: "#8b9bc4" }}>Wala pang naisumiteng feedback.</p>
+            <p style={{ color: "#8b9bc4" }}>No feedback submitted yet.</p>
           ) : (
             <div className="space-y-3">
               {sortedFeedback.map((item) => {

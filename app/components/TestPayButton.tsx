@@ -15,7 +15,7 @@ export default function TestPayButton({ planId, planName, amount }: TestPayButto
   const handleSubscribe = async () => {
     const user = auth.currentUser;
     if (!user) {
-      alert("Kailangan mo munang mag-login bago mag-subscribe.");
+      alert("Please log in first before subscribing.");
       return;
     }
 

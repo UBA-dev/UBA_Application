@@ -46,7 +46,7 @@ export const PLANS = {
   basic: {
     id: "basic",
     name: "Basic",
-    tagline: "Kumpletong operasyon ng tindahan",
+    tagline: "Everything your store needs",
     monthly: 499,
     annual: 499 * ANNUAL_MONTHS_PAID, // ₱4,491
     staffCap: 3,
@@ -54,19 +54,19 @@ export const PLANS = {
     ai: { scanCount: 10, chatCount: 20, analysisCount: 0, notificationCount: 0 },
     features: BASIC_FEATURES,
     highlights: [
-      "POS na gumagana kahit offline",
-      "Unlimited na items at sales history",
-      "Hanggang 3 staff logins (may roles at approvals)",
-      "Expenses at profit tracking, CSV/Excel import",
-      "Low-stock alert sa app",
-      "AI Starter: 10 scans + 20 assistant messages kada buwan",
-      "Support sa email/Messenger",
+      "POS that works even offline",
+      "Unlimited items and sales history",
+      "Up to 3 staff logins (with roles and approvals)",
+      "Expense and profit tracking, CSV/Excel import",
+      "Low-stock alert in the app",
+      "UBA Starter: 10 scans + 20 assistant messages per month",
+      "Support by email/Messenger",
     ],
   },
   pro: {
     id: "pro",
     name: "Pro",
-    tagline: "Para sa repair at service shops",
+    tagline: "For repair and service shops",
     monthly: 999,
     annual: 999 * ANNUAL_MONTHS_PAID, // ₱8,991
     staffCap: 8,
@@ -74,20 +74,20 @@ export const PLANS = {
     ai: { scanCount: 60, chatCount: 100, analysisCount: 20, notificationCount: 60 },
     features: PRO_FEATURES,
     highlights: [
-      "Lahat ng nasa Basic",
-      "Repair, Delivery, at P.O. Tickets",
-      "AI Business Analyst (20 kada buwan)",
-      "AI Scanner (60) at Assistant (100) kada buwan",
-      "AI-drafted na messages sa customers",
-      ...(EMAIL_ALERTS_READY ? ["Low-stock alert sa email"] : []),
-      "Hanggang 8 staff logins",
-      "Mas mabilis na support (~1 business day)",
+      "Everything in Basic",
+      "Repair, Delivery, and P.O. Tickets",
+      "UBA Business Analyst (20 per month)",
+      "UBA Scanner (60) and Assistant (100) per month",
+      "UBA-drafted messages to customers",
+      ...(EMAIL_ALERTS_READY ? ["Low-stock alert by email"] : []),
+      "Up to 8 staff logins",
+      "Faster support (~1 business day)",
     ],
   },
   business: {
     id: "business",
     name: "Business",
-    tagline: "Para sa may team at mataas ang volume",
+    tagline: "For teams with high sales volume",
     monthly: 1499,
     annual: 1499 * ANNUAL_MONTHS_PAID, // ₱13,491
     staffCap: 25,
@@ -95,11 +95,11 @@ export const PLANS = {
     ai: { scanCount: 120, chatCount: 200, analysisCount: 40, notificationCount: 120 },
     features: BUSINESS_FEATURES,
     highlights: [
-      "Lahat ng nasa Pro",
-      "2× na AI allowance (120 scans, 200 messages, 40 analyses)",
-      "Hanggang 25 staff logins",
+      "Everything in Pro",
+      "2× the UBA allowance (120 scans, 200 messages, 40 analyses)",
+      "Up to 25 staff logins",
       "Priority support (~4 business hours)",
-      "Libreng assisted setup: ii-import namin ang inventory mo",
+      "Free assisted setup: we import your inventory for you",
     ],
   },
 };
@@ -124,14 +124,16 @@ export const TRIAL_LIMITS = {
 // ── Paano magbayad (manual, habang wala pa ang online payment) ───────────
 // PUNAN MO ITO. Ang walang laman ay hindi ipapakita sa Pricing page.
 export const PAYMENT_INFO = {
-  gcashName: "",
-  gcashNumber: "",
-  bankName: "",
-  bankAccountName: "",
-  bankAccountNumber: "",
-  contactLabel: "", // halimbawa: "Messenger: UBA Support"
-  contactUrl: "", // halimbawa: "https://m.me/iyong-page"
-  activationNote: "Ia-activate ang plan mo sa loob ng 1 business day pagkatapos ma-verify ang bayad.",
+  mayaName: "Zoren Galagnao",
+  mayaNumber: "0963 750 8043",
+  gcashName: "Jeric Galagnao",
+  gcashNumber: "0963 750 8043",
+  bankName: "BanKo (a subsidiary of BPI)",
+  bankAccountName: "Zoren Ponce Galagnao",
+  bankAccountNumber: "1800 2339 0785",
+  contactLabel: "Message on Facebook",
+  contactUrl: "https://www.facebook.com/zorenponce.galagnao",
+  activationNote: "Your plan will be activated within 1 business day after we verify your payment.",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────

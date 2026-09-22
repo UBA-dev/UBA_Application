@@ -101,7 +101,7 @@ export default function SuggestionForm() {
         value={message}
         onChange={(e) => setMessage(e.target.value)}
         rows={4}
-        placeholder="Isulat dito ang suggestion, bug, o feedback mo. Ang developer lang ang makakabasa nito."
+        placeholder="Write your suggestion, bug, or feedback here. Only the developer can read this."
         className="w-full px-3 py-2 text-sm resize-none"
         style={{
           background: "var(--color-bg-secondary)",
@@ -114,8 +114,8 @@ export default function SuggestionForm() {
 
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-          {status === "success" && "✅ Salamat! Naipadala na ang feedback mo."}
-          {status === "error" && "⚠️ Hindi naipadala, subukan ulit."}
+          {status === "success" && "✅ Thanks! Your feedback has been sent."}
+          {status === "error" && "⚠️ Couldn't send it. Please try again."}
         </p>
         <button
           type="submit"

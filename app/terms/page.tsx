@@ -19,7 +19,7 @@ export default function TermsPage() {
             <p>
               UBA (Universal Business Assistant) is a business management application for small
               retail and repair shops, providing inventory management, point-of-sale, sales
-              tracking, repair ticket management, and optional AI-powered features (scanning,
+              tracking, repair ticket management, and optional UBA smart features (scanning,
               business analysis, and a chat assistant).
             </p>
           </section>
@@ -34,29 +34,42 @@ export default function TermsPage() {
           </section>
 
           <section>
-            <h2 className="font-semibold text-base mb-1">3. Subscription & Fees</h2>
+            <h2 className="font-semibold text-base mb-1">3. Plans, Billing, and Refunds</h2>
             <p>
-              New accounts begin with a free trial period. After the trial, continued access to
-              AI-powered features (Scanner, Business Analyst, Assistant, automated low-stock
-              alerts) requires an active paid plan (monthly or one-time/lifetime, as agreed with
-              your UBA provider). Core business tools — inventory, point-of-sale, sales
-              tracking, and repair tickets — remain available regardless of subscription status.
+              <strong>Plans.</strong> UBA offers three paid plans — Basic, Pro, and Business —
+              each with different limits on staff logins, UBA usage, and features such as Repair,
+              Delivery, and P.O. Tickets. Current prices and what's included in each plan are
+              shown on the Pricing page inside the app. New accounts get a 14-day free trial with
+              full access before choosing a plan.
             </p>
             <p className="mt-2">
-              Payment terms, amounts, and billing frequency are agreed directly between you and
-              your UBA provider outside of this app. UBA does not process payments automatically
-              within the application at this time.
+              <strong>Free plan.</strong> If your trial ends or a plan is not renewed, your
+              account is not locked. It moves to a Free plan: your data stays safe, and core
+              tools (POS, Inventory, Sales & Expenses) keep working, limited to 50 inventory
+              items. Staff logins, UBA features, and Tickets are not available on the Free plan.
+            </p>
+            <p className="mt-2">
+              <strong>Billing.</strong> You can pay monthly or annually (annual plans cost 25%
+              less — 9 months' price for 12 months of use). Payment is currently handled
+              manually: you send payment through the method shown on the Pricing page (such as
+              GCash), and your plan is activated within 1 business day after your payment is
+              verified. Plans do not auto-renew — monthly plans need to be paid again each month
+              to stay active, and we'll remind you before an annual plan is about to expire.
+            </p>
+            <p className="mt-2">
+              <strong>Refunds.</strong> Annual plans can be refunded within 14 days of payment.
+              Monthly plans are not refundable once the plan has been activated for that period.
             </p>
           </section>
 
           <section>
-            <h2 className="font-semibold text-base mb-1">4. AI Features & Usage Limits</h2>
+            <h2 className="font-semibold text-base mb-1">4. UBA Features & Usage Limits</h2>
             <p>
-              AI-powered features send relevant business data (e.g. item descriptions, sales
+              UBA's smart features send relevant business data (e.g. item descriptions, sales
               summaries, uploaded photos or documents) to third-party AI providers (Google
-              Gemini) to generate results. AI-generated content (item details, business
+              Gemini) to generate results. Content generated this way (item details, business
               insights, draft customer messages) should be reviewed before relying on it — it
-              may occasionally be inaccurate. AI features are subject to reasonable monthly
+              may occasionally be inaccurate. These features are subject to reasonable monthly
               usage limits to prevent abuse.
             </p>
           </section>

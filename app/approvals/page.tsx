@@ -133,7 +133,7 @@ export default function ApprovalsPage() {
         const itemSnap = await getDoc(itemRef);
 
         if (!itemSnap.exists()) {
-          alert("Wala na sa inventory ang item na ito, kaya hindi na ito ma-approve. I-reject na lang.");
+          alert("This item is no longer in inventory, so it can't be approved. Please reject it instead.");
           setBusyId(null);
           return;
         }
@@ -146,7 +146,7 @@ export default function ApprovalsPage() {
           }
         }
         if (Object.keys(updates).length === 0) {
-          alert("Walang valid na pagbabago sa request na ito.");
+          alert("This request has no valid changes.");
           setBusyId(null);
           return;
         }
@@ -162,7 +162,7 @@ export default function ApprovalsPage() {
       await batch.commit();
     } catch (err) {
       console.error(err);
-      alert("Hindi na-approve. Subukan ulit.");
+      alert("Couldn't approve. Try again.");
     } finally {
       setBusyId(null);
     }
@@ -170,7 +170,7 @@ export default function ApprovalsPage() {
 
   const handleReject = async (a: Approval) => {
     if (!uid) return;
-    const confirmed = window.confirm(`I-reject ang request para sa "${a.itemName}"?`);
+    const confirmed = window.confirm(`Reject the request for "${a.itemName}"?`);
     if (!confirmed) return;
 
     setBusyId(a.id);
@@ -183,7 +183,7 @@ export default function ApprovalsPage() {
       await batch.commit();
     } catch (err) {
       console.error(err);
-      alert("Hindi na-reject. Subukan ulit.");
+      alert("Couldn't reject. Try again.");
     } finally {
       setBusyId(null);
     }
@@ -202,7 +202,7 @@ export default function ApprovalsPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6">
+      <main className="flex-1 min-w-0 p-6">
         <h1
           className="text-xl font-bold"
           style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
@@ -210,14 +210,14 @@ export default function ApprovalsPage() {
           Approvals
         </h1>
         <p className="text-sm mb-6" style={{ color: "var(--color-text-secondary)" }}>
-          Mga bagong item at pagbabago ng presyo na hinihintay ang OK mo.
+          New items and price changes waiting for your OK.
         </p>
 
         {loading ? (
           <p style={{ color: "var(--color-text-secondary)" }}>Loading...</p>
         ) : pending.length === 0 ? (
           <div className="p-6 text-sm" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-            Walang naghihintay na approval. 🎉
+            No approvals waiting. 🎉
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -229,7 +229,7 @@ export default function ApprovalsPage() {
                       className="text-xs px-2 py-0.5 rounded-full"
                       style={{ background: "var(--color-secondary)", color: "#fff" }}
                     >
-                      {a.type === "new_item" ? "Bagong Item" : "Pagbabago ng Presyo"}
+                      {a.type === "new_item" ? "New Item" : "Price Change"}
                     </span>
                     <p
                       className="font-semibold mt-2"
@@ -238,7 +238,7 @@ export default function ApprovalsPage() {
                       {a.itemName}
                     </p>
                     <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                      Hiniling ni {a.requestedByName} · {new Date(a.requestedAt).toLocaleString()}
+                      Requested by {a.requestedByName} · {new Date(a.requestedAt).toLocaleString()}
                     </p>
                   </div>
 
@@ -253,7 +253,7 @@ export default function ApprovalsPage() {
                         borderRadius: "var(--radius-button)",
                       }}
                     >
-                      {busyId === a.id ? "Sandali..." : "✅ Approve"}
+                      {busyId === a.id ? "Please wait..." : "✅ Approve"}
                     </button>
                     <button
                       onClick={() => handleReject(a)}
@@ -307,7 +307,7 @@ export default function ApprovalsPage() {
               className="text-sm font-semibold mb-2"
               style={{ color: "var(--color-text-secondary)" }}
             >
-              Kamakailang na-review
+              Recently Reviewed
             </h2>
             <div className="p-4 flex flex-col gap-2" style={cardStyle}>
               {reviewed.map((a) => (
@@ -315,7 +315,7 @@ export default function ApprovalsPage() {
                   <span style={{ color: "var(--color-text-primary)" }}>
                     {a.itemName}{" "}
                     <span className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                      ({a.type === "new_item" ? "Bagong Item" : "Presyo"} · {a.requestedByName})
+                      ({a.type === "new_item" ? "New Item" : "Price"} · {a.requestedByName})
                     </span>
                   </span>
                   <span

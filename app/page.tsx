@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "./lib/firebase";
 import { getSessionInfo } from "./lib/staffAuth";
+import { PLANS, PLAN_IDS, peso } from "./lib/plans";
 import Link from "next/link";
 import { Fraunces } from "next/font/google";
 import InstallButton from "./components/InstallButton";
@@ -40,7 +41,7 @@ const comparison = [
   },
   {
     before: "You can't tell what is profitable and what isn't.",
-    after: "An AI analyst reviews your sales, expenses, and profit every month.",
+    after: "A UBA analyst reviews your sales, expenses, and profit every month.",
   },
   {
     before: "Repair jobs and deliveries are scattered across notebooks and chat threads.",
@@ -56,7 +57,7 @@ const roles = [
 
 const moreFeatures = [
   {
-    title: "AI business analyst",
+    title: "UBA Business Analyst",
     body: "Monthly breakdowns of your sales, expenses, and profit, with specific suggestions based on your shop's real numbers.",
   },
   {
@@ -75,11 +76,19 @@ const steps = [
   { title: "Start selling", body: "Open the POS and ring up sales, online or offline." },
 ];
 
-const plans = [
-  { name: "Basic", price: "₱299", tagline: "Core POS and inventory tools" },
-  { name: "Pro", price: "₱499", tagline: "Adds AI insights, repairs, and deliveries", featured: true },
-  { name: "Business", price: "₱999", tagline: "Multi-branch, unlimited AI analysis" },
-];
+// Pricing/taglines come straight from lib/plans.js — the single source of
+// truth also used by the Pricing and Admin pages — so this section can never
+// drift out of sync with the real prices again.
+const plans = PLAN_IDS.map((id) => {
+  const plan = PLANS[id as keyof typeof PLANS];
+  return {
+    id,
+    name: plan.name,
+    price: peso(plan.monthly),
+    tagline: plan.tagline,
+    featured: id === "pro",
+  };
+});
 
 const faqs = [
   {
@@ -412,7 +421,7 @@ export default function RootPage() {
           </div>
 
           <div
-            className="lg:col-span-7 p-7"
+            className="lg:col-span-7 p-7 min-w-0"
             style={{ background: "var(--lp-surface)", border: "1px solid var(--lp-line)", borderRadius: "14px" }}
           >
             <h3 className="text-lg font-semibold">Staff logins with limits you set</h3>
@@ -422,7 +431,32 @@ export default function RootPage() {
               for your approval.
             </p>
 
-            <div className="mt-5 overflow-x-auto">
+            {/* Small phones: stacked cards instead of a cramped 4-column table */}
+            <div className="mt-5 sm:hidden space-y-2.5">
+              {roles.map((r) => (
+                <div
+                  key={r.role}
+                  className="p-3"
+                  style={{ border: "1px solid var(--lp-line)", borderRadius: "10px" }}
+                >
+                  <p className="text-sm font-semibold">{r.role}</p>
+                  <div className="mt-1.5 text-xs space-y-1" style={{ color: "var(--lp-muted)" }}>
+                    <p>
+                      <span style={{ color: "var(--lp-lavender)" }}>POS:</span> {r.pos}
+                    </p>
+                    <p>
+                      <span style={{ color: "var(--lp-lavender)" }}>Inventory:</span> {r.inventory}
+                    </p>
+                    <p>
+                      <span style={{ color: "var(--lp-lavender)" }}>Sales and expenses:</span> {r.sales}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Tablets and up: full table */}
+            <div className="mt-5 hidden sm:block overflow-x-auto">
               <table className="w-full text-left text-sm min-w-[460px]">
                 <thead>
                   <tr style={{ color: "var(--lp-muted)" }}>
@@ -520,6 +554,14 @@ export default function RootPage() {
             </div>
           ))}
         </div>
+
+        <p className="mt-6 text-sm" style={{ color: "var(--lp-muted)" }}>
+          Pay yearly and save 25%. See full plan details on the{" "}
+          <Link href="/pricing" className="lp-link underline">
+            pricing page
+          </Link>
+          .
+        </p>
       </section>
 
       {/* ───────── FAQ ───────── */}

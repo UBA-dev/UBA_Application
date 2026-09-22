@@ -13,6 +13,7 @@ import HelpSupport from "../components/HelpSupport";
 import { useTheme } from "../context/ThemeContext";
 import { getTheme } from "../lib/themes";
 import { canAccessPage, homeFor } from "../lib/permissions";
+import { authedFetch } from "../lib/authedFetch";
 
 const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -25,14 +26,7 @@ function generateShopCode() {
 }
 
 async function generateUniqueShopCode() {
-  const user = auth.currentUser;
-  if (!user) throw new Error("No logged-in user found.");
-
-  const idToken = await user.getIdToken();
-  const res = await fetch("/api/generate-shop-code", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${idToken}` },
-  });
+  const res = await authedFetch("/api/generate-shop-code", { method: "POST" });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Could not generate a shop code.");
   return data.shopCode;
@@ -40,13 +34,8 @@ async function generateUniqueShopCode() {
 
 
 async function revokeStaffSession(staffId) {
-  const user = auth.currentUser;
-  if (!user) return;
-
-  const idToken = await user.getIdToken();
-  const res = await fetch("/api/revoke-staff-session", {
+  const res = await authedFetch("/api/revoke-staff-session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
     body: JSON.stringify({ staffId }),
   });
   if (!res.ok) throw new Error("Could not revoke staff session.");
@@ -140,10 +129,8 @@ export default function SettingsPage() {
     setSavingStaff(true);
     setStaffError("");
     try {
-      const idToken = await auth.currentUser.getIdToken();
-      const res = await fetch("/api/create-staff", {
+      const res = await authedFetch("/api/create-staff", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({
           name: newStaffName,
           username: newStaffUsername,
@@ -221,10 +208,8 @@ export default function SettingsPage() {
     setSavingStaffEdit(true);
     setEditStaffError("");
     try {
-      const idToken = await auth.currentUser.getIdToken();
-      const res = await fetch("/api/update-staff", {
+      const res = await authedFetch("/api/update-staff", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({
           staffId: editingStaff.id,
           name: editStaffName,
@@ -307,7 +292,7 @@ export default function SettingsPage() {
       style={{ background: theme.colors.bgPrimary }}
     >
       <Sidebar />
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <header
           className="px-6 py-4 flex justify-between items-center border-b"
           style={{
@@ -661,7 +646,7 @@ export default function SettingsPage() {
               className="text-sm mb-5"
               style={{ color: theme.colors.textSecondary }}
             >
-              May tanong? Basahin ang FAQ, mag-chat sa AI support, o direktang i-message ang developer.
+              Have a question? Read the FAQ, chat with UBA support, or message the developer directly.
             </p>
             <HelpSupport />
           </section>

@@ -399,7 +399,7 @@ export default function SalesExpensesPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6">
+      <main className="flex-1 min-w-0 p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1
@@ -527,7 +527,8 @@ export default function SalesExpensesPage() {
             </div>
           ) : (
             <div className="overflow-hidden" style={cardStyle}>
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ minWidth: "580px" }}>
                 <thead
                   className="text-left"
                   style={{ background: "rgba(74, 222, 128, 0.1)", color: "#4ade80" }}
@@ -612,6 +613,7 @@ export default function SalesExpensesPage() {
                   </tr>
                 </tfoot>
               </table>
+              </div>
             </div>
           )}
         </div>
@@ -646,7 +648,8 @@ export default function SalesExpensesPage() {
             </div>
           ) : (
             <div className="overflow-hidden" style={cardStyle}>
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ minWidth: "460px" }}>
                 <thead
                   className="text-left"
                   style={{ background: "rgba(248, 113, 113, 0.1)", color: "#f87171" }}
@@ -717,6 +720,7 @@ export default function SalesExpensesPage() {
                   </tr>
                 </tfoot>
               </table>
+              </div>
             </div>
           )}
         </div>

@@ -37,6 +37,16 @@ export const PLAN_FEATURES = {
   business: PLANS.business.features,
 };
 
+// trialStartDate is a Firestore server Timestamp for new accounts (see
+// onboarding), but older tenants may still have it stored as the legacy ISO
+// string this app used before. Handles both, and missing entirely (before
+// the field ever finishes writing right after signup).
+function toDate(value) {
+  if (!value) return new Date();
+  if (typeof value === "object" && typeof value.toDate === "function") return value.toDate();
+  return new Date(value);
+}
+
 function isPaidStatus(tenant) {
   return tenant?.subscriptionStatus === "MONTHLY" || tenant?.subscriptionStatus === "LIFETIME";
 }
@@ -79,7 +89,7 @@ export function getAiAccess(tenant) {
 
   // Default: TRIAL — buong access habang tumatakbo ang 14-day free trial,
   // para maranasan nila ang buong app bago pumili ng plan.
-  const start = new Date(tenant.trialStartDate || Date.now());
+  const start = toDate(tenant.trialStartDate);
   const now = new Date();
   const daysUsed = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
   const daysLeft = TRIAL_DAYS - daysUsed;
@@ -154,23 +164,23 @@ export function getPlanLabel(tenant) {
   }
 
   const info = getAiAccess(tenant);
-  if (info.allowed) return { text: `Free Trial · ${info.daysLeft} araw pa`, tone: "trial" };
+  if (info.allowed) return { text: `Free Trial · ${info.daysLeft} days left`, tone: "trial" };
   return { text: "Free", tone: "free" };
 }
 
 export function itemCapMessage(cap) {
-  return `Umabot ka na sa ${cap} items na limit ng Free plan. I-upgrade sa Basic (unlimited items) sa Upgrade Plan para makapagdagdag pa. Hindi nawawala ang mga item mo.`;
+  return `You've reached the ${cap} item limit of the Free plan. Upgrade to Basic (unlimited items) in Upgrade Plan to add more. Your items are safe and won't be lost.`;
 }
 
 export function staffCapMessage(cap, planName) {
   if (cap <= 0) {
-    return "Hindi kasama ang staff logins sa Free plan. I-upgrade sa Basic o mas mataas para makapagdagdag ng staff.";
+    return "Staff logins are not included in the Free plan. Upgrade to Basic or higher to add staff.";
   }
-  return `Umabot ka na sa limit na ${cap} staff logins ng ${planName} plan. I-upgrade ang plan para makapagdagdag pa.`;
+  return `You've reached the ${cap} staff login limit of the ${planName} plan. Upgrade your plan to add more.`;
 }
 
 export const AI_LOCKED_MESSAGE =
-  "Tapos na ang libreng trial mo, o hindi kasama ng kasalukuyang plan mo ang AI. Gumagana pa rin ang lahat ng iba sa UBA — pumunta sa Upgrade Plan para i-unlock muli ang AI Scanner, Business Analyst, at Assistant.";
+  "Your free trial has ended, or these features are not included in your current plan. Everything else in UBA still works — go to Upgrade Plan to unlock the UBA Scanner, UBA Business Analyst, and UBA Assistant again.";
 
 export const FEATURE_LOCKED_MESSAGE =
-  "Ang feature na ito ay para sa Pro/Business plan. I-upgrade ang plan mo o mag-renew — pumunta sa Upgrade Plan.";
+  "This feature is for the Pro/Business plan. Upgrade your plan or renew — go to Upgrade Plan.";

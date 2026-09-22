@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuth } from "firebase-admin/auth";
 import { adminDb } from "@/app/lib/firebaseAdmin";
+import { requireOwnerSession } from "@/app/lib/apiAuth";
 
 // Hindi kasama ang mga letra na madaling mapagkamalan (0/O, 1/I)
 const SHOP_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -15,17 +15,8 @@ function generateShopCode(): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-
-    const decoded = await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
-
-    // Owner lang ang may Shop Code, hindi ang staff
-    if ((decoded as any).isStaff) {
-      return NextResponse.json({ error: "Only the business owner can do this." }, { status: 403 });
-    }
+    const auth = await requireOwnerSession(req);
+    if (!auth.ok) return auth.response;
 
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = generateShopCode();

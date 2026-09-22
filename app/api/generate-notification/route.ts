@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
     const prompt = `Write a short, friendly SMS/text message in Taglish (mix of Tagalog and English, casual but polite) from a repair shop to a customer, letting them know their device is ready for pickup.

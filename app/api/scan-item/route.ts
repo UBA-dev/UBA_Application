@@ -1,7 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
+import { usageLimitMessage } from "../../lib/usageLimits";
+import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
+
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+    if (!hasFeatureAccess(tenant, "aiFeatures")) {
+      return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
+    }
+
+    const usage = await checkAndIncrementUsageServer(tenantId, "scanCount", tenant);
+    if (!usage.allowed) {
+      return NextResponse.json({ error: usageLimitMessage("scanCount", usage.limit) }, { status: 403 });
+    }
+
     const body = await req.json();
     const { imageBase64, mimeType, textContent, existingCategories, existingSubCategories } = body;
 
@@ -11,7 +32,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
     const contextHint = `
@@ -36,6 +57,7 @@ Respond with ONLY this exact JSON shape — items is ALWAYS an array, even if th
       "category": "",
       "subCategory": "",
       "unit": "Piece",
+      "quantity": null,
       "unitCost": null,
       "sellingPrice": null,
       "supplierName": "",
@@ -48,6 +70,7 @@ Respond with ONLY this exact JSON shape — items is ALWAYS an array, even if th
 
 Rules:
 - unit: the unit of measurement this item is sold or stocked in. Must be EXACTLY one of: "Piece", "Kilogram", "Liter", "Sack", "Box", "Gallon", "Meter". Infer this from context — e.g. rice or cement in bulk is usually "Sack" or "Kilogram", cooking oil or fuel is usually "Liter" or "Gallon", cable or wiring is usually "Meter", individual electronics/parts/accessories are usually "Piece". Default to "Piece" only if genuinely unclear.
+- quantity: the stock count/amount written or shown for this item (e.g. "50 sacks" -> 50, "45 sacks" -> 45). Use a number if a quantity is visible/stated anywhere near the item, otherwise null. Never invent a quantity that isn't shown.
 - unitCost/sellingPrice: use numbers if visible/stated, otherwise null. Never invent prices that aren't shown.
 - barcodeText: only fill if an actual barcode/UPC number is visibly printed near the item, otherwise "".
 - confidence: "low" if the image/text is blurry, ambiguous, or you're guessing; "high" if clearly legible.
@@ -71,40 +94,33 @@ Respond ONLY with valid JSON in the shape above. No extra text, no markdown.`;
       parts.push({ text: `\n\nDocument content to analyze:\n"""\n${trimmed}\n"""` });
     }
 
-      const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: { response_mime_type: "application/json" },
-        }),
-      }
-    );
+    const response = await fetchGeminiWithRetry(geminiUrl(apiKey), {
+      contents: [{ parts }],
+      generationConfig: { response_mime_type: "application/json" },
+    });
 
     if (!response.ok) {
       const errText = await response.text();
       console.error("Gemini API error:", errText);
-      return NextResponse.json({ error: "AI analysis failed" }, { status: 502 });
+      return NextResponse.json({ error: "UBA analysis failed" }, { status: 502 });
     }
 
     const data = await response.json();
     const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!rawText) {
-      return NextResponse.json({ error: "No result from AI" }, { status: 502 });
+      return NextResponse.json({ error: "No result from UBA" }, { status: 502 });
     }
 
     let parsed;
     try {
       parsed = JSON.parse(rawText);
     } catch {
-      return NextResponse.json({ error: "Couldn't parse AI response" }, { status: 502 });
+      return NextResponse.json({ error: "Couldn't read UBA's answer" }, { status: 502 });
     }
 
     if (!Array.isArray(parsed.items)) {
-      return NextResponse.json({ error: "Unexpected AI response format" }, { status: 502 });
+      return NextResponse.json({ error: "Unexpected answer from UBA" }, { status: 502 });
     }
 
     return NextResponse.json(parsed);

@@ -1,7 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
+
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+    if (!hasFeatureAccess(tenant, "aiFeatures")) {
+      return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
+    }
+
     const { tickets } = await req.json();
 
     if (!Array.isArray(tickets) || tickets.length === 0) {
@@ -10,7 +24,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
     const ticketList = tickets
@@ -45,17 +59,10 @@ Rules:
 
 Respond ONLY with valid JSON. No markdown, no extra text.`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { response_mime_type: "application/json" },
-        }),
-      }
-    );
+    const response = await fetchGeminiWithRetry(geminiUrl(apiKey), {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { response_mime_type: "application/json" },
+    });
 
     if (!response.ok) {
       const errText = await response.text();
@@ -67,14 +74,14 @@ Respond ONLY with valid JSON. No markdown, no extra text.`;
     const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!rawText) {
-      return NextResponse.json({ error: "No result from AI" }, { status: 502 });
+      return NextResponse.json({ error: "No result from UBA" }, { status: 502 });
     }
 
     let parsed;
     try {
       parsed = JSON.parse(rawText);
     } catch {
-      return NextResponse.json({ error: "Couldn't parse AI response" }, { status: 502 });
+      return NextResponse.json({ error: "Couldn't read UBA's answer" }, { status: 502 });
     }
 
     return NextResponse.json(parsed);

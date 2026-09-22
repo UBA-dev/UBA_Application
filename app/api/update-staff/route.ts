@@ -1,20 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "firebase-admin/auth";
 import { adminDb } from "@/app/lib/firebaseAdmin";
+import { requireOwnerSession } from "@/app/lib/apiAuth";
 import bcrypt from "bcryptjs";
 
 export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-    const idToken = authHeader.split("Bearer ")[1];
-    const decoded = await getAuth().verifyIdToken(idToken);
-
-    if ((decoded as any).isStaff) {
-      return NextResponse.json({ error: "Only the business owner can edit staff." }, { status: 403 });
-    }
+    const auth = await requireOwnerSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
 
     const { staffId, name, username, role, newPin } = await req.json();
 
@@ -25,7 +19,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid role." }, { status: 400 });
     }
 
-    const staffRef = adminDb.collection("tenants").doc(decoded.uid).collection("staff").doc(staffId);
+    const staffRef = adminDb.collection("tenants").doc(tenantId).collection("staff").doc(staffId);
     const staffSnap = await staffRef.get();
     if (!staffSnap.exists) {
       return NextResponse.json({ error: "Staff account not found." }, { status: 404 });
@@ -36,7 +30,7 @@ export async function POST(req: NextRequest) {
     // Only check for username conflicts against OTHER staff docs, not this one
     const existing = await adminDb
       .collection("tenants")
-      .doc(decoded.uid)
+      .doc(tenantId)
       .collection("staff")
       .where("username", "==", normalizedUsername)
       .get();
@@ -66,7 +60,7 @@ export async function POST(req: NextRequest) {
     try {
       await getAuth().setCustomUserClaims(staffUid, {
         isStaff: true,
-        tenantId: decoded.uid,
+        tenantId,
         role,
         staffId,
         staffName: name.trim(),

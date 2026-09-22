@@ -18,9 +18,11 @@ import {
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
+import AiSpinner from "../components/AiSpinner";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
 import { canAccessPage, homeFor } from "../lib/permissions";
+import { authedFetch } from "../lib/authedFetch";
 
 
 
@@ -394,9 +396,8 @@ export default function POTicketsPage() {
     setMessageError("");
     setDraftedMessage("");
     try {
-      const res = await fetch("/api/generate-ticket-message", {
+      const res = await authedFetch("/api/generate-ticket-message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ticketType: "purchase order",
           customerName: detail.buyerName,
@@ -477,9 +478,8 @@ export default function POTicketsPage() {
       setReorderSuggestions(suggestions);
 
       if (suggestions.length > 0) {
-        const res = await fetch("/api/generate-reorder-summary", {
+        const res = await authedFetch("/api/generate-reorder-summary", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ suggestions }),
         });
         const data = await res.json();
@@ -632,7 +632,7 @@ export default function POTicketsPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6">
+      <main className="flex-1 min-w-0 p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
@@ -697,7 +697,13 @@ export default function POTicketsPage() {
               className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
               style={{ background: "var(--gradient-accent)", color: "#fff" }}
             >
-              {computingReorder ? "Computing..." : "Get Suggestions"}
+              {computingReorder ? (
+                <span className="inline-flex items-center gap-2">
+                  <AiSpinner /> Computing...
+                </span>
+              ) : (
+                "Get Suggestions"
+              )}
             </button>
           </div>
           <p className="text-xs mb-2" style={{ color: "var(--color-text-secondary)" }}>
@@ -1049,7 +1055,15 @@ export default function POTicketsPage() {
                     className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
                     style={{ background: "var(--gradient-accent)", color: "#fff" }}
                   >
-                    {draftingMessage ? "Drafting..." : draftedMessage ? "Redraft" : "Draft Message"}
+                    {draftingMessage ? (
+                      <span className="inline-flex items-center gap-2">
+                        <AiSpinner /> Drafting...
+                      </span>
+                    ) : draftedMessage ? (
+                      "Redraft"
+                    ) : (
+                      "Draft Message"
+                    )}
                   </button>
                 </div>
                 {messageError && (

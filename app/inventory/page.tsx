@@ -17,10 +17,11 @@ import {
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
+import AiSpinner from "../components/AiSpinner";
 import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFile } from "../lib/fileParsers";
 import { getAiAccess, hasFeatureAccess, getPlanLimits, itemCapMessage, AI_LOCKED_MESSAGE } from "../lib/subscription";
-import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
 import { can, type Role } from "../lib/permissions";
+import { authedFetch } from "../lib/authedFetch";
 
 type InventoryItem = {
   id: string;
@@ -79,6 +80,7 @@ type ScanApiItem = {
   category: string;
   subCategory: string;
   unit: string;
+  quantity: number | null;
   unitCost: number | null;
   sellingPrice: number | null;
   supplierName: string;
@@ -407,12 +409,9 @@ export default function InventoryPage() {
       const ownerEmail = auth.currentUser?.email;
       if (!ownerEmail) return;
       try {
-        const res = await fetch("/api/send-low-stock-alert", {
+        const res = await authedFetch("/api/send-low-stock-alert", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ownerEmail,
-            businessName,
             items: newlyLow.map((i) => ({ name: i.name, stock: i.stock, threshold: i.threshold })),
           }),
         });
@@ -591,7 +590,7 @@ export default function InventoryPage() {
         itemName: itemData.name,
         itemData,
       });
-      alert("Naipadala na kay Owner ang bagong item. Papasok ito sa Inventory kapag na-approve.");
+      alert("Sent to the Owner for approval. It will appear in Inventory once approved.");
       return;
     }
 
@@ -623,7 +622,7 @@ export default function InventoryPage() {
         itemName: itemData.name,
         changes,
       });
-      alert("Naipadala na kay Owner ang bagong presyo. Ang lumang presyo muna ang gagamitin hangga't hindi pa na-approve.");
+      alert("Sent to the Owner for approval. The old price will still be used until it's approved.");
     }
   };
 
@@ -668,7 +667,7 @@ export default function InventoryPage() {
       setShowItemForm(false);
     } catch (err) {
       console.error(err);
-      alert("Hindi na-save. Subukan ulit.");
+      alert("Couldn't save. Try again.");
     } finally {
       setSavingItem(false);
     }
@@ -1014,9 +1013,8 @@ export default function InventoryPage() {
     mimeType?: string;
     textContent?: string;
   }) => {
-    const res = await fetch("/api/scan-item", {
+    const res = await authedFetch("/api/scan-item", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...payload,
         existingCategories: categories.filter((c) => c !== "All"),
@@ -1050,7 +1048,7 @@ export default function InventoryPage() {
         barcodeText: it.barcodeText || "",
         confidence: it.confidence || "medium",
         lowConfidenceFields: it.lowConfidenceFields || [],
-        quantity: "",
+        quantity: it.quantity != null ? String(it.quantity) : "",
         unit: UNIT_OPTIONS.includes(it.unit) ? it.unit : "Piece",
         showPackCalc: false,
         packCount: "",
@@ -1073,15 +1071,9 @@ export default function InventoryPage() {
       return;
     }
 
-    if (needsAi && uid) {
-      const usage = await checkAndIncrementUsage(uid, "scanCount", tenantData);
-      if (!usage.allowed) {
-        setScanError(usageLimitMessage("scanCount", usage.limit));
-        setScanning(false);
-        return;
-      }
-    }
-
+    // The monthly scan cap is enforced server-side (in /api/scan-item) so it
+    // can't be bypassed by a tampered client — this just calls the API and
+    // shows whatever error it returns (including the usage-limit message).
     try {
       if (kind === "image") {
         const { base64, mimeType } = await resizeImageForScan(scanFile);
@@ -1119,7 +1111,7 @@ export default function InventoryPage() {
       } else if (kind === "docx") {
         const text = await parseDocxFile(scanFile);
         if (!text || text.trim().length < 5) {
-          setScanError("Couldn't extract any text from this Word document.");
+          setScanError("Couldn't find any text in this Word document.");
           return;
         }
         await analyzeWithAI({ textContent: text });
@@ -1133,7 +1125,7 @@ export default function InventoryPage() {
         }
         await analyzeWithAI({ textContent: text });
       } else {
-        setScanError("Unsupported file type. Try an image, PDF, Word, Excel, or CSV file.");
+        setScanError("This file type doesn't work here. Try an image, PDF, Word, Excel, or CSV file.");
       }
     } catch (err: any) {
       console.error(err);
@@ -1195,7 +1187,7 @@ export default function InventoryPage() {
       setBulkMessage(
         slotsLeft <= 0
           ? itemCapMessage(planLimits.itemCap)
-          : `Puwede ka na lang magdagdag ng ${slotsLeft} pang item sa Free plan (limit: ${planLimits.itemCap}). Bawasan ang napili mo, o i-upgrade sa Basic para sa unlimited items.`
+          : `You can only add ${slotsLeft} more item(s) on the Free plan (limit: ${planLimits.itemCap}). Select fewer items, or upgrade to Basic for unlimited items.`
       );
       return;
     }
@@ -1233,7 +1225,7 @@ export default function InventoryPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6">
+      <main className="flex-1 min-w-0 p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1
@@ -1399,14 +1391,14 @@ export default function InventoryPage() {
             }}
           >
             <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: "640px" }}>
+            <table className="w-full text-sm sm:min-w-[560px]">
               <thead
                 className="text-left"
                 style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
               >
                 <tr>
                   <th className="px-4 py-2">Item</th>
-                  <th className="px-4 py-2">Category</th>
+                  <th className="hidden sm:table-cell px-4 py-2">Category</th>
                   <th className="px-4 py-2">Stock</th>
                   <th className="px-4 py-2">Price</th>
                   <th className="px-4 py-2">Actions</th>
@@ -1450,6 +1442,11 @@ export default function InventoryPage() {
           {item.description}
         </p>
       )}
+      {item.category && (
+        <p className="text-xs mt-0.5 sm:hidden" style={{ color: "var(--color-text-secondary)" }}>
+          {item.category}{item.subCategory ? ` · ${item.subCategory}` : ""}
+        </p>
+      )}
       {item.serialNumbers?.length > 0 && (
         <p className="text-xs mt-1" style={{ color: "var(--color-primary-light)" }}>
           {item.serialNumbers.length} SN on file
@@ -1458,7 +1455,7 @@ export default function InventoryPage() {
     </div>
   </div>
 </td>
-                        <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
+                        <td className="hidden sm:table-cell px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
                           {item.category}
                           {item.subCategory && (
                             <span className="block text-xs" style={{ color: "var(--color-primary-light)" }}>
@@ -1541,11 +1538,16 @@ export default function InventoryPage() {
                               {bundle.description}
                             </p>
                           )}
+                          {bundle.category && (
+                            <p className="text-xs mt-0.5 sm:hidden" style={{ color: "var(--color-text-secondary)" }}>
+                              {bundle.category}{bundle.subCategory ? ` · ${bundle.subCategory}` : ""}
+                            </p>
+                          )}
                           <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
                             {bundle.components.length} components
                           </p>
                         </td>
-                        <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
+                        <td className="hidden sm:table-cell px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
                           {bundle.category}
                           {bundle.subCategory && (
                             <span className="block text-xs" style={{ color: "var(--color-primary-light)" }}>
@@ -2518,7 +2520,13 @@ export default function InventoryPage() {
                       boxShadow: "var(--glow-shadow)",
                     }}
                   >
-                    {scanning ? "Analyzing..." : "Analyze Photo"}
+                    {scanning ? (
+                      <span className="inline-flex items-center gap-2">
+                        <AiSpinner /> Analyzing...
+                      </span>
+                    ) : (
+                      "Analyze Photo"
+                    )}
                   </button>
                 </>
               )}
@@ -2595,7 +2603,13 @@ export default function InventoryPage() {
                       boxShadow: "var(--glow-shadow)",
                     }}
                   >
-                    {scanning ? "Analyzing..." : "Analyze File"}
+                    {scanning ? (
+                      <span className="inline-flex items-center gap-2">
+                        <AiSpinner /> Analyzing...
+                      </span>
+                    ) : (
+                      "Analyze File"
+                    )}
                   </button>
                 </>
               )}

@@ -9,28 +9,28 @@ import SuggestionForm from "./SuggestionForm";
 // SUPPORT_KNOWLEDGE sa app/api/support-assistant/route.ts.
 const FAQS = [
   {
-    q: "Paano ako mag-a-add ng bagong item sa Inventory?",
-    a: 'Pumunta sa Inventory sa sidebar, i-click ang "Add Item" (o katulad na button), lagyan ng pangalan, category, stock, presyo, at threshold para sa low stock alert, tapos i-save.',
+    q: "How do I add a new item to Inventory?",
+    a: 'Go to Inventory in the sidebar, click "Add Item" (or a similar button), fill in the name, category, stock, price, and threshold for low stock alert, then save.',
   },
   {
-    q: "Bakit hindi ko makita ang Repair Tickets / Delivery Tickets / P.O. sa sidebar?",
-    a: 'Pumunta sa Settings > Modules. Puwedeng na-off ang feature na iyon. I-toggle mo lang ito pabalik ON at lalabas ulit sa sidebar mo.',
+    q: "Why can't I see Repair Tickets / Delivery Tickets / P.O. in the sidebar?",
+    a: "Go to Settings > Modules. That feature may be turned off. Just toggle it back ON and it will show up in your sidebar again.",
   },
   {
-    q: "Paano gumagana ang Low Stock Alert?",
-    a: "Awtomatiko itong lalabas (🔔 icon) kapag ang stock ng isang item ay mas mababa sa o katumbas ng threshold na na-set mo sa Inventory. I-click ang bell icon para makita ang listahan at ma-plan ang reorder.",
+    q: "How does the Low Stock Alert work?",
+    a: "It shows up automatically (🔔 icon) when an item's stock is at or below the threshold you set in Inventory. Click the bell icon to see the list and plan your reorder.",
   },
   {
-    q: "Pwede ko bang palitan ang itsura/theme ng app?",
-    a: 'Oo — pumunta sa Settings > Choose Your Theme. Instant apply ito sa buong app, kasama ang graph style sa Dashboard.',
+    q: "Can I change how the app looks?",
+    a: "Yes — go to Settings > Choose Your Theme. It applies instantly across the whole app, including the graph style on the Dashboard.",
   },
   {
-    q: "Gumagana ba ang app kahit walang internet?",
-    a: "May offline caching ang UBA para makita mo pa rin ang huling na-load na data (inventory, sales, etc.) kahit walang koneksyon. Pero kailangan pa rin ng internet para mag-sync ng bagong changes.",
+    q: "Does the app work without internet?",
+    a: "UBA has offline caching so you can still see the last loaded data (inventory, sales, etc.) even without a connection. You still need internet to sync new changes, though.",
   },
   {
-    q: "Sino ang makakabasa ng suggestion o feedback na isusumite ko?",
-    a: "Ang developer lang (si Zoren) ang may access sa mga suggestion/feedback na ipinapadala dito. Ginagamit ito para mapaganda pa ang UBA.",
+    q: "Who can read the suggestions or feedback I submit?",
+    a: "Only the developer (Zoren) has access to the suggestions/feedback sent here. It's used to keep improving UBA.",
   },
 ];
 
@@ -54,12 +54,12 @@ function FaqAccordion() {
           >
             <button
               onClick={() => setOpenIndex(isOpen ? null : i)}
-              className="w-full flex items-center justify-between px-4 py-3 text-left"
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left"
             >
-              <span className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+              <span className="text-sm font-medium min-w-0" style={{ color: "var(--color-text-primary)" }}>
                 {item.q}
               </span>
-              <span style={{ color: "var(--color-text-secondary)" }}>{isOpen ? "−" : "+"}</span>
+              <span className="flex-shrink-0" style={{ color: "var(--color-text-secondary)" }}>{isOpen ? "−" : "+"}</span>
             </button>
             {isOpen && (
               <div
@@ -95,7 +95,7 @@ function ContactCard() {
       }}
     >
       <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-        Kung hindi nasagot ng FAQ o ng AI assistant ang tanong mo, direkta mo akong ma-co-contact dito:
+        If the FAQ or UBA Support didn't answer your question, you can contact me directly here:
       </p>
       <div className="space-y-2">
         {contacts.map((c) => (

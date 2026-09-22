@@ -1,7 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
+import { usageLimitMessage } from "../../lib/usageLimits";
+import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
+
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+    if (!hasFeatureAccess(tenant, "aiFeatures")) {
+      return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
+    }
+
+    const usage = await checkAndIncrementUsageServer(tenantId, "analysisCount", tenant);
+    if (!usage.allowed) {
+      return NextResponse.json({ error: usageLimitMessage("analysisCount", usage.limit) }, { status: 403 });
+    }
+
     const {
       rangeLabel,
       comparison,
@@ -18,7 +39,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
         const prompt = `You are a professional but plain-spoken business analyst for a small electronics repair/retail shop owner in the Philippines. The owner is busy and not an accountant — they want direct, specific, short advice, not a long explanation.
@@ -73,22 +94,15 @@ Rules:
 - Keep everything short. The owner should be able to read this in 10 seconds.`;
 
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { response_mime_type: "application/json" },
-        }),
-      }
-    );
+    const response = await fetchGeminiWithRetry(geminiUrl(apiKey), {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { response_mime_type: "application/json" },
+    });
 
     if (!response.ok) {
       const errText = await response.text();
       console.error("Gemini API error:", errText);
-      return NextResponse.json({ error: "AI analysis failed" }, { status: 502 });
+      return NextResponse.json({ error: "UBA analysis failed" }, { status: 502 });
     }
 
     const data = await response.json();
@@ -111,7 +125,7 @@ Rules:
       parsed = JSON.parse(rawText);
     } catch {
       console.error("Couldn't parse AI JSON:", rawText);
-      return NextResponse.json({ error: "Couldn't parse AI response" }, { status: 502 });
+      return NextResponse.json({ error: "Couldn't read UBA's answer" }, { status: 502 });
     }
 
     return NextResponse.json(parsed);

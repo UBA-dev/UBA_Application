@@ -7,8 +7,8 @@ import { auth } from "../lib/firebase";
 
 const BOOT_LINES = [
   "> BOOTING UBA CORE...",
-  "> LOADING BUSINESS INTELLIGENCE MODULE...",
-  "> ASSISTANT PROTOCOL — ONLINE",
+  "> LOADING SMART SHOP TOOLS...",
+  "> ASSISTANT — ONLINE",
   "> AWAITING NEW USER REGISTRATION...",
   "> WELCOME. LET'S BEGIN.",
 ];
@@ -251,7 +251,7 @@ export default function SignUpPage() {
                   boxShadow: "0 0 20px rgba(59, 130, 246, 0.35)",
                 }}
               >
-                {loading ? "Initializing..." : "Create Account"}
+                {loading ? "Starting..." : "Create Account"}
               </button>
 
               <p

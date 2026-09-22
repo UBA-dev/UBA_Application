@@ -17,9 +17,11 @@ import {
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
+import AiSpinner from "../components/AiSpinner";
 import { printReceipt } from "../lib/receipt";
 import PhoneNumberInput from "../components/PhoneNumberInput";
 import { canAccessPage, homeFor } from "../lib/permissions";
+import { authedFetch } from "../lib/authedFetch";
 
 type InventoryItem = {
   id: string;
@@ -175,9 +177,8 @@ export default function RepairTicketsPage() {
     setAnalyzingPatterns(true);
     setPatternsError("");
     try {
-      const res = await fetch("/api/analyze-repair-patterns", {
+      const res = await authedFetch("/api/analyze-repair-patterns", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tickets: relevantTickets.map((t) => ({
             deviceInfo: t.deviceInfo,
@@ -292,9 +293,8 @@ export default function RepairTicketsPage() {
     setDiagnosisError("");
     setDiagnosis(null);
     try {
-      const res = await fetch("/api/diagnose-repair", {
+      const res = await authedFetch("/api/diagnose-repair", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           deviceInfo,
           issueDescription,
@@ -322,9 +322,8 @@ export default function RepairTicketsPage() {
     setDetailDiagnosing(true);
     setDetailDiagnosisError("");
     try {
-      const res = await fetch("/api/diagnose-repair", {
+      const res = await authedFetch("/api/diagnose-repair", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           deviceInfo: detail.deviceInfo,
           issueDescription: detail.issueDescription,
@@ -474,7 +473,7 @@ export default function RepairTicketsPage() {
       });
     } catch (err) {
       console.error("Failed to change ticket status:", err);
-      window.alert("May problema sa pag-update ng ticket. Subukan ulit.");
+      window.alert("Couldn't update the ticket. Try again.");
     } finally {
       setChangingStatus(false);
     }
@@ -504,7 +503,7 @@ export default function RepairTicketsPage() {
       }
     } catch (err) {
       console.error("Failed to add part:", err);
-      window.alert("May problema sa pagdagdag ng part. Subukan ulit.");
+      window.alert("Couldn't add the part. Try again.");
     }
   };
 
@@ -531,7 +530,7 @@ export default function RepairTicketsPage() {
       }
     } catch (err) {
       console.error("Failed to remove part:", err);
-      window.alert("May problema sa pagtanggal ng part. Subukan ulit.");
+      window.alert("Couldn't remove the part. Try again.");
     }
   };
 
@@ -554,9 +553,8 @@ export default function RepairTicketsPage() {
     setMessageError("");
     setDraftedMessage("");
     try {
-      const res = await fetch("/api/generate-ticket-message", {
+      const res = await authedFetch("/api/generate-ticket-message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ticketType: "repair",
           customerName: detail.customerName,
@@ -605,7 +603,7 @@ export default function RepairTicketsPage() {
       }
     } catch (err) {
       console.error("Failed to delete ticket:", err);
-      window.alert("May problema sa pagbura ng ticket. Subukan ulit.");
+      window.alert("Couldn't delete the ticket. Try again.");
     }
   };
 
@@ -614,7 +612,7 @@ export default function RepairTicketsPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 p-6">
+      <main className="flex-1 min-w-0 p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1
@@ -687,7 +685,13 @@ export default function RepairTicketsPage() {
               className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
               style={{ background: "var(--gradient-accent)", color: "#fff" }}
             >
-              {analyzingPatterns ? "Analyzing..." : "Analyze Patterns"}
+              {analyzingPatterns ? (
+                <span className="inline-flex items-center gap-2">
+                  <AiSpinner /> Analyzing...
+                </span>
+              ) : (
+                "Analyze Patterns"
+              )}
             </button>
           </div>
           <p className="text-xs mb-2" style={{ color: "var(--color-text-secondary)" }}>
@@ -859,7 +863,13 @@ export default function RepairTicketsPage() {
                   borderColor: "var(--color-primary)",
                 }}
               >
-                {diagnosing ? "Analyzing..." : "🤖 Get AI Diagnosis"}
+                {diagnosing ? (
+                  <span className="inline-flex items-center gap-2">
+                    <AiSpinner /> Analyzing...
+                  </span>
+                ) : (
+                  "🤖 Get UBA Diagnosis"
+                )}
               </button>
 
               {diagnosisError && (
@@ -977,7 +987,7 @@ export default function RepairTicketsPage() {
               <div className="mb-5 p-3" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                    🤖 AI Diagnosis
+                    🤖 UBA Diagnosis
                   </p>
                   <button
                     onClick={handleRediagnoseTicket}
@@ -985,7 +995,15 @@ export default function RepairTicketsPage() {
                     className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
                     style={{ background: "var(--gradient-accent)", color: "#fff" }}
                   >
-                    {detailDiagnosing ? "Analyzing..." : detail.diagnosis ? "Re-run" : "Run Diagnosis"}
+                    {detailDiagnosing ? (
+                      <span className="inline-flex items-center gap-2">
+                        <AiSpinner /> Analyzing...
+                      </span>
+                    ) : detail.diagnosis ? (
+                      "Re-run"
+                    ) : (
+                      "Run Diagnosis"
+                    )}
                   </button>
                 </div>
                 {detailDiagnosisError && (
@@ -1149,7 +1167,15 @@ export default function RepairTicketsPage() {
                     className="text-xs font-semibold px-3 py-1.5 rounded-full disabled:opacity-50 hover:opacity-90"
                     style={{ background: "var(--gradient-accent)", color: "#fff" }}
                   >
-                    {draftingMessage ? "Drafting..." : draftedMessage ? "Redraft" : "Draft Message"}
+                    {draftingMessage ? (
+                      <span className="inline-flex items-center gap-2">
+                        <AiSpinner /> Drafting...
+                      </span>
+                    ) : draftedMessage ? (
+                      "Redraft"
+                    ) : (
+                      "Draft Message"
+                    )}
                   </button>
                 </div>
                 {messageError && (

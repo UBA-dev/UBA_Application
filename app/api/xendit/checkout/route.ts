@@ -12,7 +12,7 @@ export async function POST(request: Request) {
 
     if (!tenantId || !planId || !amount) {
       return NextResponse.json(
-        { error: "Missing required fields: tenantId, planId, or amount" },
+        { error: "Missing some required information. Please try again." },
         { status: 400 }
       );
     }

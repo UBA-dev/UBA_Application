@@ -1,7 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
+import { usageLimitMessage } from "../../lib/usageLimits";
+import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
+
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+    if (!hasFeatureAccess(tenant, "aiFeatures")) {
+      return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
+    }
+
+    const usage = await checkAndIncrementUsageServer(tenantId, "notificationCount", tenant);
+    if (!usage.allowed) {
+      return NextResponse.json({ error: usageLimitMessage("notificationCount", usage.limit) }, { status: 403 });
+    }
+
     const { ticketType, customerName, statusLabel, details, totalAmount } = await req.json();
 
     if (!customerName || !statusLabel) {
@@ -10,7 +31,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
     const prompt = `You are writing a short, friendly customer notification message in Taglish (mix of Tagalog and English) for a small shop's ${ticketType} update.
@@ -24,21 +45,14 @@ Write ONE short message (2-4 sentences) suitable for SMS or Messenger. Be warm a
 
 Respond with ONLY the message text. No quotes, no markdown, no extra commentary.`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-        }),
-      }
-    );
+    const response = await fetchGeminiWithRetry(geminiUrl(apiKey), {
+      contents: [{ parts: [{ text: prompt }] }],
+    });
 
     if (!response.ok) {
       const errText = await response.text();
       console.error("Gemini API error:", errText);
-      return NextResponse.json({ error: "AI message generation failed" }, { status: 502 });
+      return NextResponse.json({ error: "UBA message generation failed" }, { status: 502 });
     }
 
     const data = await response.json();

@@ -1,0 +1,225 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Isulat dito ang parehong Admin UID
+    function isAdmin() {
+      return request.auth != null && request.auth.uid == "hQYa5p6kpnfHj8oFneud3eLxYPx2";
+    }
+
+    // ---- Staff-awareness helpers ----
+
+    // PANSIN: gumagamit tayo ng .get('pangalan', default) dahil ang Owner
+    // ay WALANG "isStaff" sa token. Kapag diretsong binasa ang wala, nagkakaerror
+    // ang rules at nade-deny ang Owner.
+    function isStaffToken() {
+      return request.auth != null && request.auth.token.get('isStaff', false) == true;
+    }
+
+    function staffRole() {
+      return isStaffToken() ? request.auth.token.get('role', '') : '';
+    }
+
+    function isOwnerOf(tenantId) {
+      return request.auth != null && !isStaffToken() && request.auth.uid == tenantId;
+    }
+
+    function isStaffOf(tenantId) {
+      return isStaffToken() && request.auth.token.get('tenantId', '') == tenantId;
+    }
+
+    function isSecretaryOf(tenantId) {
+      return isStaffOf(tenantId) && staffRole() == "secretary";
+    }
+
+    // Owner o Secretary — ang dalawang role na pinagkakatiwalaan sa day-to-day
+    function isManagerOf(tenantId) {
+      return isOwnerOf(tenantId) || isSecretaryOf(tenantId);
+    }
+
+    function belongsToTenant(tenantId) {
+      return isOwnerOf(tenantId) || isStaffOf(tenantId);
+    }
+
+    // Ano lang ang nagbago sa isang update (listahan ng field names)
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    match /tenants/{tenantId} {
+      allow list: if isAdmin();
+      allow get: if isAdmin() || belongsToTenant(tenantId);
+
+      // Onboarding — pinapayagan ang bagong user na gawin ang sarili nilang
+      // tenant doc, PERO:
+      //   - laging "TRIAL" ang simula, bawal maglagay ng billing fields
+      //   - ang trialStartDate ay DAPAT eksaktong request.time (server clock),
+      //     hindi isang client-supplied string — kung hindi, pwedeng magpadala
+      //     ang isang tampered client ng petsa sa hinaharap para sa walang-hanggang
+      //     "trial". Kailangan ding gamitin ng client ang serverTimestamp()
+      //     (tingnan ang app/onboarding/page.tsx) sa halip na new Date().toISOString().
+      //   - ang ownerEmail ay DAPAT tumugma sa totoong email sa Auth token,
+      //     hindi basta anumang string — kung hindi, pwedeng magparehistro ang
+      //     isang user gamit ang email ng iba, at ma-abuse iyon ng mga
+      //     features na nagpapadala ng email (hal. low-stock alert) para
+      //     makapag-spam/harass sa taong may-ari talaga ng email na iyon.
+      //   - hasOnly() imbes na blocklist lang: kung sakaling magdagdag pa ng
+      //     bagong sensitive field sa hinaharap, hindi ito basta-basta
+      //     makakalusot dahil kailangan muna itong idagdag dito bago tanggapin.
+      allow create: if request.auth != null
+                    && !isStaffToken()
+                    && request.auth.uid == tenantId
+                    && request.resource.data.subscriptionStatus == "TRIAL"
+                    && request.resource.data.trialStartDate == request.time
+                    && request.resource.data.ownerUid == tenantId
+                    && request.resource.data.ownerEmail == request.auth.token.get('email', '')
+                    && request.resource.data.keys().hasOnly(
+                         ['businessName', 'theme', 'subscriptionStatus', 'trialStartDate',
+                          'ownerUid', 'ownerEmail', 'shopCode']
+                       );
+
+      // Billing fields ay Admin-only. Ang Owner lang ang makakapag-edit ng
+      // ibang tenant fields (business name, theme, atbp). Hindi kailanman
+      // ang staff.
+      allow update: if isAdmin() || (
+        isOwnerOf(tenantId) &&
+        !changedKeys().hasAny(
+          ['subscriptionStatus', 'nextPaymentDue', 'planId', 'manuallyDeactivated',
+           'trialStartDate', 'billingCycle', 'lastInvoiceId', 'ownerUid', 'ownerEmail']
+        )
+      );
+
+      allow delete: if isAdmin();
+
+      // ---- Staff accounts: Owner lang ----
+      // Wala nang direktang "create" mula sa browser. Ang bagong staff ay
+      // gagawin lang sa /api/create-staff (admin SDK, hindi dumadaan sa
+      // rules) para ma-enforce ang staff cap kada plan.
+      //
+      // Ang "update" ay limitado lang sa 'active' (ang toggle sa Settings
+      // para i-deactivate/reactivate ang isang staff nang hindi burahin) —
+      // lahat ng iba (role, username, PIN) ay dapat dumaan sa
+      // /api/update-staff, dahil doon lang naka-sync ang Firebase Auth
+      // custom claims ng staff. Kung direkta itong babaguhin dito, hindi
+      // ito matalab hangga't hindi naman nag-re-login ulit ang staff.
+      match /staff/{staffId} {
+        allow read, delete: if isOwnerOf(tenantId);
+        allow update: if isOwnerOf(tenantId) && changedKeys().hasOnly(['active']);
+      }
+
+      // ---- Inventory ----
+      match /inventory/{docId} {
+        allow read: if belongsToTenant(tenantId);
+
+        // Bagong item: Owner lang. Ang Secretary ay dumadaan sa Approvals.
+        allow create: if isOwnerOf(tenantId);
+
+        // Delete: Owner lang
+        allow delete: if isOwnerOf(tenantId);
+
+        allow update:
+          // Owner: kahit ano
+          if isOwnerOf(tenantId)
+
+          // Kahit sinong staff (Cashier, Secretary): stock lang, at PABABA lang
+          // (para sa checkout). Kasama ang serialNumbers at lowStockAlertSent
+          // dahil ginagalaw din ito ng app.
+          || (isStaffOf(tenantId)
+              && changedKeys().hasOnly(['stock', 'serialNumbers', 'lowStockAlertSent'])
+              && request.resource.data.stock <= resource.data.stock)
+
+          // Secretary: pwedeng mag-edit ng details at stock (restock, tickets),
+          // PERO HINDI ng sellingPrice at unitCost. Ang price ay dumadaan
+          // sa Approvals.
+          || (isSecretaryOf(tenantId)
+              && changedKeys().hasOnly([
+                   'name', 'description', 'category', 'subCategory', 'unit',
+                   'threshold', 'stock', 'supplierName', 'supplierLink',
+                   'serialNumbers', 'photoUrl', 'barcode', 'lowStockAlertSent'
+                 ]));
+      }
+
+      // ---- Bundles: lahat makakabasa (POS), Owner lang ang makakasulat ----
+      match /bundles/{docId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create, update, delete: if isOwnerOf(tenantId);
+      }
+
+      // ---- Approvals: hiling ng Secretary na kailangan ng OK ni Owner ----
+      match /approvals/{docId} {
+        // Owner nakikita lahat. Secretary ang sarili niyang hiling lang.
+        allow read: if isOwnerOf(tenantId)
+                    || (isSecretaryOf(tenantId)
+                        && resource.data.requestedByUid == request.auth.uid);
+
+        // Secretary lang ang gumagawa ng hiling, laging "pending" ang simula
+        allow create: if isSecretaryOf(tenantId)
+                      && request.resource.data.status == "pending"
+                      && request.resource.data.requestedByUid == request.auth.uid;
+
+        // Owner lang ang nag-a-approve / nagre-reject / nagbubura
+        allow update, delete: if isOwnerOf(tenantId);
+      }
+
+      // ---- Sales: gumawa = lahat (checkout), baguhin/burahin = Owner lang ----
+      match /sales/{docId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create: if belongsToTenant(tenantId);
+        allow update, delete: if isOwnerOf(tenantId);
+      }
+
+      // ---- Expenses: Owner + Secretary ang mag-add at mag-edit, Owner lang mag-delete ----
+      match /expenses/{docId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create, update: if isManagerOf(tenantId);
+        allow delete: if isOwnerOf(tenantId);
+      }
+
+      // ---- Tickets at AI Tasks: Owner + Secretary lang (Cashier walang access) ----
+      match /repairTickets/{docId} {
+        allow read, create, update, delete: if isManagerOf(tenantId);
+      }
+
+      match /deliveryTickets/{docId} {
+        allow read, create, update, delete: if isManagerOf(tenantId);
+      }
+
+      match /poTickets/{docId} {
+        allow read, create, update, delete: if isManagerOf(tenantId);
+      }
+
+      match /aiTasks/{docId} {
+        allow read, create, update, delete: if isManagerOf(tenantId);
+      }
+
+      // ---- Usage counter (AI limits) ----
+      // Server-only ngayon. Ang mga AI routes (scan-item, uba-assistant,
+      // analyze-business, generate-ticket-message) ay gumagamit na ng Admin
+      // SDK (bypasses rules) para mag-check-at-increment nang atomic, kaya
+      // walang dahilan pa ang client para direktang sumulat o bumasa dito.
+      // Dati, kahit sinong staff/owner ay pwedeng mag-reset ng sariling
+      // counter para makakuha ng unlimited na AI usage — sarado na ito ngayon.
+      match /usage/{docId} {
+        allow read, write: if false;
+      }
+
+      // WALANG catch-all dito. Ang subcollection na hindi nakalista
+      // sa itaas ay bawal by default.
+    }
+
+    // === Help & Support: Feedback / Suggestions ===
+    match /feedback/{feedbackId} {
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid;
+      allow read: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Default deny sa lahat ng iba
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

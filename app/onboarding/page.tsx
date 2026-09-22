@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { doc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { doc, setDoc, serverTimestamp, collection, query, where, getDocs } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { defaultThemeId } from "../lib/themes";
+import { authedFetch } from "../lib/authedFetch";
 
 // Excludes visually ambiguous characters (0/O, 1/I) since owners will read
 // this code aloud or type it manually on a shared device.
@@ -19,14 +20,7 @@ function generateShopCode(): string {
 }
 
 async function generateUniqueShopCode(): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error("No logged-in user found.");
-
-  const idToken = await user.getIdToken();
-  const res = await fetch("/api/generate-shop-code", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${idToken}` },
-  });
+  const res = await authedFetch("/api/generate-shop-code", { method: "POST" });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Could not generate a shop code.");
   return data.shopCode;
@@ -63,7 +57,10 @@ export default function OnboardingPage() {
         businessName,
         theme: defaultThemeId,
         subscriptionStatus: "TRIAL",
-        trialStartDate: new Date().toISOString(),
+        // Server-stamped, not a client-supplied string — a forged client
+        // could otherwise set this to a future date to fake an unlimited
+        // trial (the Firestore rule requires this to equal request.time).
+        trialStartDate: serverTimestamp(),
         ownerUid: user.uid,
         ownerEmail: user.email,
         shopCode,

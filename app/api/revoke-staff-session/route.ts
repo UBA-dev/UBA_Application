@@ -1,30 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuth } from "firebase-admin/auth";
 import { adminDb } from "@/app/lib/firebaseAdmin";
+import { requireOwnerSession } from "@/app/lib/apiAuth";
 
 export async function POST(req: NextRequest) {
   try {
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-
-    const decoded = await getAuth().verifyIdToken(authHeader.split("Bearer ")[1]);
-
-    // Owner lang ang pwedeng magbawi ng session ng staff
-    if ((decoded as any).isStaff) {
-      return NextResponse.json({ error: "Only the business owner can do this." }, { status: 403 });
-    }
+    const auth = await requireOwnerSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
 
     const { staffId } = await req.json();
     if (!staffId) {
       return NextResponse.json({ error: "Missing staffId." }, { status: 400 });
     }
 
-    // Siguraduhing ang staff na ito ay sa business ng Owner na ito
+    // Make sure this staff account belongs to this Owner's business
     const staffSnap = await adminDb
       .collection("tenants")
-      .doc(decoded.uid)
+      .doc(tenantId)
       .collection("staff")
       .doc(staffId)
       .get();

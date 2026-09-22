@@ -37,8 +37,8 @@ export default function PrivacyPage() {
             <h2 className="font-semibold text-base mb-1">2. How We Use It</h2>
             <p>
               Your data is used solely to operate UBA for your business — displaying your
-              inventory, generating reports, processing sales, and powering optional AI features
-              you choose to use. We do not sell your data or share it with other businesses using
+              inventory, generating reports, processing sales, and powering optional UBA smart
+              features you choose to use. We do not sell your data or share it with other businesses using
               UBA.
             </p>
           </section>
@@ -51,7 +51,7 @@ export default function PrivacyPage() {
                 <strong>Google Firebase</strong> — stores your account and business data.
               </li>
               <li>
-                <strong>Google Gemini API</strong> — processes data you submit to AI features
+                <strong>Google Gemini API</strong> — processes data you submit to UBA features
                 (Scanner, Business Analyst, Assistant) to generate results.
               </li>
               <li>

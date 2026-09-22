@@ -1,7 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../lib/firebaseAdmin";
+import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
+import { requireSession } from "../../lib/apiAuth";
+import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireSession(req);
+    if (!auth.ok) return auth.response;
+    const { tenantId } = auth.session;
+
+    const tenantSnap = await adminDb.collection("tenants").doc(tenantId).get();
+    const tenant = tenantSnap.exists ? tenantSnap.data() : null;
+    if (!hasFeatureAccess(tenant, "aiFeatures")) {
+      return NextResponse.json({ error: AI_LOCKED_MESSAGE }, { status: 403 });
+    }
+
     const { suggestions } = await req.json();
 
     if (!Array.isArray(suggestions) || suggestions.length === 0) {
@@ -10,7 +24,7 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "Server not configured" }, { status: 500 });
+      return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
     const listText = suggestions
@@ -29,16 +43,9 @@ Write a short prioritized summary (3-5 sentences, Taglish tone, friendly but dir
 
 Respond with ONLY the summary text. No markdown, no JSON, no extra commentary.`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-        }),
-      }
-    );
+    const response = await fetchGeminiWithRetry(geminiUrl(apiKey), {
+      contents: [{ parts: [{ text: prompt }] }],
+    });
 
     if (!response.ok) {
       const errText = await response.text();

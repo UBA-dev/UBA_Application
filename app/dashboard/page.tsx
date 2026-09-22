@@ -18,9 +18,10 @@ import { signOut } from "firebase/auth";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
 import Sidebar from "../components/Sidebar";
+import AiSpinner from "../components/AiSpinner";
 import { buildTrendSeries, computePeriodComparison, RANGE_OPTIONS, RANGE_LABELS } from "../lib/analytics";
 import { getAiAccess, getPlanLabel, AI_LOCKED_MESSAGE } from "../lib/subscription";
-import { checkAndIncrementUsage, usageLimitMessage } from "../lib/usageLimits";
+import { authedFetch } from "../lib/authedFetch";
 import {
   ResponsiveContainer,
   LineChart,
@@ -360,18 +361,13 @@ function DashboardContent() {
   const runAnalysis = async () => {
     if (!uid || !aiAccess.allowed) return;
 
-    const usage = await checkAndIncrementUsage(uid, "analysisCount", tenant);
-    if (!usage.allowed) {
-      setInsightError(usageLimitMessage("analysisCount", usage.limit));
-      return;
-    }
-
+    // The monthly analysis cap is enforced server-side (in /api/analyze-business)
+    // so it can't be bypassed by a tampered client.
     setLoadingInsight(true);
     setInsightError("");
     try {
-        const res = await fetch("/api/analyze-business", {
+        const res = await authedFetch("/api/analyze-business", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rangeLabel: (RANGE_LABELS as Record<string, string>)[range],
           comparison,
@@ -472,7 +468,7 @@ function DashboardContent() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <header
           className="border-b"
           style={{ background: "var(--color-bg-secondary)", borderColor: "var(--color-border)" }}
@@ -495,9 +491,6 @@ function DashboardContent() {
                 Welcome back, {tenant.businessName}!
               </h1>
               <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
-                
-                
-                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}></p>
                 Plan:{" "}
                 {(() => {
                   const planInfo = getPlanLabel(tenant);
@@ -668,7 +661,7 @@ function DashboardContent() {
               <div className="p-5 mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
                 <div className="flex justify-between items-center mb-3">
                   <p className="text-sm font-semibold" style={{ color: "var(--color-primary-light)" }}>
-                    🤖 Your AI Business Analyst
+                    🤖 Your UBA Business Analyst
                   </p>
                   <button
                     onClick={handleToggleAiAnalytics}
@@ -693,7 +686,7 @@ function DashboardContent() {
                   </p>
                 ) : !tenant.aiAnalyticsEnabled ? (
                   <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-                    AI Analytics is off. Turn it on above to get insights and priority tasks — you control when it runs, so it won't use extra AI usage automatically.
+                    UBA Analytics is off. Turn it on above to get insights and priority tasks — you control when it runs, so it won't use extra UBA usage automatically.
                   </p>
                 ) : (
                   <>
@@ -707,11 +700,15 @@ function DashboardContent() {
                         borderRadius: "var(--radius-button)",
                       }}
                     >
-                      {loadingInsight
-                        ? "Analyzing..."
-                        : insight
-                        ? "🔄 Re-analyze My Business"
-                        : "🔍 Analyze My Business"}
+                      {loadingInsight ? (
+                        <span className="inline-flex items-center gap-2">
+                          <AiSpinner /> Analyzing...
+                        </span>
+                      ) : insight ? (
+                        "🔄 Re-analyze My Business"
+                      ) : (
+                        "🔍 Analyze My Business"
+                      )}
                     </button>
 
                     {tenant.lastInsightAt && (
