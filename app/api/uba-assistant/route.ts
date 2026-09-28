@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb } from "../../lib/firebaseAdmin";
 import { hasFeatureAccess, AI_LOCKED_MESSAGE } from "../../lib/subscription";
@@ -9,6 +10,9 @@ import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
 // In-memory cache para sa identical prompt queries
 const responseCache = new Map<string, { reply: string; timestamp: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Items listed to the assistant by name; the total count is always exact.
+const MAX_INVENTORY_ITEMS = 200;
 
 const SEARCH_KEYWORDS = [
   "buy", "bili", "supplier", "presyo", "price", "saan", "where",
@@ -26,7 +30,7 @@ export async function POST(req: NextRequest) {
     if (!auth.ok) return auth.response;
     const { tenantId } = auth.session;
 
-    const { message, history, businessContext } = await req.json();
+    const { message, history } = await req.json();
 
     if (!message || typeof message !== "string") {
       return NextResponse.json(
@@ -65,17 +69,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // --- 1. Cache Check ---
-    const cacheKey = `${tenantId}:${message.trim().toLowerCase()}`;
-    const cached = responseCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      return NextResponse.json({ reply: cached.reply, cached: true });
-    }
-
-    // --- 2. Context Trimming ---
-    const inventory = businessContext?.inventory || [];
-    const recentSales = businessContext?.recentSales || [];
-    const recentRepairTickets = businessContext?.recentRepairTickets || [];
+    // --- 1. Shop Data ---
+    // Read here with the verified tenantId instead of trusting the browser to
+    // send it — the chat widget only sends the message and history.
+    const tenantRef = adminDb.collection("tenants").doc(tenantId);
+    const [inventorySnap, inventoryCountSnap, salesSnap, ticketsSnap] = await Promise.all([
+      tenantRef.collection("inventory").orderBy("name").limit(MAX_INVENTORY_ITEMS).get(),
+      tenantRef.collection("inventory").count().get(),
+      tenantRef.collection("sales").orderBy("date", "desc").limit(25).get(),
+      tenantRef.collection("repairTickets").orderBy("createdAt", "desc").limit(20).get(),
+    ]);
+    const inventory = inventorySnap.docs.map((d) => d.data());
+    const recentSales = salesSnap.docs.map((d) => d.data());
+    const recentRepairTickets = ticketsSnap.docs.map((d) => d.data());
 
     const lowStockItems = inventory
       .filter((i: any) => i.stock <= (i.threshold ?? 0))
@@ -89,19 +95,38 @@ export async function POST(req: NextRequest) {
     }, {});
 
     const trimmedContext = {
-      businessName: businessContext?.businessName || "",
-      totalInventoryItems: inventory.length,
+      businessName: tenant?.businessName || "",
+      businessType: tenant?.businessType || "",
+      totalInventoryItems: inventoryCountSnap.data().count,
       lowStockItems,
-      inventorySample: inventory.slice(0, 40).map((i: any) => ({
+      inventory: inventory.map((i: any) => ({
         name: i.name,
         category: i.category,
         stock: i.stock,
+        unit: i.unit,
         price: i.sellingPrice,
       })),
       recentSalesCount: recentSales.length,
       recentSalesRevenue,
       recentRepairTicketStatusCounts: repairStatusCounts,
     };
+
+    // --- 2. Trimmed History ---
+    const MAX_HISTORY_MESSAGES = 6;
+    const trimmedHistory = Array.isArray(history)
+      ? history.slice(-MAX_HISTORY_MESSAGES)
+      : [];
+
+    // --- 3. Cache Check ---
+    // Keyed on the shop data and conversation too, so an asked-again question
+    // gets a fresh answer once stock or sales change.
+    const cacheKey = createHash("sha256")
+      .update(JSON.stringify([tenantId, trimmedContext, trimmedHistory, message.trim().toLowerCase()]))
+      .digest("hex");
+    const cached = responseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return NextResponse.json({ reply: cached.reply, cached: true });
+    }
 
     const systemInstruction = `You are "UBA Assistant" — a personal business assistant built into UBA (a shop management app), speaking directly to the shop owner.
 
@@ -110,20 +135,14 @@ SCOPE — you may ONLY help with things related to running THIS owner's business
 - Their sales, expenses, profit, trends
 - Their repair tickets and customers
 - Sourcing/suppliers — e.g. "where can I buy a cheap motherboard" (use web search for this)
-- General small-business advice relevant to a computer/electronics repair-retail shop
+- General small-business advice relevant to this shop
 
 STYLE:
 - Respond fluently in the language used by the user (English, Tagalog, or Taglish).
 - Be concise, direct, and specific.
 
-THIS SHOP'S CURRENT DATA SUMMARY:
+THIS SHOP'S CURRENT DATA SUMMARY (use this to answer questions about their own business; if an item isn't listed here, say so — never invent items, stock, or prices):
 ${JSON.stringify(trimmedContext)}`;
-
-    // --- 3. Trimmed History ---
-    const MAX_HISTORY_MESSAGES = 6;
-    const trimmedHistory = Array.isArray(history)
-      ? history.slice(-MAX_HISTORY_MESSAGES)
-      : [];
 
     const contents = [
       ...trimmedHistory.map((h: any) => ({
