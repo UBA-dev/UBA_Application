@@ -322,11 +322,17 @@ export default function Sidebar() {
     return { text, bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
   })();
 
+  // Staff don't manage the plan — on the phone top bar they need to see whose
+  // login this is instead.
+  const mobileBadge = session?.isStaff
+    ? { text: session.role.toUpperCase(), bg: "rgba(96, 165, 250, 0.15)", color: "var(--color-primary-light)" }
+    : planLabel;
+
   return (
     <>
       {/* MOBILE TOP BAR - Upgrade button sa TOP RIGHT CORNER */}
       <div
-        className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
+        className="sm:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between gap-2 px-4 py-2"
         style={{
           background: "var(--color-bg-secondary)",
           borderBottom: "1px solid var(--color-border)",
@@ -334,14 +340,14 @@ export default function Sidebar() {
       >
         <button
           onClick={() => setMobileMenuOpen(true)}
-          className="text-2xl leading-none"
+          className="w-10 h-10 -ml-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none"
           style={{ color: "var(--color-text-primary)" }}
           aria-label="Open menu"
         >
           ☰
         </button>
 
-        <div className="flex items-center gap-1.5 max-w-[45%]">
+        <div className="flex items-center justify-center gap-1.5 min-w-0 flex-1">
           <p
             className="text-sm font-semibold truncate"
             style={{ color: "var(--color-text-primary)" }}
@@ -349,23 +355,23 @@ export default function Sidebar() {
             {businessName || "My Shop"}
           </p>
           <span
-            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
-            style={{ background: planLabel.bg, color: planLabel.color }}
+            className="text-[10px] font-bold px-2 py-0.5 rounded-full flex-shrink-0"
+            style={{ background: mobileBadge.bg, color: mobileBadge.color }}
           >
-            {planLabel.text}
+            {mobileBadge.text}
           </span>
         </div>
 
-        {/* TOP RIGHT CORNER: Notification Icon */}
-        <div className="flex items-center gap-2">
+        {/* TOP RIGHT CORNER: Notification Icon (fixed width keeps the shop name centered) */}
+        <div className="w-10 h-10 -mr-2 flex-shrink-0 flex items-center justify-center">
           {visibleNotification && visibleNotification.count > 0 && (
             <button
               onClick={() => setShowNotifModal(true)}
-              className="relative text-lg"
+              className="relative w-10 h-10 flex items-center justify-center text-xl"
               aria-label="Notifications"
             >
               🔔
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+              <span className="absolute top-0.5 right-0 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-4.5 h-4.5 px-1 flex items-center justify-center">
                 {visibleNotification.count}
               </span>
             </button>
@@ -385,15 +391,22 @@ export default function Sidebar() {
             style={{ background: "var(--color-bg-secondary)" }}
           >
             <div className="flex justify-between items-center gap-2 mb-6">
-              <p
-                className="text-sm font-semibold truncate min-w-0"
-                style={{ color: "var(--color-text-primary)" }}
-              >
-                {businessName || "My Shop"}
-              </p>
+              <div className="min-w-0">
+                <p
+                  className="text-sm font-semibold truncate"
+                  style={{ color: "var(--color-text-primary)" }}
+                >
+                  {businessName || "My Shop"}
+                </p>
+                {session?.isStaff && (
+                  <p className="text-xs truncate mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                    👤 {session.staffName} · <span className="capitalize">{session.role}</span>
+                  </p>
+                )}
+              </div>
               <button
                 onClick={() => setMobileMenuOpen(false)}
-                className="text-2xl leading-none flex-shrink-0"
+                className="w-10 h-10 -mr-2 flex items-center justify-center text-2xl leading-none flex-shrink-0"
                 style={{ color: "var(--color-text-secondary)" }}
                 aria-label="Close menu"
               >

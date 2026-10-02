@@ -110,6 +110,7 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const [uid, setUid] = useState<string | null>(null);
   const [canTriggerAnalysis, setCanTriggerAnalysis] = useState(true);
+  const [staffName, setStaffName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
@@ -156,6 +157,7 @@ function DashboardContent() {
       // both can trigger analysis, so this is always true; kept explicit
       // for readability and in case role permissions change later.
       setCanTriggerAnalysis(true);
+      setStaffName(session.isStaff ? session.staffName : null);
 
       const tenantId = session.tenantId;
       const tenantDocRef = doc(db, "tenants", tenantId);
@@ -475,7 +477,7 @@ function DashboardContent() {
         >
           {showPaymentBanner && (
             <div
-              className="px-6 py-2.5 text-sm font-medium flex items-center gap-2"
+              className="px-4 sm:px-6 py-2.5 text-sm font-medium flex items-center gap-2"
               style={{ background: "rgba(74, 222, 128, 0.15)", color: "#4ade80" }}
             >
               <span>✅</span>
@@ -485,11 +487,16 @@ function DashboardContent() {
             </div>
           )}
 
-          <div className="px-6 py-4 flex items-center justify-between gap-4">
-            <div>
-              <h1 className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
-                Welcome back, {tenant.businessName}!
+          <div className="px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg font-bold leading-snug" style={{ color: "var(--color-text-primary)" }}>
+                Welcome back, {staffName || tenant.businessName}!
               </h1>
+              {staffName ? (
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                  {tenant.businessName}
+                </p>
+              ) : (
               <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
                 Plan:{" "}
                 {(() => {
@@ -507,22 +514,27 @@ function DashboardContent() {
                   );
                 })()}
               </p>
+              )}
             </div>
 
-            <Link
-              href="/pricing"
-              className="flex-shrink-0 text-sm font-bold px-4 py-2 rounded-lg text-white transition flex items-center gap-2 shadow-sm hover:opacity-90"
-              style={{ background: "linear-gradient(135deg, #8b5cf6, #d946ef)" }}
-            >
-              <span>👑</span>
-              <span>Upgrade Plan</span>
-            </Link>
+            {/* Only the Owner pays for the plan */}
+            {!staffName && (
+              <Link
+                href="/pricing"
+                className="flex-shrink-0 text-sm font-bold px-3 sm:px-4 py-2 rounded-lg text-white transition flex items-center gap-2 shadow-sm hover:opacity-90"
+                style={{ background: "linear-gradient(135deg, #8b5cf6, #d946ef)" }}
+              >
+                <span>👑</span>
+                <span className="sm:hidden">Upgrade</span>
+                <span className="hidden sm:inline">Upgrade Plan</span>
+              </Link>
+            )}
           </div>
         </header>
 
         
 
-        <main className="p-6">
+        <main className="p-4 pb-24 sm:p-6">
           {!hasEnoughData ? (
             <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
               No sales, expense, or repair data yet. Once you start recording activity, your analytics will show up here.
@@ -537,7 +549,7 @@ function DashboardContent() {
                     <button
                       key={r}
                       onClick={() => setRange(r)}
-                      className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                      className="shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-medium transition"
                       style={{
                         background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                         color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -553,24 +565,24 @@ function DashboardContent() {
               </div>
 
               {/* Summary cards with trend arrows */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6">
                 <div className="p-4" style={cardStyle}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Revenue</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+                  <p className="text-base sm:text-lg font-bold mt-1 break-all" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
                     ₱{comparison.currentRevenue.toLocaleString()}
                   </p>
                   <TrendArrow pct={comparison.revenueChangePct} />
                 </div>
                 <div className="p-4" style={cardStyle}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Profit</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
+                  <p className="text-base sm:text-lg font-bold mt-1 break-all" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
                     ₱{comparison.currentProfit.toLocaleString()}
                   </p>
                   <TrendArrow pct={comparison.profitChangePct} />
                 </div>
                 <div className="p-4" style={cardStyle}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Expenses</p>
-                  <p className="text-lg font-bold mt-1" style={{ color: "#f87171", fontFamily: "var(--font-heading)" }}>
+                  <p className="text-base sm:text-lg font-bold mt-1 break-all" style={{ color: "#f87171", fontFamily: "var(--font-heading)" }}>
                     ₱{comparison.currentExpenses.toLocaleString()}
                   </p>
                   <TrendArrow pct={-comparison.expensesChangePct} />
@@ -578,7 +590,7 @@ function DashboardContent() {
                 <div className="p-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
                   <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Net Profit</p>
                   <p
-                    className="text-lg font-bold mt-1"
+                    className="text-base sm:text-lg font-bold mt-1 break-all"
                     style={{
                       color: comparison.currentNetProfit >= 0 ? "#4ade80" : "#f87171",
                       fontFamily: "var(--font-heading)",
@@ -759,12 +771,12 @@ function DashboardContent() {
                       return (
                         <div
                           key={task.id}
-                          className="flex items-start gap-2 px-3 py-2 text-sm"
+                          className="flex items-center gap-2 px-3 py-2 text-sm"
                           style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}
                         >
                           <button
                             onClick={() => handleToggleTask(task)}
-                            className="mt-0.5 w-4 h-4 rounded flex-shrink-0"
+                            className="w-6 h-6 sm:w-5 sm:h-5 rounded flex-shrink-0"
                             style={{ borderWidth: "1.5px", borderColor: colors.text }}
                             title="Mark as done"
                           />
@@ -779,7 +791,7 @@ function DashboardContent() {
                           </span>
                           <button
                             onClick={() => handleDeleteTask(task.id)}
-                            className="text-xs leading-none hover:opacity-70 flex-shrink-0"
+                            className="w-8 h-8 -mr-1 flex items-center justify-center text-lg leading-none hover:opacity-70 flex-shrink-0"
                             style={{ color: "var(--color-text-secondary)" }}
                             title="Dismiss"
                           >

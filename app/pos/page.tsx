@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   collection,
@@ -80,6 +80,8 @@ export default function PosPage() {
   const [receiptChange, setReceiptChange] = useState(0);
   const [businessName, setBusinessName] = useState("");
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  // On phones the cart sits below the product list — the sticky bar jumps here.
+  const cartRef = useRef<HTMLDivElement>(null);
 
   // Processes one queued offline sale by replaying the exact Firestore writes
   // that would have happened had the device been online at checkout time.
@@ -259,6 +261,7 @@ export default function PosPage() {
   };
 
   const cartTotal = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0), [cart]);
+  const cartCount = useMemo(() => cart.reduce((sum, l) => sum + l.quantity, 0), [cart]);
   const change = Number(cashReceived || 0) - cartTotal;
 
   const handleCompleteSale = async () => {
@@ -352,7 +355,7 @@ export default function PosPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 min-w-0 p-6 flex flex-col lg:flex-row gap-6">
+      <main className="flex-1 min-w-0 p-4 pb-28 sm:p-6 lg:pb-6 flex flex-col lg:flex-row gap-4 sm:gap-6">
         {/* Product picker */}
         <div className="flex-1 min-w-0">
           {(!isOnline || pendingCount > 0) && (
@@ -400,14 +403,14 @@ export default function PosPage() {
             style={inputStyle}
           />
 
-          <div className="flex flex-wrap gap-2 mb-4">
+          <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar -mx-4 px-4 py-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
             {categories.map((cat) => {
               const isActive = selectedCategory === cat;
               return (
                 <button
                   key={cat}
                   onClick={() => setSelectedCategory(cat)}
-                  className="px-3 py-1 rounded-full text-xs font-medium transition"
+                  className="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium transition"
                   style={{
                     background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                     color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -475,7 +478,7 @@ export default function PosPage() {
         </div>
 
         {/* Cart / Checkout panel */}
-        <div className="w-full lg:w-96 flex-shrink-0 flex">
+        <div ref={cartRef} className="w-full lg:w-96 flex-shrink-0 flex scroll-mt-16">
           <div className="p-4 flex flex-col w-full" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
             <p
               className="text-sm font-semibold mb-3"
@@ -509,29 +512,32 @@ export default function PosPage() {
                       {line.kind === "item" && line.unit !== "Piece" ? (
                         <input
                           type="number"
+                          inputMode="decimal"
                           step="any"
                           min={0.01}
                           value={line.quantity}
                           onChange={(e) => setExactQuantity(line.lineId, e.target.value)}
-                          className="w-16 px-2 py-1 text-center"
+                          className="w-20 sm:w-16 px-2 py-1.5 sm:py-1 text-center"
                           style={inputStyle}
                         />
                       ) : (
                         <>
                           <button
                             onClick={() => updateQuantity(line.lineId, -1)}
-                            className="w-6 h-6 rounded-full font-bold"
+                            className="w-9 h-9 sm:w-7 sm:h-7 rounded-full font-bold text-lg sm:text-base flex items-center justify-center"
                             style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                            aria-label="Decrease quantity"
                           >
                             −
                           </button>
-                          <span className="w-5 text-center" style={{ color: "var(--color-text-primary)" }}>
+                          <span className="w-7 text-center font-semibold" style={{ color: "var(--color-text-primary)" }}>
                             {line.quantity}
                           </span>
                           <button
                             onClick={() => updateQuantity(line.lineId, 1)}
-                            className="w-6 h-6 rounded-full font-bold"
+                            className="w-9 h-9 sm:w-7 sm:h-7 rounded-full font-bold text-lg sm:text-base flex items-center justify-center"
                             style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
+                            aria-label="Increase quantity"
                           >
                             +
                           </button>
@@ -539,8 +545,9 @@ export default function PosPage() {
                       )}
                       <button
                         onClick={() => removeLine(line.lineId)}
-                        className="ml-1 text-xs"
+                        className="ml-1 w-9 h-9 sm:w-7 sm:h-7 rounded-full text-xl sm:text-lg leading-none flex items-center justify-center"
                         style={{ color: "#f87171" }}
+                        aria-label={`Remove ${line.name}`}
                       >
                         ×
                       </button>
@@ -565,11 +572,25 @@ export default function PosPage() {
               </span>
             </div>
 
-            <label className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-              Cash Received (₱)
-            </label>
+            <div className="flex items-center justify-between">
+              <label htmlFor="cash-received" className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                Cash Received (₱)
+              </label>
+              {cart.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCashReceived(String(cartTotal))}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-full hover:opacity-80"
+                  style={{ background: "var(--color-bg-secondary)", color: "var(--color-primary-light)" }}
+                >
+                  Exact amount
+                </button>
+              )}
+            </div>
             <input
+              id="cash-received"
               type="number"
+              inputMode="decimal"
               value={cashReceived}
               onChange={(e) => setCashReceived(e.target.value)}
               className="w-full mt-1 mb-3 px-3 py-2"
@@ -622,11 +643,46 @@ export default function PosPage() {
           </div>
         </div>
 
+        {/* Phone-only cart bar — the cart panel is below the product list there */}
+        {cart.length > 0 && !receiptLines && (
+          <div
+            className="lg:hidden fixed bottom-0 left-0 right-0 z-30 pl-4 pr-24 py-3 flex items-center justify-between gap-3"
+            style={{
+              background: "var(--color-bg-secondary)",
+              borderTop: "1px solid var(--color-border)",
+              boxShadow: "0 -6px 20px rgba(0, 0, 0, 0.35)",
+            }}
+          >
+            <div className="min-w-0">
+              <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                🛒 {cartCount} item{cartCount === 1 ? "" : "s"}
+              </p>
+              <p
+                className="text-lg font-bold truncate"
+                style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}
+              >
+                ₱{cartTotal.toLocaleString()}
+              </p>
+            </div>
+            <button
+              onClick={() => cartRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="flex-shrink-0 font-semibold px-4 py-2.5 text-sm hover:opacity-90"
+              style={{
+                background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                color: "#fff",
+                borderRadius: "var(--radius-button)",
+              }}
+            >
+              Checkout ↓
+            </button>
+          </div>
+        )}
+
         {/* Receipt confirmation */}
         {receiptLines && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
             <div
-              className="w-full max-w-sm p-6"
+              className="w-full max-w-sm p-5 sm:p-6 max-h-[90dvh] overflow-y-auto"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
               <p
@@ -694,7 +750,10 @@ export default function PosPage() {
               </button>
 
               <button
-                onClick={() => setReceiptLines(null)}
+                onClick={() => {
+                  setReceiptLines(null);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
                 className="w-full font-semibold py-2.5 hover:opacity-90"
                 style={{
                   background: "var(--gradient-accent)",

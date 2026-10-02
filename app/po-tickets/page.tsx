@@ -666,7 +666,7 @@ export default function POTicketsPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 min-w-0 p-6">
+      <main className="flex-1 min-w-0 p-4 pb-24 sm:p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
@@ -697,14 +697,14 @@ export default function POTicketsPage() {
         </div>
 
         {/* Fulfillment status filter chips */}
-        <div className="flex flex-wrap gap-2 mb-6">
+        <div className="flex gap-2 mb-5 overflow-x-auto no-scrollbar -mx-4 px-4 py-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
           {(["All", ...FULFILLMENT_FILTERS] as const).map((s) => {
             const isActive = statusFilter === s;
             return (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s as "All" | FulfillmentStatus)}
-                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                className="shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-medium transition"
                 style={{
                   background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                   color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -832,10 +832,10 @@ export default function POTicketsPage() {
         {/* ---- NEW P.O. MODAL ---- */}
         {showNewForm && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <form onSubmit={handleCreateTicket} className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto space-y-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+            <form onSubmit={handleCreateTicket} className="w-full max-w-2xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto space-y-4" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
               <div className="flex justify-between items-center">
                 <p className="text-sm font-semibold" style={{ color: "var(--color-text-secondary)" }}>New Purchase Order</p>
-                <button type="button" onClick={() => setShowNewForm(false)} className="text-xl leading-none hover:opacity-70" style={{ color: "var(--color-text-secondary)" }}>×</button>
+                <button type="button" onClick={() => setShowNewForm(false)} className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70" style={{ color: "var(--color-text-secondary)" }}>×</button>
               </div>
 
               <div>
@@ -938,7 +938,7 @@ export default function POTicketsPage() {
                         <div key={p.itemId} className="flex justify-between items-center px-3 py-2 rounded-lg text-sm" style={{ background: "var(--color-bg-secondary)" }}>
                           <span style={{ color: "var(--color-text-primary)" }}>{p.itemName} ({p.unit})</span>
                           <div className="flex items-center gap-2">
-                            <button type="button" onClick={() => removeNewItem(p.itemId)} className="w-6 h-6 rounded-full font-bold" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>−</button>
+                            <button type="button" onClick={() => removeNewItem(p.itemId)} className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base" style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}>−</button>
                             <span style={{ color: "var(--color-text-primary)" }}>{p.quantity}</span>
                             <button
                               type="button"
@@ -946,7 +946,7 @@ export default function POTicketsPage() {
                                 const inv = items.find((i) => i.id === p.itemId);
                                 if (inv) addNewItem(inv);
                               }}
-                              className="w-6 h-6 rounded-full font-bold"
+                              className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
                               style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
                             >
                               +
@@ -979,7 +979,7 @@ export default function POTicketsPage() {
         {/* ---- P.O. DETAIL MODAL ---- */}
         {detail && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
-            <div className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+            <div className="w-full max-w-2xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h3 className="text-lg font-bold" style={{ color: "var(--color-text-primary)", fontFamily: "var(--font-heading)" }}>
@@ -987,18 +987,18 @@ export default function POTicketsPage() {
                   </h3>
                   <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>PO No. {detail.poNumber}</p>
                 </div>
-                <button onClick={() => setDetail(null)} className="text-xl leading-none hover:opacity-70" style={{ color: "var(--color-text-secondary)" }}>×</button>
+                <button onClick={() => setDetail(null)} className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70" style={{ color: "var(--color-text-secondary)" }}>×</button>
               </div>
 
               <div className="mb-5 p-3 text-xs" style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}>
-                <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
                   <p style={{ color: "var(--color-text-secondary)" }}><strong>Address:</strong> {detail.buyerAddress}</p>
                   <p style={{ color: "var(--color-text-secondary)" }}><strong>Contact No.:</strong> {detail.buyerContact}</p>
                 </div>
                 <p className="text-sm font-medium mb-2" style={labelStyle}>PO Details (editable)</p>
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <div>
-                    <label className="text-[11px]" style={labelStyle}>PO No.</label>
+                    <label className="text-xs" style={labelStyle}>PO No.</label>
                     <input
                       value={editPoNumber}
                       onChange={(e) => setEditPoNumber(e.target.value.replace(/[^0-9-]/g, ""))}
@@ -1008,7 +1008,7 @@ export default function POTicketsPage() {
                     />
                   </div>
                   <div>
-                    <label className="text-[11px]" style={labelStyle}>PR No.</label>
+                    <label className="text-xs" style={labelStyle}>PR No.</label>
                     <input
                       value={editPrNumber}
                       onChange={(e) => setEditPrNumber(e.target.value.replace(/[^0-9-]/g, ""))}
@@ -1018,11 +1018,11 @@ export default function POTicketsPage() {
                     />
                   </div>
                   <div>
-                    <label className="text-[11px]" style={labelStyle}>PO Date</label>
+                    <label className="text-xs" style={labelStyle}>PO Date</label>
                     <input type="date" value={editPoDate} onChange={(e) => setEditPoDate(e.target.value)} className="w-full mt-1 px-2 py-1.5 text-xs" style={inputStyle} />
                   </div>
                   <div>
-                    <label className="text-[11px]" style={labelStyle}>Payment Due Date</label>
+                    <label className="text-xs" style={labelStyle}>Payment Due Date</label>
                     <input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} className="w-full mt-1 px-2 py-1.5 text-xs" style={inputStyle} />
                   </div>
                 </div>
@@ -1154,7 +1154,7 @@ export default function POTicketsPage() {
                         <div className="flex items-center gap-3">
                           <span style={{ color: "var(--color-text-secondary)" }}>{p.quantity} × ₱{p.unitCost.toLocaleString()}</span>
                           <button onClick={() => handleRemoveItem(p)} disabled={isLocked(detail.fulfillmentStatus)}
-                            className="w-6 h-6 rounded-full font-bold disabled:opacity-30" style={{ background: "var(--color-surface)", color: "#f87171" }}>−</button>
+                            className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base disabled:opacity-30" style={{ background: "var(--color-surface)", color: "#f87171" }}>−</button>
                         </div>
                       </div>
                     ))}
@@ -1171,7 +1171,7 @@ export default function POTicketsPage() {
                           className="p-2 text-left transition hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
                           style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)", borderWidth: "var(--border-width)", borderColor: "var(--color-border)" }}>
                           <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>{item.name}</p>
-                          <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>Stock: {item.stock} {item.unit || "Piece"}</p>
+                          <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>Stock: {item.stock} {item.unit || "Piece"}</p>
                         </button>
                       ))
                     )}

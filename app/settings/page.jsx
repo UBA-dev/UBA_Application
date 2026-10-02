@@ -768,7 +768,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setEditingStaff(null)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: theme.colors.textSecondary }}
                 >
                   ×

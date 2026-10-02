@@ -643,7 +643,7 @@ export default function RepairTicketsPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 min-w-0 p-6">
+      <main className="flex-1 min-w-0 p-4 pb-24 sm:p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1
@@ -682,14 +682,14 @@ export default function RepairTicketsPage() {
         </div>
 
         {/* Status filter chips */}
-        <div className="flex flex-wrap gap-2 mb-6">
+        <div className="flex gap-2 mb-5 overflow-x-auto no-scrollbar -mx-4 px-4 py-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
           {(["All", ...STATUS_FLOW, "Cancelled"] as const).map((s) => {
             const isActive = statusFilter === s;
             return (
               <button
                 key={s}
                 onClick={() => setStatusFilter(s as "All" | Status)}
-                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                className="shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-medium transition"
                 style={{
                   background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                   color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -820,7 +820,7 @@ export default function RepairTicketsPage() {
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form
               onSubmit={handleCreateTicket}
-              className="w-full max-w-md p-6 space-y-4"
+              className="w-full max-w-md p-5 sm:p-6 max-h-[90dvh] overflow-y-auto space-y-4"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
               <div className="flex justify-between items-center">
@@ -830,7 +830,7 @@ export default function RepairTicketsPage() {
                 <button
                   type="button"
                   onClick={() => setShowNewForm(false)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -978,7 +978,7 @@ export default function RepairTicketsPage() {
         {detail && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <div
-              className="w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
+              className="w-full max-w-2xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
               <div className="flex justify-between items-start mb-4">
@@ -995,7 +995,7 @@ export default function RepairTicketsPage() {
                 </div>
                 <button
                   onClick={() => setDetail(null)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -1141,7 +1141,7 @@ export default function RepairTicketsPage() {
                           <button
                             onClick={() => handleRemovePart(p)}
                             disabled={isLocked(detail.status)}
-                            className="w-6 h-6 rounded-full font-bold disabled:opacity-30"
+                            className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base disabled:opacity-30"
                             style={{ background: "var(--color-surface)", color: "#f87171" }}
                           >
                             −
@@ -1175,7 +1175,7 @@ export default function RepairTicketsPage() {
                           <p className="text-xs font-medium" style={{ color: "var(--color-text-primary)" }}>
                             {item.name}
                           </p>
-                          <p className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>
+                          <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
                             Stock: {item.stock}
                           </p>
                         </button>

@@ -399,7 +399,7 @@ export default function SalesExpensesPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 min-w-0 p-6">
+      <main className="flex-1 min-w-0 p-4 pb-24 sm:p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1
@@ -434,7 +434,7 @@ export default function SalesExpensesPage() {
               <button
                 key={p}
                 onClick={() => setPeriod(p)}
-                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                className="shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-medium transition"
                 style={{
                   background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                   color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -526,7 +526,71 @@ export default function SalesExpensesPage() {
               No sales recorded for this period.
             </div>
           ) : (
-            <div className="overflow-hidden" style={cardStyle}>
+            <>
+            {/* Phones: stacked rows instead of a sideways-scrolling table */}
+            <div className="sm:hidden overflow-hidden" style={cardStyle}>
+              {filteredSales.map((sale, i) => (
+                <div
+                  key={sale.id}
+                  className="px-4 py-3 flex justify-between gap-3"
+                  style={i > 0 ? { borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" } : undefined}
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                      {sale.itemName}
+                    </p>
+                    <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                      Qty {sale.quantity} · {new Date(sale.date).toLocaleString()}
+                    </p>
+                    {canEditSales && (
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={() => openEditSale(sale)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold"
+                          style={{ background: "var(--color-bg-secondary)", color: "var(--color-primary-light)" }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSale(sale)}
+                          disabled={deletingSaleId === sale.id}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
+                          style={{ background: "rgba(239, 68, 68, 0.12)", color: "#f87171" }}
+                        >
+                          {deletingSaleId === sale.id ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                      ₱{sale.total.toLocaleString()}
+                    </p>
+                    <p className="text-xs mt-0.5" style={{ color: "#4ade80" }}>
+                      +₱{(sale.profit ?? 0).toLocaleString()} profit
+                    </p>
+                  </div>
+                </div>
+              ))}
+              <div
+                className="px-4 py-3 flex justify-between gap-3 font-semibold text-sm"
+                style={{
+                  borderTopWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                  background: "rgba(74, 222, 128, 0.06)",
+                }}
+              >
+                <span style={{ color: "var(--color-text-primary)" }}>Total</span>
+                <span className="text-right">
+                  <span style={{ color: "var(--color-text-primary)" }}>₱{totalSalesRevenue.toLocaleString()}</span>
+                  <span className="block text-xs" style={{ color: "#4ade80" }}>
+                    +₱{totalSalesProfit.toLocaleString()} profit
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <div className="hidden sm:block overflow-hidden" style={cardStyle}>
               <div className="overflow-x-auto">
               <table className="w-full text-sm" style={{ minWidth: "580px" }}>
                 <thead
@@ -539,7 +603,7 @@ export default function SalesExpensesPage() {
                     <th className="px-4 py-2">Total</th>
                     <th className="px-4 py-2">Profit</th>
                     <th className="px-4 py-2">Date</th>
-                    <th className="px-4 py-2">Actions</th>
+                    {canEditSales && <th className="px-4 py-2">Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -563,8 +627,7 @@ export default function SalesExpensesPage() {
                       <td className="px-4 py-3 text-xs" style={{ color: "var(--color-text-secondary)" }}>
                         {new Date(sale.date).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3">
-                        
+                      <td className={canEditSales ? "px-4 py-3" : "hidden"}>
                         {canEditSales && (
                           <div className="flex gap-3">
                             <button
@@ -607,14 +670,13 @@ export default function SalesExpensesPage() {
                       ₱{totalSalesProfit.toLocaleString()}
                     </td>
                     <td></td>
-
-
-                    <td></td>
+                    {canEditSales && <td></td>}
                   </tr>
                 </tfoot>
               </table>
               </div>
             </div>
+            </>
           )}
         </div>
 
@@ -647,7 +709,60 @@ export default function SalesExpensesPage() {
               No expenses recorded for this period.
             </div>
           ) : (
-            <div className="overflow-hidden" style={cardStyle}>
+            <>
+            <div className="sm:hidden overflow-hidden" style={cardStyle}>
+              {filteredExpenses.map((exp, i) => (
+                <div
+                  key={exp.id}
+                  className="px-4 py-3 flex justify-between gap-3"
+                  style={i > 0 ? { borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" } : undefined}
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text-primary)" }}>
+                      {exp.description}
+                    </p>
+                    <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                      {new Date(exp.date).toLocaleString()}
+                    </p>
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={() => openEditExpense(exp)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold"
+                        style={{ background: "var(--color-bg-secondary)", color: "var(--color-primary-light)" }}
+                      >
+                        Edit
+                      </button>
+                      {canDeleteExpense && (
+                        <button
+                          onClick={() => handleDeleteExpense(exp)}
+                          disabled={deletingExpenseId === exp.id}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
+                          style={{ background: "rgba(239, 68, 68, 0.12)", color: "#f87171" }}
+                        >
+                          {deletingExpenseId === exp.id ? "Deleting..." : "Delete"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-sm font-semibold flex-shrink-0" style={{ color: "#f87171" }}>
+                    -₱{exp.amount.toLocaleString()}
+                  </p>
+                </div>
+              ))}
+              <div
+                className="px-4 py-3 flex justify-between gap-3 font-semibold text-sm"
+                style={{
+                  borderTopWidth: "var(--border-width)",
+                  borderColor: "var(--color-border)",
+                  background: "rgba(248, 113, 113, 0.06)",
+                }}
+              >
+                <span style={{ color: "var(--color-text-primary)" }}>Total</span>
+                <span style={{ color: "#f87171" }}>-₱{totalExpenses.toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div className="hidden sm:block overflow-hidden" style={cardStyle}>
               <div className="overflow-x-auto">
               <table className="w-full text-sm" style={{ minWidth: "460px" }}>
                 <thead
@@ -722,6 +837,7 @@ export default function SalesExpensesPage() {
               </table>
               </div>
             </div>
+            </>
           )}
         </div>
 
@@ -731,7 +847,7 @@ export default function SalesExpensesPage() {
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form
               onSubmit={handleSaveSaleEdit}
-              className="w-full max-w-md p-6 space-y-4"
+              className="w-full max-w-md p-5 sm:p-6 max-h-[90dvh] overflow-y-auto space-y-4"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
               <div className="flex justify-between items-center">
@@ -741,7 +857,7 @@ export default function SalesExpensesPage() {
                 <button
                   type="button"
                   onClick={() => setEditingSale(null)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -837,7 +953,7 @@ export default function SalesExpensesPage() {
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form
               onSubmit={handleSaveExpenseEdit}
-              className="w-full max-w-md p-6 space-y-4"
+              className="w-full max-w-md p-5 sm:p-6 max-h-[90dvh] overflow-y-auto space-y-4"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
               <div className="flex justify-between items-center">
@@ -847,7 +963,7 @@ export default function SalesExpensesPage() {
                 <button
                   type="button"
                   onClick={() => setEditingExpense(null)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -913,7 +1029,7 @@ export default function SalesExpensesPage() {
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form
               onSubmit={handleAddExpense}
-              className="w-full max-w-md p-6 space-y-4"
+              className="w-full max-w-md p-5 sm:p-6 max-h-[90dvh] overflow-y-auto space-y-4"
               style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}
             >
               <div className="flex justify-between items-center">
@@ -923,7 +1039,7 @@ export default function SalesExpensesPage() {
                 <button
                   type="button"
                   onClick={() => setShowExpenseForm(false)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×

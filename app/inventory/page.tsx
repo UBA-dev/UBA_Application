@@ -1225,7 +1225,7 @@ export default function InventoryPage() {
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
-      <main className="flex-1 min-w-0 p-6">
+      <main className="flex-1 min-w-0 p-4 pb-24 sm:p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
           <div>
             <h1
@@ -1323,14 +1323,14 @@ export default function InventoryPage() {
         </div>
 
         {/* Category chips */}
-        <div className="flex flex-wrap gap-2 mb-3">
+        <div className="flex gap-2 mb-2 overflow-x-auto no-scrollbar -mx-4 px-4 py-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
           {categories.map((cat) => {
             const isActive = selectedCategory === cat;
             return (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
-                className="px-4 py-1.5 rounded-full text-sm font-medium transition"
+                className="shrink-0 whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-medium transition"
                 style={{
                   background: isActive ? "var(--color-primary)" : "var(--color-surface)",
                   color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -1347,14 +1347,14 @@ export default function InventoryPage() {
 
         {/* Sub-category chips */}
         {subCategories.length > 1 && (
-          <div className="flex flex-wrap gap-2 mb-6">
+          <div className="flex gap-2 mb-5 overflow-x-auto no-scrollbar -mx-4 px-4 py-1 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
             {subCategories.map((sub) => {
               const isActive = selectedSubCategory === sub;
               return (
                 <button
                   key={sub}
                   onClick={() => setSelectedSubCategory(sub)}
-                  className="px-3 py-1 rounded-full text-xs font-medium transition"
+                  className="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium transition"
                   style={{
                     background: isActive ? "var(--color-secondary)" : "var(--color-surface)",
                     color: isActive ? "#fff" : "var(--color-primary-light)",
@@ -1381,7 +1381,145 @@ export default function InventoryPage() {
             No items found. Try a different search or filter, or click "+ Add Item".
           </div>
         ) : (
+          <>
+          {/* Phones: one card per item, with real buttons instead of tiny table links */}
+          <div className="sm:hidden space-y-2">
+            {filteredCards.map((card) => {
+              const isItem = card.kind === "item";
+              const item = isItem ? card.data : null;
+              const bundle = isItem ? null : card.data;
+              const name = item?.name ?? bundle!.name;
+              const description = item?.description ?? bundle!.description;
+              const category = item?.category ?? bundle!.category;
+              const subCategory = item?.subCategory ?? bundle!.subCategory;
+              const isLow = !!item && item.stock <= item.threshold;
+              return (
+                <div
+                  key={`m-${card.kind}-${card.data.id}`}
+                  className="p-3"
+                  style={{
+                    background: isItem ? "var(--color-surface)" : "var(--color-surface-glass)",
+                    borderRadius: "var(--radius-card)",
+                    borderWidth: "var(--border-width)",
+                    borderColor: "var(--color-border)",
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    {item && (
+                      <button
+                        type="button"
+                        onClick={() => item.photoUrl && setViewingPhoto(item.photoUrl)}
+                        disabled={!item.photoUrl}
+                        className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center disabled:cursor-default"
+                        style={{ background: "var(--color-bg-secondary)" }}
+                      >
+                        {item.photoUrl ? (
+                          <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <span>📦</span>
+                        )}
+                      </button>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium leading-snug" style={{ color: "var(--color-text-primary)" }}>
+                        {name}
+                        {bundle && (
+                          <span
+                            className="ml-1.5 text-xs px-2 py-0.5 rounded-full align-middle"
+                            style={{ background: "var(--color-secondary)", color: "#fff" }}
+                          >
+                            Bundle
+                          </span>
+                        )}
+                      </p>
+                      {category && (
+                        <p className="text-xs mt-0.5 truncate" style={{ color: "var(--color-text-secondary)" }}>
+                          {category}{subCategory ? ` · ${subCategory}` : ""}
+                        </p>
+                      )}
+                      {description && (
+                        <p className="text-xs mt-0.5 line-clamp-2" style={{ color: "var(--color-text-secondary)" }}>
+                          {description}
+                        </p>
+                      )}
+                      {item && item.serialNumbers?.length > 0 && (
+                        <p className="text-xs mt-0.5" style={{ color: "var(--color-primary-light)" }}>
+                          {item.serialNumbers.length} SN on file
+                        </p>
+                      )}
+                      {bundle && (
+                        <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                          {bundle.components.length} components
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                        ₱{(item?.sellingPrice ?? bundle!.price).toLocaleString()}
+                      </p>
+                      {item && (
+                        <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                          /{item.unit || "Piece"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {(item || canEditInventory) && (
+                    <div className="flex items-center justify-between gap-2 mt-3">
+                      {item ? (
+                        <span
+                          className="px-2.5 py-1 rounded-full text-xs font-medium"
+                          style={{
+                            background: isLow ? "rgba(239, 68, 68, 0.15)" : "rgba(34, 197, 94, 0.15)",
+                            color: isLow ? "#f87171" : "#4ade80",
+                          }}
+                        >
+                          {item.stock} {item.unit || "Piece"} {isLow ? "(Low)" : "in stock"}
+                        </span>
+                      ) : (
+                        <span />
+                      )}
+                      {canEditInventory && (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => openSellPanel(card)}
+                            className="px-3 py-2 rounded-lg text-xs font-semibold"
+                            style={{ background: "rgba(34, 197, 94, 0.15)", color: "#4ade80" }}
+                          >
+                            Sell
+                          </button>
+                          {item && (
+                            <button
+                              onClick={() => openEditItemForm(item)}
+                              className="px-3 py-2 rounded-lg text-xs font-semibold"
+                              style={{ background: "var(--color-bg-secondary)", color: "var(--color-primary-light)" }}
+                            >
+                              Edit
+                            </button>
+                          )}
+                          {canDeleteInventory && (
+                            <button
+                              onClick={() =>
+                                item ? handleDeleteItem(item.id, item.name) : handleDeleteBundle(bundle!.id, bundle!.name)
+                              }
+                              className="px-3 py-2 rounded-lg text-xs font-semibold"
+                              style={{ background: "rgba(239, 68, 68, 0.12)", color: "#f87171" }}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
           <div
+            className="hidden sm:block"
             style={{
               background: "var(--color-surface)",
               borderRadius: "var(--radius-card)",
@@ -1401,7 +1539,7 @@ export default function InventoryPage() {
                   <th className="hidden sm:table-cell px-4 py-2">Category</th>
                   <th className="px-4 py-2">Stock</th>
                   <th className="px-4 py-2">Price</th>
-                  <th className="px-4 py-2">Actions</th>
+                  {canEditInventory && <th className="px-4 py-2">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1480,7 +1618,7 @@ export default function InventoryPage() {
                             {" "}/{item.unit || "Piece"}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className={canEditInventory ? "px-4 py-3" : "hidden"}>
                           {canEditInventory && (
                             <div className="flex gap-3">
                               <button
@@ -1561,7 +1699,7 @@ export default function InventoryPage() {
                         <td className="px-4 py-3" style={{ color: "var(--color-text-primary)" }}>
                           ₱{bundle.price.toLocaleString()}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className={canEditInventory ? "px-4 py-3" : "hidden"}>
                           {canEditInventory && (
                             <div className="flex gap-3">
                               <button
@@ -1591,13 +1729,14 @@ export default function InventoryPage() {
             </table>
             </div>
           </div>
+          </>
         )}
 
         {/* ---- SELL PANEL ---- */}
         {detail && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <div
-              className="w-full max-w-md p-6 max-h-[90vh] overflow-y-auto"
+              className="w-full max-w-md p-5 sm:p-6 max-h-[90dvh] overflow-y-auto"
               style={{
                 background: "var(--color-surface)",
                 borderRadius: "var(--radius-card)",
@@ -1615,7 +1754,7 @@ export default function InventoryPage() {
                 </h3>
                 <button
                   onClick={() => setDetail(null)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -1703,7 +1842,7 @@ export default function InventoryPage() {
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form
               onSubmit={handleSaveItem}
-              className="w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-4"
+              className="w-full max-w-lg p-5 sm:p-6 max-h-[90dvh] overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-4"
               style={{
                 background: "var(--color-surface)",
                 borderRadius: "var(--radius-card)",
@@ -1719,7 +1858,7 @@ export default function InventoryPage() {
                 <button
                   type="button"
                   onClick={() => setShowItemForm(false)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -2161,7 +2300,7 @@ export default function InventoryPage() {
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <form
               onSubmit={handleSaveBundle}
-              className="w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto space-y-4"
+              className="w-full max-w-lg p-5 sm:p-6 max-h-[90dvh] overflow-y-auto space-y-4"
               style={{
                 background: "var(--color-surface)",
                 borderRadius: "var(--radius-card)",
@@ -2177,7 +2316,7 @@ export default function InventoryPage() {
                 <button
                   type="button"
                   onClick={() => setShowBundleForm(false)}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -2252,7 +2391,7 @@ export default function InventoryPage() {
                         key={cat}
                         type="button"
                         onClick={() => setComponentPickerCategory(cat)}
-                        className="px-3 py-1 rounded-full text-xs font-medium transition"
+                        className="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium transition"
                         style={{
                           background: isActive ? "var(--color-primary)" : "var(--color-bg-secondary)",
                           color: isActive ? "#fff" : "var(--color-text-secondary)",
@@ -2309,7 +2448,7 @@ export default function InventoryPage() {
                           <button
                             type="button"
                             onClick={() => handleDecreaseComponent(c.itemId)}
-                            className="w-6 h-6 rounded-full font-bold"
+                            className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
                             style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
                           >
                             −
@@ -2326,7 +2465,7 @@ export default function InventoryPage() {
                               const item = items.find((i) => i.id === c.itemId);
                               if (item) handleAddComponent(item);
                             }}
-                            className="w-6 h-6 rounded-full font-bold"
+                            className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
                             style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
                           >
                             +
@@ -2375,7 +2514,7 @@ export default function InventoryPage() {
         {showScanModal && (
           <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
             <div
-              className="w-full max-w-lg sm:max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
+              className="w-full max-w-lg sm:max-w-2xl p-5 sm:p-6 max-h-[90dvh] overflow-y-auto"
               style={{
                 background: "var(--color-surface)",
                 borderRadius: "var(--radius-card)",
@@ -2393,7 +2532,7 @@ export default function InventoryPage() {
                 </h3>
                 <button
                   onClick={closeScanModal}
-                  className="text-xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
