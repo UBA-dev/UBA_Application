@@ -14,6 +14,7 @@ interface PrintReceiptOptions {
   total: number;
   cashReceived?: number;
   change?: number;
+  paymentLabel?: string;
   footerNote?: string;
 }
 
@@ -36,6 +37,7 @@ export function printReceipt({
   total,
   cashReceived,
   change,
+  paymentLabel,
   footerNote = "Thank you for your business!",
 }: PrintReceiptOptions) {
   const dateStr = new Date(date || Date.now()).toLocaleString();
@@ -99,6 +101,7 @@ export function printReceipt({
   </div>
   ${cashReceived != null ? `<div class="line"><span>Cash Received</span><span>₱${Number(cashReceived).toLocaleString()}</span></div>` : ""}
   ${change != null ? `<div class="line"><span>Change</span><span>₱${Number(change).toLocaleString()}</span></div>` : ""}
+  ${paymentLabel ? `<div class="line"><span>${escapeHtml(paymentLabel)}</span></div>` : ""}
   <div class="footer">${escapeHtml(footerNote)}</div>
 </body>
 </html>`;

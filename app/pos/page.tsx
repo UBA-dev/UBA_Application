@@ -2,12 +2,14 @@
 
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   collection,
   addDoc,
   onSnapshot,
   query,
   orderBy,
+  where,
   doc,
   getDoc,
   updateDoc,
@@ -15,9 +17,21 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
+import type { Role } from "../lib/permissions";
 import Sidebar from "../components/Sidebar";
 import { printReceipt } from "../lib/receipt";
 import { useOfflineSync } from "../lib/useOfflineSync";
+import {
+  businessDate,
+  ensureRegisterDay,
+  formatBusinessDate,
+  newTransactionId,
+  peso,
+  registerGate,
+  syncServerClock,
+  type PaymentMethod,
+  type RegisterState,
+} from "../lib/register";
 
 type InventoryItem = {
   id: string;
@@ -57,10 +71,31 @@ const inputStyle: React.CSSProperties = {
   borderWidth: "var(--border-width)",
 };
 
+type SaleRecordPayload = {
+  itemName: string;
+  quantity: number;
+  price: number;
+  total: number;
+  profit: number;
+  date: string;
+  // Older queued sales (saved offline before these existed) won't have them.
+  transactionId?: string;
+  paymentMethod?: PaymentMethod;
+  paymentRef?: string | null;
+  soldByUid?: string;
+  soldByName?: string;
+  soldByRole?: Role;
+  cashierUid?: string;
+  registerDayId?: string;
+  lateSyncFromDate?: string;
+};
+
 type QueuedSalePayload = {
   uid: string;
-  saleRecords: { itemName: string; quantity: number; price: number; total: number; profit: number; date: string }[];
+  saleRecords: SaleRecordPayload[];
   stockDeltas: { itemId: string; qty: number }[];
+  // Cashier sales: which register day the cash went into.
+  register?: { dayId: string; date: string; cashierUid: string; cashierName: string };
 };
 
 export default function PosPage() {
@@ -83,10 +118,41 @@ export default function PosPage() {
   // On phones the cart sits below the product list — the sticky bar jumps here.
   const cartRef = useRef<HTMLDivElement>(null);
 
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
+  const [paymentRef, setPaymentRef] = useState("");
+  const [receiptPayment, setReceiptPayment] = useState<{ method: PaymentMethod; ref: string } | null>(null);
+  const [receiptNumber, setReceiptNumber] = useState<string | null>(null);
+
+  // Who is selling. Cashiers sell through their Daily Register.
+  const [role, setRole] = useState<Role | null>(null);
+  const [seller, setSeller] = useState<{ uid: string; name: string } | null>(null);
+  const [register, setRegister] = useState<RegisterState | null>(null);
+  const [registerLoaded, setRegisterLoaded] = useState(false);
+  const [today, setToday] = useState(() => businessDate());
+  const [todaySales, setTodaySales] = useState<{ dayId: string; total: number } | null>(null);
+  const isCashier = role === "cashier";
+  const gate = seller ? registerGate(seller.uid, register, today) : null;
+  const canSell = !isCashier || (registerLoaded && gate?.kind === "ok");
+
   // Processes one queued offline sale by replaying the exact Firestore writes
   // that would have happened had the device been online at checkout time.
   const processPosSale = async (payload: QueuedSalePayload) => {
-    for (const record of payload.saleRecords) {
+    let records = payload.saleRecords;
+    if (payload.register) {
+      const r = payload.register;
+      let dayId = r.dayId;
+      try {
+        dayId = await ensureRegisterDay(db, payload.uid, { uid: r.cashierUid, name: r.cashierName }, r.date);
+      } catch (err) {
+        console.error("Couldn't open the register day:", err);
+      }
+      records = records.map((rec) => ({
+        ...rec,
+        registerDayId: dayId,
+        ...(dayId !== r.dayId ? { lateSyncFromDate: r.date } : {}),
+      }));
+    }
+    for (const record of records) {
       await addDoc(collection(db, "tenants", payload.uid, "sales"), record);
     }
     for (const delta of payload.stockDeltas) {
@@ -100,13 +166,23 @@ export default function PosPage() {
     pos_sale: processPosSale,
   });
 
+  // Business date by the server's clock, re-checked so a register left open
+  // past midnight locks until the previous day is closed.
+  useEffect(() => {
+    syncServerClock().then(() => setToday(businessDate()));
+    const timer = setInterval(() => setToday(businessDate()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     let unsubInv = () => {};
     let unsubBundles = () => {};
+    let unsubRegister = () => {};
 
     const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       unsubInv();
       unsubBundles();
+      unsubRegister();
 
       if (!user) {
         router.push("/login");
@@ -116,6 +192,22 @@ export default function PosPage() {
       const session = await getSessionInfo(user);
       const tenantId = session.tenantId;
       setUid(tenantId);
+      setRole(session.role);
+      setSeller({ uid: user.uid, name: session.staffName || "Owner" });
+
+      if (session.role === "cashier") {
+        unsubRegister = onSnapshot(
+          doc(db, "tenants", tenantId, "registers", user.uid),
+          (snap) => {
+            setRegister(snap.exists() ? ({ ...(snap.data() as RegisterState), cashierUid: snap.id }) : null);
+            setRegisterLoaded(true);
+          },
+          (err) => {
+            console.error("register:", err);
+            setRegisterLoaded(true);
+          }
+        );
+      }
 
       getDoc(doc(db, "tenants", tenantId)).then((snap) => {
         if (snap.exists()) {
@@ -140,8 +232,22 @@ export default function PosPage() {
       unsubscribeAuth();
       unsubInv();
       unsubBundles();
+      unsubRegister();
     };
   }, [router]);
+
+  // Today's sales total for the cashier's register strip.
+  const gateDayId = isCashier && gate?.kind === "ok" ? gate.dayId : null;
+  useEffect(() => {
+    if (!uid || !gateDayId) return;
+    return onSnapshot(
+      query(collection(db, "tenants", uid, "sales"), where("registerDayId", "==", gateDayId)),
+      (snap) =>
+        setTodaySales({ dayId: gateDayId, total: snap.docs.reduce((sum, d) => sum + (d.data().total || 0), 0) }),
+      (err) => console.error("register sales:", err)
+    );
+  }, [uid, gateDayId]);
+  const todaySalesTotal = todaySales?.dayId === gateDayId ? todaySales.total : 0;
 
   const categories = useMemo(() => {
     const all = [...items.map((i) => i.category), ...bundles.map((b) => b.category)];
@@ -265,9 +371,18 @@ export default function PosPage() {
   const change = Number(cashReceived || 0) - cartTotal;
 
   const handleCompleteSale = async () => {
-    if (!uid || cart.length === 0) return;
-    if (Number(cashReceived) < cartTotal) {
+    if (!uid || !seller || cart.length === 0) return;
+    if (!canSell || !gate) {
+      setErrorMessage("Your register isn't open for selling right now. Check the Daily Register.");
+      return;
+    }
+    const isEwallet = paymentMethod === "ewallet";
+    if (!isEwallet && Number(cashReceived) < cartTotal) {
       setErrorMessage("Cash received is less than the total amount due.");
+      return;
+    }
+    if (isEwallet && paymentRef.trim().length < 4) {
+      setErrorMessage("Enter the GCash / e-wallet reference number from the customer's receipt.");
       return;
     }
 
@@ -279,6 +394,18 @@ export default function PosPage() {
       const saleRecords: QueuedSalePayload["saleRecords"] = [];
       const stockDeltas: QueuedSalePayload["stockDeltas"] = [];
       const nowIso = new Date().toISOString();
+      const saleInfo = {
+        transactionId: newTransactionId(),
+        paymentMethod,
+        paymentRef: isEwallet ? paymentRef.trim() : null,
+        soldByUid: seller.uid,
+        soldByName: seller.name,
+        soldByRole: role ?? "owner",
+        ...(isCashier ? { cashierUid: seller.uid, registerDayId: gate.dayId } : {}),
+      };
+      const registerInfo = isCashier
+        ? { dayId: gate.dayId, date: gate.date, cashierUid: seller.uid, cashierName: seller.name }
+        : undefined;
 
       for (const line of cart) {
         if (line.kind === "item") {
@@ -291,6 +418,7 @@ export default function PosPage() {
             total,
             profit,
             date: nowIso,
+            ...saleInfo,
           });
           stockDeltas.push({ itemId: line.refId, qty: line.quantity });
         } else {
@@ -308,6 +436,7 @@ export default function PosPage() {
             total,
             profit,
             date: nowIso,
+            ...saleInfo,
           });
           for (const comp of line.components) {
             stockDeltas.push({ itemId: comp.itemId, qty: comp.quantity * line.quantity });
@@ -316,6 +445,17 @@ export default function PosPage() {
       }
 
       if (isOnline) {
+        // The cashier's first sale of the day opens their register day. If that
+        // bookkeeping fails, still record the sale: it keeps today's register
+        // day id, and the next sale, expense or deposit opens the day.
+        if (registerInfo) {
+          try {
+            const dayId = await ensureRegisterDay(db, uid, { uid: seller.uid, name: seller.name }, registerInfo.date);
+            saleRecords.forEach((record) => (record.registerDayId = dayId));
+          } catch (err) {
+            console.error("Couldn't open the register day:", err);
+          }
+        }
         // Write straight to Firestore as before.
         for (const record of saleRecords) {
           await addDoc(collection(db, "tenants", uid, "sales"), { ...record, serialNumberUsed: null });
@@ -328,7 +468,7 @@ export default function PosPage() {
       } else {
         // Queue the sale locally, then reflect the stock change immediately
         // on this device so the next transaction sees accurate stock.
-        await enqueue("pos_sale", { uid, saleRecords, stockDeltas });
+        await enqueue("pos_sale", { uid, saleRecords, stockDeltas, register: registerInfo });
         setItems((prev) =>
           prev.map((item) => {
             const totalDeducted = stockDeltas
@@ -340,9 +480,13 @@ export default function PosPage() {
       }
 
       setReceiptLines(cart);
-      setReceiptChange(change);
+      setReceiptChange(isEwallet ? 0 : change);
+      setReceiptPayment({ method: paymentMethod, ref: isEwallet ? paymentRef.trim() : "" });
+      setReceiptNumber(saleInfo.transactionId);
       setCart([]);
       setCashReceived("");
+      setPaymentMethod("cash");
+      setPaymentRef("");
     } catch (err) {
       console.error(err);
       setErrorMessage("Something went wrong while completing the sale. Please try again.");
@@ -383,6 +527,72 @@ export default function PosPage() {
                 </button>
               )}
             </div>
+          )}
+          {!canSell ? (
+            <div className="p-6 text-center space-y-3 mt-2" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
+              {!registerLoaded || !gate ? (
+                <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                  Checking your register...
+                </p>
+              ) : gate.kind === "unclosed" ? (
+                <>
+                  <p className="text-3xl">🔒</p>
+                  <p className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
+                    Close {formatBusinessDate(gate.date)} first
+                  </p>
+                  <p className="text-sm leading-snug" style={{ color: "var(--color-text-secondary)" }}>
+                    Your register from {formatBusinessDate(gate.date)} is still open. Deposit the cash, download the
+                    report and close that day — then you can sell today.
+                  </p>
+                  <Link
+                    href="/register"
+                    className="inline-block font-semibold px-5 py-2.5 text-sm"
+                    style={{ background: "var(--gradient-accent)", color: "#fff", borderRadius: "var(--radius-button)" }}
+                  >
+                    Go to Daily Register
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="text-3xl">✅</p>
+                  <p className="text-lg font-bold" style={{ color: "var(--color-text-primary)" }}>
+                    Register closed for today
+                  </p>
+                  <p className="text-sm leading-snug" style={{ color: "var(--color-text-secondary)" }}>
+                    You already closed today&apos;s register. Selling opens again at 12:00 midnight. Keep{" "}
+                    {peso(register?.cashOnHand ?? 0)} as your cash on hand.
+                  </p>
+                  <Link
+                    href="/register"
+                    className="inline-block font-semibold px-5 py-2.5 text-sm"
+                    style={{
+                      background: "var(--color-bg-secondary)",
+                      color: "var(--color-text-primary)",
+                      borderRadius: "var(--radius-button)",
+                    }}
+                  >
+                    View today&apos;s report
+                  </Link>
+                </>
+              )}
+            </div>
+          ) : (
+          <>
+          {isCashier && gate?.kind === "ok" && (
+            <Link
+              href="/register"
+              className="flex items-center justify-between gap-3 px-4 py-2.5 mb-4 text-sm"
+              style={{ ...cardStyle, color: "var(--color-text-secondary)" }}
+            >
+              <span className="min-w-0">
+                🧮 Today:{" "}
+                <b style={{ color: "var(--color-text-primary)" }}>{peso(todaySalesTotal)}</b> sales · Cash on hand{" "}
+                <b style={{ color: "var(--color-text-primary)" }}>{peso(register?.cashOnHand ?? 0)}</b>
+              </span>
+              <span className="shrink-0 font-semibold" style={{ color: "var(--color-primary-light)" }}>
+                Register →
+              </span>
+            </Link>
           )}
           <h1
             className="text-xl font-bold mb-1"
@@ -475,9 +685,12 @@ export default function PosPage() {
               );
             })}
           </div>
+          </>
+          )}
         </div>
 
         {/* Cart / Checkout panel */}
+        {canSell && (
         <div ref={cartRef} className="w-full lg:w-96 flex-shrink-0 flex scroll-mt-16">
           <div className="p-4 flex flex-col w-full" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
             <p
@@ -572,6 +785,58 @@ export default function PosPage() {
               </span>
             </div>
 
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              {(
+                [
+                  ["cash", "💵 Cash"],
+                  ["ewallet", "📱 GCash / E-wallet"],
+                ] as const
+              ).map(([method, label]) => {
+                const active = paymentMethod === method;
+                return (
+                  <button
+                    key={method}
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod(method);
+                      setErrorMessage("");
+                    }}
+                    className="py-2.5 text-sm font-semibold"
+                    style={{
+                      background: active ? "var(--color-primary)" : "var(--color-bg-secondary)",
+                      color: active ? "#fff" : "var(--color-text-secondary)",
+                      borderRadius: "var(--radius-button)",
+                      borderWidth: active ? 0 : "var(--border-width)",
+                      borderColor: "var(--color-border)",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {paymentMethod === "ewallet" ? (
+              <div className="mb-4">
+                <label htmlFor="payment-ref" className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
+                  GCash / e-wallet reference no.
+                </label>
+                <input
+                  id="payment-ref"
+                  value={paymentRef}
+                  onChange={(e) => setPaymentRef(e.target.value)}
+                  className="w-full mt-1 px-3 py-2"
+                  style={inputStyle}
+                  placeholder="From the customer's payment receipt"
+                  maxLength={40}
+                />
+                <p className="text-xs mt-1.5 leading-snug" style={{ color: "var(--color-text-secondary)" }}>
+                  Check that the payment really arrived before completing the sale. E-wallet sales go to the owner&apos;s
+                  account, not the cash drawer.
+                </p>
+              </div>
+            ) : (
+            <>
             <div className="flex items-center justify-between">
               <label htmlFor="cash-received" className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
                 Cash Received (₱)
@@ -618,6 +883,8 @@ export default function PosPage() {
                 ₱{Math.abs(change).toLocaleString()}
               </span>
             </div>
+            </>
+            )}
 
             {errorMessage && (
               <p
@@ -642,9 +909,10 @@ export default function PosPage() {
             </button>
           </div>
         </div>
+        )}
 
         {/* Phone-only cart bar — the cart panel is below the product list there */}
-        {cart.length > 0 && !receiptLines && (
+        {canSell && cart.length > 0 && !receiptLines && (
           <div
             className="lg:hidden fixed bottom-0 left-0 right-0 z-30 pl-4 pr-24 py-3 flex items-center justify-between gap-3"
             style={{
@@ -712,12 +980,25 @@ export default function PosPage() {
                 className="flex justify-between items-center py-2 mb-4"
                 style={{ borderTopWidth: "var(--border-width)", borderColor: "var(--color-border)" }}
               >
-                <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                  Change
-                </span>
-                <span className="text-lg font-bold" style={{ color: "var(--color-primary-light)" }}>
-                  ₱{receiptChange.toLocaleString()}
-                </span>
+                {receiptPayment?.method === "ewallet" ? (
+                  <>
+                    <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                      Paid via GCash / e-wallet
+                    </span>
+                    <span className="text-sm font-bold" style={{ color: "var(--color-primary-light)" }}>
+                      Ref {receiptPayment.ref}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+                      Change
+                    </span>
+                    <span className="text-lg font-bold" style={{ color: "var(--color-primary-light)" }}>
+                      ₱{receiptChange.toLocaleString()}
+                    </span>
+                  </>
+                )}
               </div>
 
                 <button
@@ -733,8 +1014,11 @@ export default function PosPage() {
                       amount: l.unitPrice * l.quantity,
                     })),
                     total,
-                    cashReceived: total + receiptChange,
-                    change: receiptChange,
+                    ...(receiptPayment?.method === "ewallet"
+                      ? { paymentLabel: `Paid via GCash / e-wallet · Ref ${receiptPayment.ref}` }
+                      : { cashReceived: total + receiptChange, change: receiptChange }),
+                    receiptNumber: receiptNumber ?? undefined,
+                    footerNote: seller && role !== "owner" ? `Served by ${seller.name} · Thank you!` : undefined,
                   });
                 }}
                 className="w-full font-semibold py-2.5 mb-2 hover:opacity-90"

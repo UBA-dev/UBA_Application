@@ -14,6 +14,8 @@ export const PAGE_ACCESS: Record<string, Role[]> = {
   "/dashboard": ["owner", "secretary"],
   "/inventory": ["owner", "secretary", "cashier"],
   "/pos": ["owner", "secretary", "cashier"],
+  // Cashier: sariling register lang. Owner/Secretary: lahat ng cashier.
+  "/register": ["owner", "secretary", "cashier"],
   "/repair-tickets": ["owner", "secretary"],
   "/delivery-tickets": ["owner", "secretary"],
   "/po-tickets": ["owner", "secretary"],

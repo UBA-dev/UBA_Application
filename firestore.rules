@@ -47,6 +47,15 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
 
+    // Daily Register: ang bagong cash on hand ng cashier ay galing sa araw na
+    // kasasara lang niya (sa parehong batch), at tugma sa "cash on hand kept".
+    function cashOnHandFromClosedDay(tenantId, cashierUid) {
+      let day = getAfter(/databases/$(database)/documents/tenants/$(tenantId)/registerDays/$(request.resource.data.cashOnHandSourceDayId)).data;
+      return day.cashierUid == cashierUid
+             && day.status == 'closed'
+             && request.resource.data.cashOnHand == day.closing.closingCashOnHand;
+    }
+
     match /tenants/{tenantId} {
       allow list: if isAdmin();
       allow get: if isAdmin() || belongsToTenant(tenantId);
@@ -170,10 +179,106 @@ service cloud.firestore {
       }
 
       // ---- Expenses: Owner + Secretary ang mag-add at mag-edit, Owner lang mag-delete ----
+      // Ang Cashier ay pwedeng mag-add ng expense na binayaran mula sa SARILI
+      // niyang drawer (Daily Register), at burahin lang ito habang bukas pa
+      // ang araw na iyon — pagkasara, Owner na lang ang makakagalaw.
       match /expenses/{docId} {
         allow read: if belongsToTenant(tenantId);
-        allow create, update: if isManagerOf(tenantId);
-        allow delete: if isOwnerOf(tenantId);
+        allow create: if isManagerOf(tenantId)
+                      || (isStaffOf(tenantId)
+                          && request.resource.data.get('source', '') == 'register'
+                          && request.resource.data.get('cashierUid', '') == request.auth.uid
+                          && request.resource.data.registerDayId.matches(request.auth.uid + '_.*'));
+        allow update: if isManagerOf(tenantId);
+        allow delete: if isOwnerOf(tenantId)
+                      || (isStaffOf(tenantId)
+                          && resource.data.get('source', '') == 'register'
+                          && resource.data.get('cashierUid', '') == request.auth.uid
+                          && get(/databases/$(database)/documents/tenants/$(tenantId)/registerDays/$(resource.data.registerDayId)).data.status == 'open');
+      }
+
+      // ---- Daily Register (cash control ng bawat Cashier) ----
+      // registers/{uid}: cash on hand ng cashier at kung aling araw ang bukas.
+      // Ang Cashier ay sarili lang niya. Ang Owner ay pwedeng mag-adjust
+      // (hal. panimulang panukli) — naka-log sa registerAdjustments.
+      //
+      // Ang Cashier ay hindi basta makakapagpalit ng sarili niyang cash on hand:
+      // sa unang gawa ay 0, at pagkatapos ay magbabago lang ito kapag isinara
+      // ang isang araw — at dapat eksaktong tugma sa "cash on hand kept" ng
+      // araw na iyon (cashOnHandSourceDayId).
+      match /registers/{cashierUid} {
+        allow read: if isManagerOf(tenantId) || (isStaffOf(tenantId) && request.auth.uid == cashierUid);
+        allow create: if isOwnerOf(tenantId)
+                      || (isStaffOf(tenantId)
+                          && request.auth.uid == cashierUid
+                          && request.resource.data.cashierUid == cashierUid
+                          && request.resource.data.cashOnHand == 0);
+        allow update: if isOwnerOf(tenantId)
+                      || (isStaffOf(tenantId)
+                          && request.auth.uid == cashierUid
+                          && request.resource.data.cashierUid == cashierUid
+                          && (request.resource.data.cashOnHand == resource.data.cashOnHand
+                              || cashOnHandFromClosedDay(tenantId, cashierUid)));
+        allow delete: if false;
+      }
+
+      // registerDays/{cashierUid}_{YYYY-MM-DD}: isang araw ng isang cashier.
+      // Ang Cashier ay hindi na makakagalaw sa araw na SARADO na; ang Owner
+      // lang ang makakapag-reopen.
+      match /registerDays/{dayId} {
+        allow get: if isManagerOf(tenantId)
+                   || (isStaffOf(tenantId) && dayId.matches(request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}'));
+        allow list: if isManagerOf(tenantId)
+                    || (isStaffOf(tenantId) && resource.data.cashierUid == request.auth.uid);
+        // Ang opening cash on hand ay DAPAT ang kasalukuyang cash on hand ng
+        // register (getAfter: kasama sa iisang batch ang register update).
+        allow create: if isStaffOf(tenantId)
+                      && request.resource.data.cashierUid == request.auth.uid
+                      && dayId == request.auth.uid + '_' + request.resource.data.date
+                      && request.resource.data.status == 'open'
+                      && request.resource.data.openingCashOnHand
+                         == getAfter(/databases/$(database)/documents/tenants/$(tenantId)/registers/$(request.auth.uid)).data.cashOnHand;
+        allow update: if isOwnerOf(tenantId)
+                      || (isStaffOf(tenantId)
+                          && resource.data.cashierUid == request.auth.uid
+                          && resource.data.status == 'open'
+                          && !changedKeys().hasAny(['cashierUid', 'date', 'openingCashOnHand', 'openedAt',
+                                                    'reopenCount', 'reopenedAt', 'reopenReason', 'previousClosing']));
+        allow delete: if false;
+      }
+
+      // Deposits: laging may proof photo. Hindi kailanman nabubura — ang mali
+      // ay "voided" lang (nananatili sa report). Ang Cashier ay pwedeng mag-void
+      // ng sarili niyang deposit habang hindi pa kinukumpirma ng Owner.
+      match /registerDeposits/{depositId} {
+        allow read: if isManagerOf(tenantId)
+                    || (isStaffOf(tenantId) && resource.data.cashierUid == request.auth.uid);
+        allow create: if isStaffOf(tenantId)
+                      && request.resource.data.cashierUid == request.auth.uid
+                      && request.resource.data.dayId.matches(request.auth.uid + '_.*')
+                      && request.resource.data.type in ['sales', 'cashOnHand']
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.proofImage is string
+                      && request.resource.data.proofImage.size() > 1000
+                      && request.resource.data.proofImage.size() < 1000000
+                      && request.resource.data.voided == false
+                      && request.resource.data.get('verifiedAt', null) == null;
+        allow update: if (isOwnerOf(tenantId)
+                          && changedKeys().hasOnly(['verifiedAt', 'verifiedByName', 'voided', 'voidedAt', 'voidReason', 'voidedByName']))
+                      || (isStaffOf(tenantId)
+                          && resource.data.cashierUid == request.auth.uid
+                          && resource.data.get('verifiedAt', null) == null
+                          && request.resource.data.voided == true
+                          && changedKeys().hasOnly(['voided', 'voidedAt', 'voidReason', 'voidedByName']));
+        allow delete: if false;
+      }
+
+      // Log ng bawat pagbabago ng Owner sa cash on hand ng cashier.
+      match /registerAdjustments/{adjustmentId} {
+        allow read: if isManagerOf(tenantId);
+        allow create: if isOwnerOf(tenantId);
+        allow update, delete: if false;
       }
 
       // ---- Tickets at AI Tasks: Owner + Secretary lang (Cashier walang access) ----

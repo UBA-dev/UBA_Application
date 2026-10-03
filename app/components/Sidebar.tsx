@@ -19,6 +19,7 @@ const baseNavItems: { href: string; label: string; icon: string; disabled?: bool
   { href: "/po-tickets", label: "P.O. / Purchase Order", icon: "📋", featureKey: "poTickets" },
   { href: "/sales", label: "Sales & Expenses", icon: "💰" },
   { href: "/pos", label: "POS / Checkout", icon: "🧾" },
+  { href: "/register", label: "Daily Register", icon: "🧮" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
   { href: "/admin", label: "Admin", icon: "👑", adminOnly: true },
   { href: "/approvals", label: "Approvals", icon: "✅" },

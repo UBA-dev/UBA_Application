@@ -28,6 +28,9 @@ type SaleRecord = {
   total: number;
   profit: number;
   date: string;
+  soldByName?: string;
+  paymentMethod?: "cash" | "ewallet";
+  paymentRef?: string | null;
 };
 
 type ExpenseRecord = {
@@ -35,7 +38,16 @@ type ExpenseRecord = {
   description: string;
   amount: number;
   date: string;
+  cashierName?: string;
 };
+
+// "by Juan · GCash 1234" — who sold it and how it was paid, when known.
+function saleMeta(sale: SaleRecord): string {
+  const parts: string[] = [];
+  if (sale.soldByName) parts.push(`by ${sale.soldByName}`);
+  if (sale.paymentMethod === "ewallet") parts.push(`GCash${sale.paymentRef ? ` ${sale.paymentRef}` : ""}`);
+  return parts.join(" · ");
+}
 
 type Period = "Day" | "Week" | "Month" | "Year";
 
@@ -364,12 +376,13 @@ export default function SalesExpensesPage() {
     const rows: string[] = [];
 
     rows.push("SALES");
-    rows.push("Item,Quantity,Total,Profit,Date");
+    rows.push("Item,Quantity,Total,Profit,Date,Sold By,Payment");
     filteredSales.forEach((s) => {
+      const payment = s.paymentMethod === "ewallet" ? `GCash/E-wallet ${s.paymentRef ?? ""}`.trim() : "Cash";
       rows.push(
-        `"${s.itemName}",${s.quantity},${s.total},${s.profit ?? 0},${new Date(
+        `"${s.itemName}",${s.quantity},${s.total},${s.profit ?? 0},"${new Date(
           s.date
-        ).toLocaleString()}`
+        ).toLocaleString()}","${s.soldByName ?? ""}","${payment}"`
       );
     });
     rows.push("");
@@ -541,6 +554,7 @@ export default function SalesExpensesPage() {
                     </p>
                     <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
                       Qty {sale.quantity} · {new Date(sale.date).toLocaleString()}
+                      {saleMeta(sale) && ` · ${saleMeta(sale)}`}
                     </p>
                     {canEditSales && (
                       <div className="flex gap-2 mt-2">
@@ -614,6 +628,11 @@ export default function SalesExpensesPage() {
                     >
                       <td className="px-4 py-3" style={{ color: "var(--color-text-primary)" }}>
                         {sale.itemName}
+                        {saleMeta(sale) && (
+                          <span className="block text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                            {saleMeta(sale)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
                         {sale.quantity}
@@ -723,6 +742,7 @@ export default function SalesExpensesPage() {
                     </p>
                     <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
                       {new Date(exp.date).toLocaleString()}
+                      {exp.cashierName && ` · by ${exp.cashierName} (drawer)`}
                     </p>
                     <div className="flex gap-2 mt-2">
                       <button
@@ -784,6 +804,11 @@ export default function SalesExpensesPage() {
                     >
                       <td className="px-4 py-3" style={{ color: "var(--color-text-primary)" }}>
                         {exp.description}
+                        {exp.cashierName && (
+                          <span className="block text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                            by {exp.cashierName} (drawer)
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 font-medium" style={{ color: "#f87171" }}>
                         -₱{exp.amount.toLocaleString()}
