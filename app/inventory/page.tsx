@@ -13,6 +13,7 @@ import {
   updateDoc,
   deleteDoc,
   increment,
+  arrayUnion,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { getSessionInfo } from "../lib/staffAuth";
@@ -22,6 +23,22 @@ import { detectFileKind, parseCSVFile, parseExcelFile, parseDocxFile, parsePdfFi
 import { getAiAccess, hasFeatureAccess, getPlanLimits, itemCapMessage, AI_LOCKED_MESSAGE } from "../lib/subscription";
 import { can, type Role } from "../lib/permissions";
 import { authedFetch } from "../lib/authedFetch";
+import {
+  CONVERSION_SOURCE_LABELS,
+  MATCH_SOURCE_LABELS,
+  PACK_UNITS,
+  averageCost,
+  conversionFor,
+  findStockMatch,
+  formatQty,
+  learnedPack,
+  normalizeName,
+  roundMoney,
+  roundQty,
+  siblingPackEstimate,
+  type ConversionSource,
+  type MatchSource,
+} from "../lib/stockMatching";
 
 type InventoryItem = {
   id: string;
@@ -40,6 +57,11 @@ type InventoryItem = {
   photoUrl?: string | null;
   lowStockAlertSent?: boolean;
   barcode?: string;
+  // 1 packUnit holds packSize of this item's unit (e.g. 1 Sack = 50 Kilogram)
+  packSize?: number | null;
+  packUnit?: string | null;
+  // Names UBA Scanner has matched to this item before (normalized)
+  aliases?: string[];
 };
 
 type BundleComponent = {
@@ -87,6 +109,11 @@ type ScanApiItem = {
   barcodeText: string;
   confidence: ScanConfidence;
   lowConfidenceFields: string[];
+  matchedItemId?: string | null;
+  matchConfidence?: string | null;
+  contentPerUnit?: number | null;
+  contentUnit?: string | null;
+  contentIsEstimate?: boolean;
 };
 
 
@@ -114,7 +141,67 @@ type ScannedItemRow = {
   showPackCalc: boolean;
   packCount: string;
   unitPerPack: string;
+  // What the AI read off the document
+  aiMatchedId: string | null;
+  aiMatchConfidence: string | null;
+  contentPerUnit: number | null;
+  contentUnit: string | null;
+  contentIsEstimate: boolean;
+  // Restock an existing item (its id) or "" to add as a new item
+  matchId: string;
+  matchSource: MatchSource | "";
+  // How many of the matched item's stock unit ONE received unit is
+  factor: string;
+  factorSource: ConversionSource | "";
+  updateCost: boolean;
 };
+
+type ScanRowBase = Omit<ScannedItemRow, "matchId" | "matchSource" | "factor" | "factorSource" | "updateCost">;
+
+function planConversion(row: ScanRowBase, item: InventoryItem | undefined) {
+  if (!item) return { factor: "", factorSource: "" as const };
+  const c = conversionFor(row.unit, item, {
+    name: `${row.name} ${row.description}`,
+    contentPerUnit: row.contentPerUnit,
+    contentUnit: row.contentUnit,
+    contentIsEstimate: row.contentIsEstimate,
+  });
+  return c ? { factor: String(roundQty(c.factor)), factorSource: c.source } : { factor: "", factorSource: "" as const };
+}
+
+// Decides, per scanned line, whether it restocks an item the shop already has.
+function withStockMatch(row: ScanRowBase, items: InventoryItem[]): ScannedItemRow {
+  const match = findStockMatch(
+    { name: row.name, barcode: row.barcodeText, aiMatchedId: row.aiMatchedId, aiConfidence: row.aiMatchConfidence },
+    items
+  );
+  const item = match ? items.find((i) => i.id === match.item.id) : undefined;
+  return {
+    ...row,
+    matchId: item?.id ?? "",
+    matchSource: match?.source ?? "",
+    ...planConversion(row, item),
+    updateCost: true,
+  };
+}
+
+// What a restock row will do to its item: stock added, new stock, cost.
+function restockPreview(row: ScannedItemRow, item: InventoryItem) {
+  const qty = Number(row.quantity);
+  const factor = Number(row.factor);
+  const added = qty > 0 && factor > 0 ? roundQty(qty * factor) : null;
+  const receivedCost = Number(row.unitCost);
+  const costPerStockUnit = added != null && receivedCost > 0 ? roundMoney(receivedCost / factor) : null;
+  return {
+    added,
+    newStock: added != null ? roundQty((item.stock || 0) + added) : null,
+    costPerStockUnit,
+    newCost:
+      added != null && costPerStockUnit != null
+        ? averageCost(item.stock, item.unitCost, added, costPerStockUnit)
+        : null,
+  };
+}
 
 const documentTypeLabels: Record<ScanDocumentType, string> = {
   receipt_invoice: "🧾 Receipt / Invoice",
@@ -310,6 +397,10 @@ export default function InventoryPage() {
   const [showThresholdCalc, setShowThresholdCalc] = useState(false);
   const [contentPerPack, setContentPerPack] = useState("");
   const [desiredRemaining, setDesiredRemaining] = useState("");
+  // Pack size remembered on the item so UBA Scanner can convert deliveries
+  // ("50 sacks") into this item's stock unit on its own.
+  const [packSize, setPackSize] = useState("");
+  const [packUnit, setPackUnit] = useState("Sack");
 
   const [showBundleForm, setShowBundleForm] = useState(false);
   const [bundleName, setBundleName] = useState("");
@@ -333,6 +424,9 @@ export default function InventoryPage() {
   const [scanRows, setScanRows] = useState<ScannedItemRow[] | null>(null);
   const [addingBulk, setAddingBulk] = useState(false);
   const [bulkMessage, setBulkMessage] = useState("");
+  // Matched/converted scans are reviewed as a list even when there's one line.
+  const [scanListMode, setScanListMode] = useState(false);
+  const [scanSuccess, setScanSuccess] = useState("");
 
   useEffect(() => {
     let unsubInv = () => {};
@@ -503,17 +597,8 @@ export default function InventoryPage() {
     );
   }, [items, componentPickerCategory]);
 
-  // Quick lookup used by the scanner to warn when a scanned item looks like
-  // something already in inventory (by exact barcode, or close name match).
-  const findPossibleExistingMatch = (row: ScannedItemRow): InventoryItem | null => {
-    if (row.barcodeText) {
-      const byBarcode = items.find((i) => i.barcode && i.barcode === row.barcodeText);
-      if (byBarcode) return byBarcode;
-    }
-    const rowName = row.name.trim().toLowerCase();
-    if (!rowName) return null;
-    return items.find((i) => i.name.trim().toLowerCase() === rowName) || null;
-  };
+  // Restock targets for the scanner's "Save as" picker.
+  const itemsByName = useMemo(() => [...items].sort((a, b) => a.name.localeCompare(b.name)), [items]);
 
   // ---- Item form handlers ----
 
@@ -539,6 +624,8 @@ export default function InventoryPage() {
   setShowThresholdCalc(false);
   setContentPerPack("");
   setDesiredRemaining("");
+  setPackSize("");
+  setPackUnit("Sack");
   setEditingItemId(null);
 };
 
@@ -560,6 +647,8 @@ export default function InventoryPage() {
     setSellingPrice(String(item.sellingPrice || ""));
     setSupplierName(item.supplierName || "");
     setSupplierLink(item.supplierLink || "");
+    setPackSize(item.packSize ? String(item.packSize) : "");
+    setPackUnit(item.packUnit || "Sack");
     const hasSN = item.serialNumbers && item.serialNumbers.length > 0;
     setHasSerialNumbers(!!hasSN);
     setSerialNumbersText(hasSN ? item.serialNumbers.join("\n") : "");
@@ -599,6 +688,9 @@ export default function InventoryPage() {
     if (!current) return;
 
     const { sellingPrice, unitCost, ...otherFields } = itemData;
+    // Pack size is Owner-managed (security rules don't let the Secretary set it).
+    delete otherFields.packSize;
+    delete otherFields.packUnit;
 
     // Tingnan kung may nagbago sa presyo o puhunan
     const changes: Record<string, { from: number; to: number }> = {};
@@ -646,6 +738,9 @@ export default function InventoryPage() {
       serialNumbers: hasSerialNumbers ? parseSerialNumbers(serialNumbersText) : [],
       photoUrl: photoUrl || null,
       barcode: itemBarcode || null,
+      ...(Number(packSize) > 0 && !(PACK_UNITS as readonly string[]).includes(unit)
+        ? { packSize: roundQty(Number(packSize)), packUnit }
+        : { packSize: null, packUnit: null }),
     };
 
     try {
@@ -989,7 +1084,36 @@ export default function InventoryPage() {
     setScanError("");
     setScanDocumentType(null);
     setScanRows(null);
+    setScanListMode(false);
     setBulkMessage("");
+  };
+
+  // Matches every scanned line against the inventory, then shows them.
+  const showScanRows = (rows: ScanRowBase[]) => {
+    const planned = rows.map((row) => withStockMatch(row, items));
+    // Pack size still unknown? Borrow it from a same-brand sibling, flagged as
+    // an estimate for the owner to check.
+    for (const row of planned) {
+      const item = row.matchId && !row.factor ? items.find((it) => it.id === row.matchId) : undefined;
+      if (!item) continue;
+      const siblings = planned
+        .filter((other) => other !== row && (other.factorSource !== "estimate" || !other.factor))
+        .map((other) => ({
+          name: other.name,
+          unit: other.unit,
+          factor: other.factor ? Number(other.factor) : null,
+          matchedUnit: items.find((it) => it.id === other.matchId)?.unit ?? null,
+          contentPerUnit: other.contentIsEstimate ? null : other.contentPerUnit,
+          contentUnit: other.contentUnit,
+        }));
+      const estimate = siblingPackEstimate(row, item, siblings, items);
+      if (estimate) {
+        row.factor = String(roundQty(estimate));
+        row.factorSource = "estimate";
+      }
+    }
+    setScanRows(planned);
+    setScanListMode(planned.length > 1 || planned.some((r) => r.matchId));
   };
 
   const closeScanModal = () => {
@@ -1035,7 +1159,7 @@ export default function InventoryPage() {
     }
 
     setScanDocumentType(scanResult.documentType);
-    setScanRows(
+    showScanRows(
       scanResult.items.map((it) => ({
         selected: true,
         name: it.name || "",
@@ -1053,6 +1177,11 @@ export default function InventoryPage() {
         showPackCalc: false,
         packCount: "",
         unitPerPack: "",
+        aiMatchedId: it.matchedItemId ?? null,
+        aiMatchConfidence: it.matchConfidence ?? null,
+        contentPerUnit: it.contentPerUnit ?? null,
+        contentUnit: it.contentUnit ?? null,
+        contentIsEstimate: !!it.contentIsEstimate,
       }))
     );
   };
@@ -1088,7 +1217,7 @@ export default function InventoryPage() {
         }
 
         setScanDocumentType("spreadsheet_import");
-        setScanRows(
+        showScanRows(
           rows.map((it: any) => ({
             selected: true,
             name: it.name || "",
@@ -1106,6 +1235,11 @@ export default function InventoryPage() {
             showPackCalc: false,
             packCount: "",
             unitPerPack: "",
+            aiMatchedId: null,
+            aiMatchConfidence: null,
+            contentPerUnit: null,
+            contentUnit: null,
+            contentIsEstimate: false,
           }))
         );
       } else if (kind === "docx") {
@@ -1164,7 +1298,20 @@ export default function InventoryPage() {
   const updateScanRow = (index: number, field: keyof ScannedItemRow, value: string | boolean) => {
     if (!scanRows) return;
     setScanRows(
-      scanRows.map((row, i) => (i === index ? { ...row, [field]: value } : row))
+      scanRows.map((row, i) => {
+        if (i !== index) return row;
+        const next = { ...row, [field]: value } as ScannedItemRow;
+        // A different item or received unit means a different conversion.
+        if (field === "matchId") {
+          next.matchSource = value ? "manual" : "";
+          Object.assign(next, planConversion(next, items.find((it) => it.id === value)));
+        } else if (field === "unit" && next.matchId) {
+          Object.assign(next, planConversion(next, items.find((it) => it.id === next.matchId)));
+        } else if (field === "factor") {
+          next.factorSource = "manual";
+        }
+        return next;
+      })
     );
   };
 
@@ -1182,8 +1329,27 @@ export default function InventoryPage() {
       return;
     }
 
+    const restockRows = selectedRows.filter((r) => r.matchId);
+    const newRows = selectedRows.filter((r) => !r.matchId);
+
+    for (const row of restockRows) {
+      const item = items.find((i) => i.id === row.matchId);
+      if (!item) {
+        setBulkMessage(`The item "${row.name}" was matched to was deleted. Pick another item or add it as new.`);
+        return;
+      }
+      if (!(Number(row.quantity) > 0)) {
+        setBulkMessage(`Enter how many ${row.unit} of "${row.name}" you received.`);
+        return;
+      }
+      if (!(Number(row.factor) > 0)) {
+        setBulkMessage(`Enter how many ${item.unit} are in one ${row.unit} of "${row.name}".`);
+        return;
+      }
+    }
+
     const slotsLeft = planLimits.itemCap - items.length;
-    if (selectedRows.length > slotsLeft) {
+    if (newRows.length > slotsLeft) {
       setBulkMessage(
         slotsLeft <= 0
           ? itemCapMessage(planLimits.itemCap)
@@ -1195,7 +1361,37 @@ export default function InventoryPage() {
     setAddingBulk(true);
     setBulkMessage("");
     try {
-      for (const row of selectedRows) {
+      // Restocks: add to the matched item in its own unit, and remember the
+      // pack size and the name it was scanned as for next time. Running
+      // totals so two lines for the same item average their cost correctly.
+      const running = new Map<string, { stock: number; cost: number }>();
+      let restockSummary = "";
+      for (const row of restockRows) {
+        const item = items.find((i) => i.id === row.matchId)!;
+        const current = running.get(item.id) ?? { stock: item.stock || 0, cost: item.unitCost || 0 };
+        const preview = restockPreview(row, { ...item, stock: current.stock, unitCost: current.cost });
+        const added = preview.added!;
+        const update: Record<string, unknown> = {
+          stock: increment(added),
+          lastRestockedAt: new Date().toISOString(),
+        };
+        const newCost = row.updateCost && preview.newCost != null ? preview.newCost : current.cost;
+        if (row.updateCost && preview.newCost != null) update.unitCost = preview.newCost;
+        const pack = learnedPack(row.unit, item, Number(row.factor));
+        if (pack) {
+          update.packSize = pack.packSize;
+          update.packUnit = pack.packUnit;
+        }
+        const alias = normalizeName(row.name);
+        if (alias && alias !== normalizeName(item.name)) update.aliases = arrayUnion(alias);
+        if (!item.barcode && row.barcodeText) update.barcode = row.barcodeText;
+
+        await updateDoc(doc(db, "tenants", uid, "inventory", item.id), update);
+        running.set(item.id, { stock: roundQty(current.stock + added), cost: newCost });
+        restockSummary += `${restockSummary ? ", " : ""}${item.name} +${formatQty(added)} ${item.unit}`;
+      }
+
+      for (const row of newRows) {
         await addDoc(collection(db, "tenants", uid, "inventory"), {
           name: row.name,
           description: row.description,
@@ -1214,9 +1410,17 @@ export default function InventoryPage() {
         });
       }
       closeScanModal();
+      setScanSuccess(
+        [
+          restockSummary && `✓ Restocked: ${restockSummary}`,
+          newRows.length > 0 && `✓ Added ${newRows.length} new item(s)`,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      );
     } catch (err) {
       console.error(err);
-      setBulkMessage("Something went wrong while adding items. Please try again.");
+      setBulkMessage("Something went wrong while saving. Some items may already be updated — check the list before trying again.");
     } finally {
       setAddingBulk(false);
     }
@@ -1309,7 +1513,22 @@ export default function InventoryPage() {
           </div>
           )}
         </div>
-        
+
+        {scanSuccess && (
+          <div
+            className="mb-4 px-4 py-3 text-sm flex items-start justify-between gap-3"
+            style={{ background: "rgba(34, 197, 94, 0.12)", color: "#4ade80", borderRadius: "var(--radius-button)" }}
+          >
+            <span>{scanSuccess}</span>
+            <button
+              onClick={() => setScanSuccess("")}
+              className="w-8 h-8 -my-1.5 -mr-2 shrink-0 flex items-center justify-center text-lg leading-none"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         <div className="mb-4">
           <input
@@ -1410,7 +1629,7 @@ export default function InventoryPage() {
                         type="button"
                         onClick={() => item.photoUrl && setViewingPhoto(item.photoUrl)}
                         disabled={!item.photoUrl}
-                        className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center disabled:cursor-default"
+                        className="w-12 h-12 rounded-lg overflow-hidden shrink-0 flex items-center justify-center disabled:cursor-default"
                         style={{ background: "var(--color-bg-secondary)" }}
                       >
                         {item.photoUrl ? (
@@ -1453,7 +1672,7 @@ export default function InventoryPage() {
                         </p>
                       )}
                     </div>
-                    <div className="text-right flex-shrink-0">
+                    <div className="text-right shrink-0">
                       <p className="font-semibold" style={{ color: "var(--color-text-primary)" }}>
                         ₱{(item?.sellingPrice ?? bundle!.price).toLocaleString()}
                       </p>
@@ -1529,7 +1748,7 @@ export default function InventoryPage() {
             }}
           >
             <div className="overflow-x-auto">
-            <table className="w-full text-sm sm:min-w-[560px]">
+            <table className="w-full text-sm sm:min-w-140">
               <thead
                 className="text-left"
                 style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}
@@ -1562,7 +1781,7 @@ export default function InventoryPage() {
     if (item.photoUrl) setViewingPhoto(item.photoUrl);
   }}
   disabled={!item.photoUrl}
-  className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center disabled:cursor-default"
+  className="w-9 h-9 rounded-lg overflow-hidden shrink-0 flex items-center justify-center disabled:cursor-default"
   style={{ background: "var(--color-bg-secondary)", cursor: item.photoUrl ? "zoom-in" : "default" }}
 >
   {item.photoUrl ? (
@@ -1754,7 +1973,7 @@ export default function InventoryPage() {
                 </h3>
                 <button
                   onClick={() => setDetail(null)}
-                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -1858,7 +2077,7 @@ export default function InventoryPage() {
                 <button
                   type="button"
                   onClick={() => setShowItemForm(false)}
-                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -1881,7 +2100,7 @@ export default function InventoryPage() {
                   onClick={() => photoInputRef.current?.click()}
                   disabled={photoUploading}
                   title={photoUrl ? "Click to change photo" : "Click to add a photo"}
-                  className="w-20 h-20 rounded-lg overflow-hidden flex items-center justify-center flex-shrink-0 disabled:opacity-60 hover:opacity-90 transition"
+                  className="w-20 h-20 rounded-lg overflow-hidden flex items-center justify-center shrink-0 disabled:opacity-60 hover:opacity-90 transition"
                   style={{
                     background: "var(--color-bg-secondary)",
                     borderWidth: "var(--border-width)",
@@ -2081,6 +2300,8 @@ export default function InventoryPage() {
                           const toAdd = (Number(sackCount) || 0) * (Number(kgPerSack) || 0);
                           const current = Number(stock) || 0;
                           setStock(String(current + toAdd));
+                          // Remember the pack size for UBA Scanner, unless one is already set.
+                          if (!packSize && !(PACK_UNITS as readonly string[]).includes(unit)) setPackSize(kgPerSack);
                           setSackCount("");
                           setKgPerSack("");
                         }}
@@ -2096,6 +2317,51 @@ export default function InventoryPage() {
                       </button>
                     </div>
                   )}
+                </div>
+              )}
+
+              {!(PACK_UNITS as readonly string[]).includes(unit) && (
+                <div className="sm:col-span-2">
+                  <label className="text-sm" style={labelStyle}>
+                    Pack size (optional)
+                  </label>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-sm shrink-0" style={{ color: "var(--color-text-secondary)" }}>
+                      1
+                    </span>
+                    <select
+                      value={packUnit}
+                      onChange={(e) => setPackUnit(e.target.value)}
+                      className="px-3 py-2"
+                      style={inputStyle}
+                    >
+                      {PACK_UNITS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-sm shrink-0" style={{ color: "var(--color-text-secondary)" }}>
+                      =
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      min={0}
+                      inputMode="decimal"
+                      value={packSize}
+                      onChange={(e) => setPackSize(e.target.value)}
+                      placeholder="e.g. 50"
+                      className="w-24 min-w-0 flex-1 px-3 py-2"
+                      style={inputStyle}
+                    />
+                    <span className="text-sm shrink-0" style={{ color: "var(--color-text-secondary)" }}>
+                      {unit}
+                    </span>
+                  </div>
+                  <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                    Lets UBA Scanner turn deliveries like &quot;50 sacks&quot; into {unit} automatically.
+                  </p>
                 </div>
               )}
 
@@ -2316,7 +2582,7 @@ export default function InventoryPage() {
                 <button
                   type="button"
                   onClick={() => setShowBundleForm(false)}
-                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -2448,13 +2714,13 @@ export default function InventoryPage() {
                           <button
                             type="button"
                             onClick={() => handleDecreaseComponent(c.itemId)}
-                            className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
+                            className="w-9 h-9 sm:w-7 sm:h-7 shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
                             style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
                           >
                             −
                           </button>
                           <span
-                            className="font-medium min-w-[1.5rem] text-center"
+                            className="font-medium min-w-6 text-center"
                             style={{ color: "var(--color-text-primary)" }}
                           >
                             {c.quantity}
@@ -2465,7 +2731,7 @@ export default function InventoryPage() {
                               const item = items.find((i) => i.id === c.itemId);
                               if (item) handleAddComponent(item);
                             }}
-                            className="w-9 h-9 sm:w-7 sm:h-7 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
+                            className="w-9 h-9 sm:w-7 sm:h-7 shrink-0 flex items-center justify-center rounded-full font-bold text-lg sm:text-base"
                             style={{ background: "var(--color-surface)", color: "var(--color-text-primary)" }}
                           >
                             +
@@ -2532,7 +2798,7 @@ export default function InventoryPage() {
                 </h3>
                 <button
                   onClick={closeScanModal}
-                  className="w-10 h-10 -mr-2 -my-2 flex-shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
+                  className="w-10 h-10 -mr-2 -my-2 shrink-0 flex items-center justify-center text-2xl leading-none hover:opacity-70"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
                   ×
@@ -2753,8 +3019,8 @@ export default function InventoryPage() {
                 </>
               )}
 
-              {/* Step 2a: exactly one item found — quick preview */}
-              {scanRows && scanRows.length === 1 && (
+              {/* Step 2a: one new item (nothing in inventory matched) — quick preview */}
+              {scanRows && !scanListMode && (
                 <>
                   {scanDocumentType && (
                     <p className="text-xs mb-2 font-medium" style={{ color: "var(--color-primary-light)" }}>
@@ -2770,17 +3036,8 @@ export default function InventoryPage() {
 
                   {(() => {
                     const row = scanRows[0];
-                    const existingMatch = findPossibleExistingMatch(row);
                     return (
                       <>
-                        {existingMatch && (
-                          <p
-                            className="text-xs p-2 rounded-lg mb-3"
-                            style={{ color: "#facc15", background: "rgba(234, 179, 8, 0.1)" }}
-                          >
-                            ⚠️ This looks like an existing item: <strong>{existingMatch.name}</strong> (Stock: {existingMatch.stock}). Consider restocking it instead of creating a duplicate.
-                          </p>
-                        )}
                         <div
                           className="p-3 mb-4 space-y-1 text-sm"
                           style={{ background: "var(--color-bg-secondary)", borderRadius: "var(--radius-button)" }}
@@ -2851,8 +3108,8 @@ export default function InventoryPage() {
                 </>
               )}
 
-              {/* Step 2b: multiple items (receipt/invoice/handwritten note) checklist */}
-              {scanRows && scanRows.length > 1 && (
+              {/* Step 2b: list review — several items, or anything that restocks an existing item */}
+              {scanRows && scanListMode && (
                 <>
                   {scanDocumentType && (
                     <p className="text-xs mb-2 font-medium" style={{ color: "var(--color-primary-light)" }}>
@@ -2860,12 +3117,16 @@ export default function InventoryPage() {
                     </p>
                   )}
                   <p className="text-sm mb-3" style={{ color: "var(--color-text-secondary)" }}>
-                    Found {scanRows.length} item(s). Review and enter the quantity received for each before adding.
+                    Found {scanRows.length} item(s)
+                    {scanRows.some((r) => r.matchId)
+                      ? ` — ${scanRows.filter((r) => r.matchId).length} already in your inventory will be restocked, ${scanRows.filter((r) => !r.matchId).length} new.`
+                      : "."}{" "}
+                    Check each one before saving.
                   </p>
 
-                  <div className="space-y-4 mb-4 max-h-[32rem] overflow-y-auto pr-1">
+                  <div className="space-y-4 mb-4 max-h-128 overflow-y-auto pr-1">
                     {scanRows.map((row, i) => {
-                      const existingMatch = findPossibleExistingMatch(row);
+                      const matchedItem = row.matchId ? items.find((it) => it.id === row.matchId) : undefined;
                       return (
                         <div
                           key={i}
@@ -2894,12 +3155,156 @@ export default function InventoryPage() {
                             <ConfidenceBadge confidence={row.confidence} />
                           </div>
 
-                          {existingMatch && (
-                            <p className="text-xs" style={{ color: "#facc15" }}>
-                              ⚠️ Matches existing item "{existingMatch.name}" (Stock: {existingMatch.stock}) — consider restocking instead.
-                            </p>
-                          )}
+                          <div>
+                            <label className="text-xs" style={labelStyle}>Save as</label>
+                            <select
+                              value={row.matchId}
+                              onChange={(e) => updateScanRow(i, "matchId", e.target.value)}
+                              className="w-full mt-1 px-3 py-2 text-sm font-medium"
+                              style={{ ...inputStyle, borderColor: matchedItem ? "#4ade80" : "var(--color-border)" }}
+                            >
+                              <option value="">➕ New item</option>
+                              {itemsByName.map((it) => (
+                                <option key={it.id} value={it.id}>
+                                  🔁 Restock: {it.name} — {formatQty(it.stock)} {it.unit}
+                                </option>
+                              ))}
+                            </select>
+                            {matchedItem && row.matchSource && (
+                              <p className="text-xs mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                                Matched by {MATCH_SOURCE_LABELS[row.matchSource]}
+                                {row.matchSource === "ai" && row.aiMatchConfidence ? ` (${row.aiMatchConfidence} confidence)` : ""} —
+                                change it if this is a different product.
+                              </p>
+                            )}
+                          </div>
 
+                          {matchedItem ? (
+                            (() => {
+                              const preview = restockPreview(row, matchedItem);
+                              const needsFactor = row.unit !== matchedItem.unit;
+                              const factorTone = !row.factor
+                                ? "#f87171"
+                                : row.factorSource === "estimate"
+                                ? "#facc15"
+                                : "var(--color-text-secondary)";
+                              return (
+                                <div className="space-y-3">
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                                    <div>
+                                      <label className="text-xs" style={labelStyle}>Received qty *</label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        inputMode="decimal"
+                                        value={row.quantity}
+                                        onChange={(e) => updateScanRow(i, "quantity", e.target.value)}
+                                        className="w-full mt-1 px-3 py-2 text-sm font-semibold"
+                                        style={{ ...inputStyle, background: "var(--color-surface)", borderColor: "var(--color-primary)" }}
+                                        placeholder="0"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="text-xs" style={labelStyle}>Received in</label>
+                                      <select
+                                        value={row.unit}
+                                        onChange={(e) => updateScanRow(i, "unit", e.target.value)}
+                                        className="w-full mt-1 px-3 py-2 text-sm"
+                                        style={inputStyle}
+                                      >
+                                        {UNIT_OPTIONS.map((u) => (
+                                          <option key={u} value={u}>{u}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div className="col-span-2 sm:col-span-1">
+                                      <label className="text-xs" style={labelStyle}>Cost ₱ per {row.unit}</label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        inputMode="decimal"
+                                        value={row.unitCost}
+                                        onChange={(e) => updateScanRow(i, "unitCost", e.target.value)}
+                                        className="w-full mt-1 px-3 py-2 text-sm"
+                                        style={fieldHighlightStyle("unitCost", row)}
+                                        placeholder="optional"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {needsFactor && (
+                                    <div className="p-3" style={{ background: "var(--color-surface)", borderRadius: "var(--radius-button)" }}>
+                                      <div className="flex items-center gap-2 flex-wrap text-sm">
+                                        <span style={{ color: "var(--color-text-primary)" }}>1 {row.unit} =</span>
+                                        <input
+                                          type="number"
+                                          step="any"
+                                          inputMode="decimal"
+                                          value={row.factor}
+                                          onChange={(e) => updateScanRow(i, "factor", e.target.value)}
+                                          className="w-24 px-3 py-2 text-sm font-semibold"
+                                          style={{ ...inputStyle, borderColor: row.factor && row.factorSource !== "estimate" ? "var(--color-border)" : factorTone }}
+                                          placeholder="?"
+                                        />
+                                        <span style={{ color: "var(--color-text-primary)" }}>{matchedItem.unit}</span>
+                                      </div>
+                                      <p className="text-xs mt-1" style={{ color: factorTone }}>
+                                        {!row.factor
+                                          ? `How many ${matchedItem.unit} are in one ${row.unit}? UBA will remember it for next time.`
+                                          : row.factorSource
+                                          ? CONVERSION_SOURCE_LABELS[row.factorSource]
+                                          : ""}
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  <div
+                                    className="px-3 py-2.5 text-sm"
+                                    style={{
+                                      background: preview.added != null ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.1)",
+                                      color: preview.added != null ? "#4ade80" : "#f87171",
+                                      borderRadius: "var(--radius-button)",
+                                    }}
+                                  >
+                                    {preview.added != null ? (
+                                      <>
+                                        <b>
+                                          +{formatQty(preview.added)} {matchedItem.unit}
+                                        </b>
+                                        {needsFactor &&
+                                          ` (${formatQty(Number(row.quantity))} ${row.unit} × ${formatQty(Number(row.factor))})`}
+                                        <span className="block text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                                          Stock: {formatQty(matchedItem.stock)} →{" "}
+                                          <b style={{ color: "var(--color-text-primary)" }}>
+                                            {formatQty(preview.newStock!)} {matchedItem.unit}
+                                          </b>
+                                        </span>
+                                      </>
+                                    ) : (
+                                      `Enter the quantity received${needsFactor ? " and the pack size" : ""}.`
+                                    )}
+                                  </div>
+
+                                  {preview.costPerStockUnit != null && preview.newCost != null && (
+                                    <label className="flex items-start gap-2 text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={row.updateCost}
+                                        onChange={(e) => updateScanRow(i, "updateCost", e.target.checked)}
+                                        className="mt-0.5"
+                                      />
+                                      <span>
+                                        Update cost per {matchedItem.unit}: ₱{(matchedItem.unitCost || 0).toLocaleString()} →{" "}
+                                        <b style={{ color: "var(--color-text-primary)" }}>₱{preview.newCost.toLocaleString()}</b>{" "}
+                                        (average with this delivery at ₱{preview.costPerStockUnit.toLocaleString()} per {matchedItem.unit})
+                                      </span>
+                                    </label>
+                                  )}
+                                </div>
+                              );
+                            })()
+                          ) : (
+                          <>
                           <div className="grid grid-cols-2 gap-3">
                             <div>
                               <label className="text-xs" style={labelStyle}>Category</label>
@@ -3050,6 +3455,8 @@ export default function InventoryPage() {
                               )}
                             </div>
                           )}
+                          </>
+                          )}
 
                           {row.barcodeText && (
                             <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
@@ -3093,7 +3500,11 @@ export default function InventoryPage() {
                         boxShadow: "var(--glow-shadow)",
                       }}
                     >
-                      {addingBulk ? "Adding..." : "Add Selected to Inventory"}
+                      {addingBulk
+                        ? "Saving..."
+                        : scanRows.some((r) => r.selected && r.matchId)
+                        ? "Save to Inventory"
+                        : "Add Selected to Inventory"}
                     </button>
                   </div>
                 </>
@@ -3108,7 +3519,7 @@ export default function InventoryPage() {
         {/* ---- PHOTO LIGHTBOX ---- */}
 {viewingPhoto && (
   <div
-    className="fixed inset-0 bg-black/85 flex items-center justify-center z-[60] p-4"
+    className="fixed inset-0 bg-black/85 flex items-center justify-center z-60 p-4"
     onClick={() => setViewingPhoto(null)}
   >
     <button

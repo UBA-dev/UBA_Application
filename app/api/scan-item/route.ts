@@ -5,6 +5,12 @@ import { requireSession } from "../../lib/apiAuth";
 import { checkAndIncrementUsageServer } from "../../lib/usageLimitsAdmin";
 import { usageLimitMessage } from "../../lib/usageLimits";
 import { geminiUrl, fetchGeminiWithRetry } from "../../lib/geminiFetch";
+import { buildScanPrompt, formatInventoryForScan } from "../../lib/scanPrompt";
+
+// Inventory items sent to the AI for matching; plenty for a small shop and
+// still a modest prompt.
+const MAX_INVENTORY_FOR_MATCHING = 1500;
+const CONTENT_UNITS = ["Kilogram", "Liter", "Piece", "Meter", "Gallon"];
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,50 +41,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Server not set up" }, { status: 500 });
     }
 
-    const contextHint = `
-Known existing categories in this shop: ${(existingCategories || []).join(", ") || "none yet"}
-Known existing sub-categories: ${(existingSubCategories || []).join(", ") || "none yet"}
-Reuse these exact names when the item matches one, instead of inventing new near-duplicate categories.`;
-
-    const basePrompt = `You are an inventory assistant for a computer/electronics repair and retail shop.
-
-Analyze the input (image or document text) and identify EVERY distinct inventory item mentioned or shown.
-
-Classify the input as one of: "receipt_invoice", "single_product", "price_tag", "handwritten_note", "unknown".
-
-Respond with ONLY this exact JSON shape — items is ALWAYS an array, even if there's only one item:
-
-{
-  "documentType": "receipt_invoice" | "single_product" | "price_tag" | "handwritten_note" | "unknown",
-  "items": [
-    {
-      "name": "",
-      "description": "",
-      "category": "",
-      "subCategory": "",
-      "unit": "Piece",
-      "quantity": null,
-      "unitCost": null,
-      "sellingPrice": null,
-      "supplierName": "",
-      "barcodeText": "",
-      "confidence": "high" | "medium" | "low",
-      "lowConfidenceFields": []
-    }
-  ]
-}
-
-Rules:
-- unit: the unit of measurement this item is sold or stocked in. Must be EXACTLY one of: "Piece", "Kilogram", "Liter", "Sack", "Box", "Gallon", "Meter". Infer this from context — e.g. rice or cement in bulk is usually "Sack" or "Kilogram", cooking oil or fuel is usually "Liter" or "Gallon", cable or wiring is usually "Meter", individual electronics/parts/accessories are usually "Piece". Default to "Piece" only if genuinely unclear.
-- quantity: the stock count/amount written or shown for this item (e.g. "50 sacks" -> 50, "45 sacks" -> 45). Use a number if a quantity is visible/stated anywhere near the item, otherwise null. Never invent a quantity that isn't shown.
-- unitCost/sellingPrice: use numbers if visible/stated, otherwise null. Never invent prices that aren't shown.
-- barcodeText: only fill if an actual barcode/UPC number is visibly printed near the item, otherwise "".
-- confidence: "low" if the image/text is blurry, ambiguous, or you're guessing; "high" if clearly legible.
-- lowConfidenceFields: list the field names (e.g. "unitCost", "category") you're unsure about for that item. Empty array if none.
-- Keep "name" concise (brand + model when identifiable).
-${contextHint}
-
-Respond ONLY with valid JSON in the shape above. No extra text, no markdown.`;
+    // The shop's current inventory, so scanned lines can be matched to items
+    // it already stocks (restock) instead of always becoming new items.
+    const inventorySnap = await adminDb
+      .collection("tenants")
+      .doc(tenantId)
+      .collection("inventory")
+      .select("name", "category", "unit", "packSize", "packUnit", "aliases")
+      .limit(MAX_INVENTORY_FOR_MATCHING)
+      .get();
+    const inventoryIds = new Set(inventorySnap.docs.map((d) => d.id));
+    const basePrompt = buildScanPrompt({
+      inventoryList: formatInventoryForScan(inventorySnap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      existingCategories,
+      existingSubCategories,
+    });
 
     const parts: any[] = [{ text: basePrompt }];
 
@@ -122,6 +99,25 @@ Respond ONLY with valid JSON in the shape above. No extra text, no markdown.`;
     if (!Array.isArray(parsed.items)) {
       return NextResponse.json({ error: "Unexpected answer from UBA" }, { status: 502 });
     }
+
+    // Keep only answers we can trust the shape of: a match must point at a
+    // real item, and a pack size must be a positive amount in a stock unit.
+    parsed.items = parsed.items.map((item: Record<string, unknown>) => {
+      const matchedItemId =
+        typeof item.matchedItemId === "string" && inventoryIds.has(item.matchedItemId) ? item.matchedItemId : null;
+      const matchConfidence = typeof item.matchConfidence === "string" ? item.matchConfidence : "";
+      const contentPerUnit = Number(item.contentPerUnit);
+      const contentUnit = typeof item.contentUnit === "string" ? item.contentUnit : "";
+      const contentOk = contentPerUnit > 0 && CONTENT_UNITS.includes(contentUnit);
+      return {
+        ...item,
+        matchedItemId,
+        matchConfidence: matchedItemId && ["high", "medium", "low"].includes(matchConfidence) ? matchConfidence : null,
+        contentPerUnit: contentOk ? contentPerUnit : null,
+        contentUnit: contentOk ? contentUnit : null,
+        contentIsEstimate: contentOk && item.contentIsEstimate === true,
+      };
+    });
 
     return NextResponse.json(parsed);
   } catch (err) {
