@@ -107,7 +107,7 @@ export default function RegisterPage() {
   const isCashier = viewer?.role === "cashier";
 
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+    <div className="flex flex-col sm:flex-row min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
       <main className="flex-1 min-w-0 p-4 pb-24 sm:p-6 max-w-5xl">
         <div className="mb-5">

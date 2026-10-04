@@ -355,12 +355,24 @@ export default function Sidebar() {
           >
             {businessName || "My Shop"}
           </p>
-          <span
-            className="text-[10px] font-bold px-2 py-0.5 rounded-full flex-shrink-0"
-            style={{ background: mobileBadge.bg, color: mobileBadge.color }}
-          >
-            {mobileBadge.text}
-          </span>
+          {session?.isStaff ? (
+            <span
+              className="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0"
+              style={{ background: mobileBadge.bg, color: mobileBadge.color }}
+            >
+              {mobileBadge.text}
+            </span>
+          ) : (
+            // The Owner's plan badge opens the plans page.
+            <Link
+              href="/pricing"
+              className="text-[10px] font-bold px-2.5 py-1 rounded-full shrink-0"
+              style={{ background: mobileBadge.bg, color: mobileBadge.color }}
+              aria-label={`Plan: ${mobileBadge.text}. View plans`}
+            >
+              {mobileBadge.text} ›
+            </Link>
+          )}
         </div>
 
         {/* TOP RIGHT CORNER: Notification Icon (fixed width keeps the shop name centered) */}

@@ -641,7 +641,7 @@ export default function RepairTicketsPage() {
   const isLocked = (status: Status) => status === "Cancelled" || status === "Paid";
 
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+    <div className="flex flex-col sm:flex-row min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
       <main className="flex-1 min-w-0 p-4 pb-24 sm:p-6">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">

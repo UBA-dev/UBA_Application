@@ -310,7 +310,7 @@ export default function SettingsPage() {
 
   return (
     <div
-      className="flex min-h-screen"
+      className="flex flex-col sm:flex-row min-h-screen"
       style={{ background: theme.colors.bgPrimary }}
     >
       <Sidebar />

@@ -497,7 +497,7 @@ export default function PosPage() {
 
 
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+    <div className="flex flex-col sm:flex-row min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
       <main className="flex-1 min-w-0 p-4 pb-28 sm:p-6 lg:pb-6 flex flex-col lg:flex-row gap-4 sm:gap-6">
         {/* Product picker */}

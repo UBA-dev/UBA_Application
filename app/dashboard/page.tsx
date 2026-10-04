@@ -468,7 +468,7 @@ function DashboardContent() {
   };
 
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
+    <div className="flex flex-col sm:flex-row min-h-screen" style={{ background: "var(--color-bg-primary)" }}>
       <Sidebar />
       <div className="flex-1 min-w-0">
         <header
@@ -542,7 +542,7 @@ function DashboardContent() {
           ) : (
             <>
               {/* Range selector */}
-              <div className="flex flex-wrap gap-2 mb-6">
+              <div className="flex gap-2 mb-5 overflow-x-auto no-scrollbar -mx-4 px-4 py-1 sm:mx-0 sm:px-0 sm:mb-6 sm:flex-wrap sm:overflow-visible">
                 {RANGE_OPTIONS.map((r) => {
                   const isActive = range === r;
                   return (
