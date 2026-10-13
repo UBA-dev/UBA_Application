@@ -21,8 +21,19 @@ service cloud.firestore {
       return isStaffToken() ? request.auth.token.get('role', '') : '';
     }
 
+    // Isang device lang ang pwedeng naka-login bilang Owner. Ang server ang
+    // nagtatala kung aling sign-in (auth_time) ang aktibo; ang ibang device ay
+    // tinatanggihan dito mismo, kahit may tamang password pa sila.
+    // Kapag wala pang ownerSessions doc (bago pa lang ang feature), pinapayagan.
+    function ownerDeviceIsActive(uid) {
+      let sessionPath = /databases/$(database)/documents/ownerSessions/$(uid);
+      return !exists(sessionPath)
+             || request.auth.token.auth_time == get(sessionPath).data.activeAuthTime;
+    }
+
     function isOwnerOf(tenantId) {
-      return request.auth != null && !isStaffToken() && request.auth.uid == tenantId;
+      return request.auth != null && !isStaffToken() && request.auth.uid == tenantId
+             && ownerDeviceIsActive(tenantId);
     }
 
     function isStaffOf(tenantId) {
@@ -311,6 +322,16 @@ service cloud.firestore {
 
       // WALANG catch-all dito. Ang subcollection na hindi nakalista
       // sa itaas ay bawal by default.
+    }
+
+    // === Owner device protection ===
+    // Ang Owner ay pwedeng BASAHIN ang sarili niyang session (para malaman ng
+    // app kung na-sign out na siya). Server lang ang sumusulat. Ang
+    // ownerSecurity (phone, code) ay hindi kailanman nababasa mula sa browser
+    // — default deny sa ibaba.
+    match /ownerSessions/{uid} {
+      allow get: if request.auth != null && !isStaffToken() && request.auth.uid == uid;
+      allow list, write: if false;
     }
 
     // === Help & Support: Feedback / Suggestions ===

@@ -1,13 +1,41 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
-import { signInWithEmailAndPassword, signInWithCustomToken } from "firebase/auth";
+import { signInWithEmailAndPassword, signInWithCustomToken, sendPasswordResetEmail } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
+import { SIGNED_OUT_KEY } from "../components/OwnerSecurityGate";
 import Link from "next/link";
 
+const noSubscribe = () => () => {};
+function readSignedOutReason(): string | null {
+  try {
+    return sessionStorage.getItem(SIGNED_OUT_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export default function LoginPage() {
+  // Set by OwnerSecurityGate when another device took over this account.
+  const signedOutRaw = useSyncExternalStore(noSubscribe, readSignedOutReason, () => null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const signedOut = (() => {
+    if (!signedOutRaw || noticeDismissed) return null;
+    try {
+      return JSON.parse(signedOutRaw) as { device?: string; at?: string };
+    } catch {
+      return null;
+    }
+  })();
+  const dismissNotice = () => {
+    try {
+      sessionStorage.removeItem(SIGNED_OUT_KEY);
+    } catch {}
+    setNoticeDismissed(true);
+  };
+
   const [mode, setMode] = useState<"owner" | "staff">("owner");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,6 +43,30 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+
+  const [sendingReset, setSendingReset] = useState(false);
+  const [resetMessage, setResetMessage] = useState("");
+
+  // Firebase emails the reset link. A new password still doesn't get anyone
+  // past the texted code on a new device.
+  const handleForgotPassword = async () => {
+    setError("");
+    setResetMessage("");
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
+      setError("Type your email above first, then tap “Forgot password?”.");
+      return;
+    }
+    setSendingReset(true);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+    } catch (err) {
+      console.warn("Password reset:", err);
+    } finally {
+      setSendingReset(false);
+      // Same message either way, so this can't be used to check which emails have accounts.
+      setResetMessage(`If ${email.trim()} has a UBA account, a password reset link is on its way. Check your inbox and spam folder.`);
+    }
+  };
 
   const [shopCode, setShopCode] = useState("");
   const [staffUsername, setStaffUsername] = useState("");
@@ -60,13 +112,16 @@ export default function LoginPage() {
         return;
       }
 
-      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
-
-      if (tenantDoc.exists()) {
-        router.push("/dashboard");
-      } else {
-        router.push("/onboarding");
+      dismissNotice();
+      // On a new device the shop can't be read until the Owner confirms it's
+      // them by code — the security check on the dashboard asks for that.
+      let hasShop = true;
+      try {
+        hasShop = (await getDoc(doc(db, "tenants", user.uid))).exists();
+      } catch (readErr) {
+        console.warn("Shop not readable yet on this device:", readErr);
       }
+      router.push(hasShop ? "/dashboard" : "/onboarding");
     } catch (err: any) {
       setError("Invalid email or password. Please try again.");
     } finally {
@@ -135,6 +190,23 @@ export default function LoginPage() {
             Sign in to resume command of your business.
           </p>
 
+          {signedOut && (
+            <div
+              className="mb-5 p-3 rounded-lg text-sm leading-snug flex gap-2"
+              style={{ background: "rgba(250, 204, 21, 0.1)", color: "#facc15", border: "1px solid rgba(250, 204, 21, 0.3)" }}
+            >
+              <span className="flex-1">
+                🔐 You were signed out because your UBA account was opened on{" "}
+                <b>{signedOut.device || "another device"}</b>
+                {signedOut.at ? ` (${new Date(signedOut.at).toLocaleString()})` : ""}. If this wasn&apos;t you, change your
+                password right away.
+              </span>
+              <button type="button" onClick={dismissNotice} aria-label="Dismiss" className="shrink-0 text-lg leading-none">
+                ×
+              </button>
+            </div>
+          )}
+
           {/* Owner / Staff mode toggle */}
           <div
             className="flex mb-6 p-1 rounded-lg"
@@ -199,7 +271,27 @@ export default function LoginPage() {
                   {showPassword ? "hide" : "show"}
                 </button>
               </div>
+              <div className="flex justify-end mt-2">
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={sendingReset}
+                  className="text-xs font-medium hover:opacity-80 disabled:opacity-50"
+                  style={{ color: "#60a5fa" }}
+                >
+                  {sendingReset ? "Sending..." : "Forgot password?"}
+                </button>
+              </div>
             </div>
+
+            {resetMessage && (
+              <p
+                className="text-xs px-3 py-2 rounded-lg"
+                style={{ color: "#4ade80", background: "rgba(74, 222, 128, 0.1)", border: "1px solid rgba(74, 222, 128, 0.25)" }}
+              >
+                {resetMessage}
+              </p>
+            )}
 
             {error && (
               <p

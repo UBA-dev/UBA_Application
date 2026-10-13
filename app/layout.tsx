@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Orbitron, Cinzel, Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "./context/ThemeContext";
 import UbaAssistant from "./components/UbaAssistant";
+import OwnerSecurityGate from "./components/OwnerSecurityGate";
 
 
 const geistSans = Geist({
@@ -61,6 +62,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <ThemeProvider>
           {children}
           <UbaAssistant />
+          <OwnerSecurityGate />
         </ThemeProvider>
       </body>
     </html>

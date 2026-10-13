@@ -241,12 +241,15 @@ export default function RootPage() {
         return;
       }
 
-      const tenantDoc = await getDoc(doc(db, "tenants", user.uid));
-      if (tenantDoc.exists()) {
-        router.push("/dashboard");
-      } else {
-        router.push("/onboarding");
+      // Unreadable on a device that hasn't confirmed it's the Owner yet — the
+      // dashboard's security check takes it from there.
+      let hasShop = true;
+      try {
+        hasShop = (await getDoc(doc(db, "tenants", user.uid))).exists();
+      } catch (readErr) {
+        console.warn("Shop not readable yet on this device:", readErr);
       }
+      router.push(hasShop ? "/dashboard" : "/onboarding");
     });
 
     return () => unsubscribe();

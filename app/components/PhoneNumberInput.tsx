@@ -46,7 +46,7 @@ export default function PhoneNumberInput({ value, onChange, inputStyle, required
     <div>
       <div className="flex gap-2">
         <span
-          className="px-3 py-2 text-sm flex-shrink-0 flex items-center gap-1"
+          className="px-3 py-2 text-sm shrink-0 flex items-center gap-1"
           style={inputStyle}
         >
           🇵🇭 +63
@@ -61,7 +61,7 @@ export default function PhoneNumberInput({ value, onChange, inputStyle, required
           onChange={(e) => handleDigitsChange(e.target.value)}
           onBlur={() => setTouched(true)}
           placeholder="9171234567"
-          className="flex-1 px-3 py-2"
+          className="flex-1 min-w-0 px-3 py-2"
           style={{
             ...inputStyle,
             borderColor: showError ? "#f87171" : (inputStyle as React.CSSProperties).borderColor,

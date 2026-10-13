@@ -311,6 +311,32 @@ export default function AdminPage() {
     }
   };
 
+  // An Owner is stuck on the device check: clear their active-device record
+  // and pending code. Their next sign-in still needs a code emailed to them.
+  const handleResetLoginSecurity = async (tenant: Tenant) => {
+    const name = tenant.businessName || tenant.ownerEmail || tenant.id;
+    if (
+      !window.confirm(
+        `Reset login security for "${name}"?\n\nTheir signed-in device record and any pending code are cleared. Every device they use will ask for a new code sent to their account email.`
+      )
+    ) {
+      return;
+    }
+    setSavingId(tenant.id);
+    try {
+      const res = await authedFetch("/api/admin/reset-owner-security", {
+        method: "POST",
+        body: JSON.stringify({ tenantId: tenant.id }),
+      });
+      const data = await res.json();
+      alert(res.ok ? `Login security reset for "${name}".` : data.error || "Couldn't reset. Try again.");
+    } catch {
+      alert("Couldn't reset. Check your connection and try again.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   const handleToggleFeedbackStatus = async (item: Feedback) => {
     setSavingFeedbackId(item.id);
     const nextStatus = item.status === "resolved" ? "new" : "resolved";
@@ -469,6 +495,15 @@ export default function AdminPage() {
                           }
                         >
                           {tenant.manuallyDeactivated ? "✅ Reactivate" : "🚫 Deactivate"}
+                        </button>
+                        <button
+                          onClick={() => handleResetLoginSecurity(tenant)}
+                          disabled={savingId === tenant.id}
+                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg disabled:opacity-50"
+                          style={{ background: "rgba(250,204,21,0.15)", color: "#facc15" }}
+                          title="For an Owner stuck on the device check: clears their signed-in device record"
+                        >
+                          🔐 Reset login security
                         </button>
                       </div>
                     </div>

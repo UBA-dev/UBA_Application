@@ -323,11 +323,12 @@ export default function Sidebar() {
     return { text, bg: "rgba(148, 163, 184, 0.15)", color: "var(--color-text-secondary)" };
   })();
 
-  // Staff don't manage the plan — on the phone top bar they need to see whose
-  // login this is instead.
-  const mobileBadge = session?.isStaff
+  // Who is signed in: 👑 OWNER, CASHIER or SECRETARY.
+  const roleBadge = !session
+    ? null
+    : session.isStaff
     ? { text: session.role.toUpperCase(), bg: "rgba(96, 165, 250, 0.15)", color: "var(--color-primary-light)" }
-    : planLabel;
+    : { text: "👑 OWNER", bg: "rgba(250, 204, 21, 0.15)", color: "#facc15" };
 
   return (
     <>
@@ -348,31 +349,34 @@ export default function Sidebar() {
           ☰
         </button>
 
-        <div className="flex items-center justify-center gap-1.5 min-w-0 flex-1">
+        <div className="flex flex-col items-center min-w-0 flex-1">
           <p
-            className="text-sm font-semibold truncate"
+            className="text-sm font-semibold truncate max-w-full leading-tight"
             style={{ color: "var(--color-text-primary)" }}
           >
             {businessName || "My Shop"}
           </p>
-          {session?.isStaff ? (
-            <span
-              className="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0"
-              style={{ background: mobileBadge.bg, color: mobileBadge.color }}
-            >
-              {mobileBadge.text}
-            </span>
-          ) : (
-            // The Owner's plan badge opens the plans page.
-            <Link
-              href="/pricing"
-              className="text-[10px] font-bold px-2.5 py-1 rounded-full shrink-0"
-              style={{ background: mobileBadge.bg, color: mobileBadge.color }}
-              aria-label={`Plan: ${mobileBadge.text}. View plans`}
-            >
-              {mobileBadge.text} ›
-            </Link>
-          )}
+          <div className="flex items-center justify-center gap-1 mt-0.5 max-w-full">
+            {roleBadge && (
+              <span
+                className="text-[10px] font-bold px-2 py-px rounded-full shrink-0 leading-4"
+                style={{ background: roleBadge.bg, color: roleBadge.color }}
+              >
+                {roleBadge.text}
+              </span>
+            )}
+            {session && !session.isStaff && (
+              // The Owner's plan badge opens the plans page.
+              <Link
+                href="/pricing"
+                className="text-[10px] font-bold px-2 py-px rounded-full truncate min-w-0 leading-4"
+                style={{ background: planLabel.bg, color: planLabel.color }}
+                aria-label={`Plan: ${planLabel.text}. View plans`}
+              >
+                {planLabel.text} ›
+              </Link>
+            )}
+          </div>
         </div>
 
         {/* TOP RIGHT CORNER: Notification Icon (fixed width keeps the shop name centered) */}
@@ -411,6 +415,11 @@ export default function Sidebar() {
                 >
                   {businessName || "My Shop"}
                 </p>
+                {session && !session.isStaff && (
+                  <p className="text-xs truncate mt-0.5" style={{ color: "#facc15" }}>
+                    👑 Owner
+                  </p>
+                )}
                 {session?.isStaff && (
                   <p className="text-xs truncate mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
                     👤 {session.staffName} · <span className="capitalize">{session.role}</span>
@@ -510,7 +519,7 @@ export default function Sidebar() {
                 className="text-xs font-semibold uppercase tracking-wide truncate min-w-0"
                 style={{ color: "var(--color-text-secondary)" }}
               >
-                {session?.isStaff ? `${session.staffName} · ${session.role}` : "My Shop"}
+                {session?.isStaff ? `${session.staffName} · ${session.role}` : session ? "👑 Owner" : "My Shop"}
               </p>
 
               <div className="flex items-center gap-1.5 flex-shrink-0">
