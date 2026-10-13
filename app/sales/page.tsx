@@ -49,6 +49,13 @@ function saleMeta(sale: SaleRecord): string {
   return parts.join(" · ");
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+// The device's own calendar date/time (Philippine time on PH phones). toISOString()
+// is UTC — before 8 AM it gave yesterday as "today", and editing a sale moved
+// its time 8 hours back.
+const localDate = (d: Date = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const localDateTime = (d: Date) => `${localDate(d)}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
 type Period = "Day" | "Week" | "Month" | "Year";
 
 function getRange(period: Period, refDate: Date): { start: Date; end: Date } {
@@ -129,14 +136,14 @@ export default function SalesExpensesPage() {
 
   const [period, setPeriod] = useState<Period>("Day");
   const [refDate, setRefDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
+    localDate()
   );
 
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [expDescription, setExpDescription] = useState("");
   const [expAmount, setExpAmount] = useState("");
   const [expDate, setExpDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
+    localDate()
   );
   const [savingExpense, setSavingExpense] = useState(false);
 
@@ -243,7 +250,7 @@ export default function SalesExpensesPage() {
       });
       setExpDescription("");
       setExpAmount("");
-      setExpDate(new Date().toISOString().slice(0, 10));
+      setExpDate(localDate());
       setShowExpenseForm(false);
     } catch (err) {
       console.error(err);
@@ -261,7 +268,7 @@ export default function SalesExpensesPage() {
     setEditSaleQuantity(String(sale.quantity));
     setEditSalePrice(String(sale.price));
     setEditSaleProfit(String(sale.profit ?? 0));
-    setEditSaleDate(new Date(sale.date).toISOString().slice(0, 16));
+    setEditSaleDate(localDateTime(new Date(sale.date)));
   };
 
   const handleSaveSaleEdit = async (e: React.FormEvent) => {
@@ -332,7 +339,7 @@ export default function SalesExpensesPage() {
     setEditingExpense(expense);
     setEditExpDescription(expense.description);
     setEditExpAmount(String(expense.amount));
-    setEditExpDate(new Date(expense.date).toISOString().slice(0, 10));
+    setEditExpDate(localDate(new Date(expense.date)));
   };
 
   const handleSaveExpenseEdit = async (e: React.FormEvent) => {
@@ -472,7 +479,7 @@ export default function SalesExpensesPage() {
             style={inputStyle}
           />
           <button
-            onClick={() => setRefDate(new Date().toISOString().slice(0, 10))}
+            onClick={() => setRefDate(localDate())}
             className="text-sm hover:underline"
             style={{ color: "var(--color-primary-light)" }}
           >

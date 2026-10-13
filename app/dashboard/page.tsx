@@ -47,9 +47,20 @@ type Tenant = {
   lastInsight?: AIInsight;
   lastInsightAt?: string;
   lastInsightRange?: string;
+  // Which sales/expenses the cached insight was made from (see recordsFingerprint)
+  lastInsightBasis?: string;
 };
 type SaleRecord = { id: string; itemName: string; total: number; profit: number; quantity: number; date: string };
-type ExpenseRecord = { id: string; amount: number; date: string };
+type ExpenseRecord = { id: string; amount: number; date: string; description?: string };
+
+// Changes whenever a sale or expense is added, edited or deleted — an AI
+// summary made from different records is hidden rather than shown stale.
+function recordsFingerprint(sales: SaleRecord[], expenses: ExpenseRecord[]): string {
+  const revenue = sales.reduce((sum, s) => sum + (s.total || 0), 0);
+  const profit = sales.reduce((sum, s) => sum + (s.profit || 0), 0);
+  const spent = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+  return [sales.length, expenses.length, revenue.toFixed(2), profit.toFixed(2), spent.toFixed(2)].join("|");
+}
 type InventoryItemLite = {
   id: string;
   name: string;
@@ -117,7 +128,8 @@ function DashboardContent() {
   const [items, setItems] = useState<InventoryItemLite[]>([]);
   const [repairTickets, setRepairTickets] = useState<RepairTicketLite[]>([]);
   const [range, setRange] = useState<string>("30D");
-  const [insight, setInsight] = useState<AIInsight | null>(null);
+  // An analysis run on this page (until the tenant doc catches up with it).
+  const [freshInsight, setFreshInsight] = useState<{ insight: AIInsight; basis: string } | null>(null);
   const [loadingInsight, setLoadingInsight] = useState(false);
   const [insightError, setInsightError] = useState("");
   const [aiTasks, setAiTasks] = useState<AITask[]>([]);
@@ -339,15 +351,30 @@ function DashboardContent() {
       .slice(0, 3);
   }, [ticketsInRange]);
 
-  const hasEnoughData = sales.length > 0 || expenses.length > 0 || repairTickets.length > 0;
+  // Everything on the dashboard comes from the real sales & expenses records:
+  // with none left, there's nothing to show.
+  const hasEnoughData = sales.length > 0 || expenses.length > 0;
   const aiAccess = useMemo(() => getAiAccess(tenant), [tenant]);
 
-    // Load the cached insight (if any) when the tenant doc arrives — no API call here
-  useEffect(() => {
-    if (tenant?.lastInsight) {
-      setInsight(tenant.lastInsight);
-    }
-  }, [tenant]);
+  const expensesInRange = useMemo(
+    () => expenses.filter((e) => { const d = new Date(e.date); return d >= start && d <= end; }),
+    [expenses, start, end]
+  );
+
+  // The latest real records, so the owner can see exactly what feeds the dashboard.
+  const latestRecords = useMemo(() => {
+    const rows = [
+      ...sales.map((s) => ({ id: `s-${s.id}`, kind: "sale" as const, label: s.itemName, amount: s.total || 0, date: s.date })),
+      ...expenses.map((e) => ({ id: `e-${e.id}`, kind: "expense" as const, label: e.description || "Expense", amount: e.amount || 0, date: e.date })),
+    ];
+    return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 6);
+  }, [sales, expenses]);
+
+  // The cached insight — but only while it still matches the records it was made from.
+  const dataBasis = useMemo(() => recordsFingerprint(sales, expenses), [sales, expenses]);
+  const insight = freshInsight?.insight ?? tenant?.lastInsight ?? null;
+  const insightBasis = freshInsight?.basis ?? tenant?.lastInsightBasis ?? null;
+  const insightOutdated = !!insight && insightBasis !== dataBasis;
 
 
   useEffect(() => {
@@ -389,19 +416,29 @@ function DashboardContent() {
         setInsightError(data.error || "Couldn't generate an insight right now.");
         return;
       }
-      setInsight(data);
+      setFreshInsight({ insight: data, basis: dataBasis });
 
       // Cache the result on the tenant doc so we don't need to re-call the API
-      // just to display the same insight again later.
-      await updateDoc(doc(db, "tenants", uid), {
-        lastInsight: data,
-        lastInsightAt: new Date().toISOString(),
-        lastInsightRange: range,
-      });
+      // just to display the same insight again later. Only the Owner can write
+      // the shop doc — a Secretary's analysis just isn't cached.
+      try {
+        await updateDoc(doc(db, "tenants", uid), {
+          lastInsight: data,
+          lastInsightAt: new Date().toISOString(),
+          lastInsightRange: range,
+          lastInsightBasis: dataBasis,
+        });
+      } catch (cacheErr) {
+        console.warn("Couldn't cache the insight:", cacheErr);
+      }
 
-      // Persist new tasks — skip ones that already exist (by text match)
+      // New analysis, new action items: open items from the previous analysis
+      // came from older numbers. Completed ones stay as history.
       if (Array.isArray(data.tasks)) {
-        const existingTexts = new Set(aiTasksRef.current.map((t) => t.text.trim().toLowerCase()));
+        for (const old of aiTasksRef.current.filter((t) => !t.completed)) {
+          await deleteDoc(doc(db, "tenants", uid, "aiTasks", old.id));
+        }
+        const existingTexts = new Set<string>();
         for (const t of data.tasks) {
           const norm = (t.text || "").trim().toLowerCase();
           if (!norm || existingTexts.has(norm)) continue;
@@ -536,8 +573,35 @@ function DashboardContent() {
 
         <main className="p-4 pb-24 sm:p-6">
           {!hasEnoughData ? (
-            <div className="p-8 text-center" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
-              No sales, expense, or repair data yet. Once you start recording activity, your analytics will show up here.
+            <div className="p-8 text-center space-y-3" style={{ ...cardStyle, color: "var(--color-text-secondary)" }}>
+              <p className="text-3xl">📊</p>
+              <p className="text-base font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                No sales or expenses yet
+              </p>
+              <p className="text-sm leading-snug">
+                Your dashboard reads straight from your Sales &amp; Expenses records. Make a sale in POS or record an
+                expense and it shows up here right away — delete it there and it disappears here too.
+              </p>
+              <div className="flex flex-wrap justify-center gap-2 pt-1">
+                <Link
+                  href="/pos"
+                  className="px-4 py-2 text-sm font-semibold"
+                  style={{ background: "var(--gradient-accent)", color: "#fff", borderRadius: "var(--radius-button)" }}
+                >
+                  🧾 Open POS
+                </Link>
+                <Link
+                  href="/sales"
+                  className="px-4 py-2 text-sm font-semibold"
+                  style={{
+                    background: "var(--color-bg-secondary)",
+                    color: "var(--color-text-primary)",
+                    borderRadius: "var(--radius-button)",
+                  }}
+                >
+                  💰 Sales &amp; Expenses
+                </Link>
+              </div>
             </div>
           ) : (
             <>
@@ -563,6 +627,16 @@ function DashboardContent() {
                   );
                 })}
               </div>
+
+              <p className="text-xs -mt-2 mb-3" style={{ color: "var(--color-text-secondary)" }}>
+                {(RANGE_LABELS as Record<string, string>)[range]}: from {salesInRange.length} sale
+                {salesInRange.length === 1 ? "" : "s"} and {expensesInRange.length} expense
+                {expensesInRange.length === 1 ? "" : "s"} in your{" "}
+                <Link href="/sales" className="underline" style={{ color: "var(--color-primary-light)" }}>
+                  Sales &amp; Expenses
+                </Link>
+                .
+              </p>
 
               {/* Summary cards with trend arrows */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-6">
@@ -669,7 +743,44 @@ function DashboardContent() {
 </ResponsiveContainer>
               </div>
 
-                            {/* AI Business Analyst — toggleable, manual-trigger, cached */}
+              {/* The latest real records — the same ones listed in Sales & Expenses */}
+              <div className="p-4 mb-6" style={cardStyle}>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                    Latest sales &amp; expenses
+                  </p>
+                  <Link href="/sales" className="text-xs font-medium" style={{ color: "var(--color-primary-light)" }}>
+                    View all →
+                  </Link>
+                </div>
+                <div className="divide-y" style={{ borderColor: "var(--color-border)" }}>
+                  {latestRecords.map((r) => (
+                    <div key={r.id} className="py-2 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm truncate" style={{ color: "var(--color-text-primary)" }}>
+                          {r.kind === "sale" ? "💰" : "💸"} {r.label}
+                        </p>
+                        <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                          {new Date(r.date).toLocaleString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
+                      <p
+                        className="text-sm font-semibold shrink-0"
+                        style={{ color: r.kind === "sale" ? "var(--color-text-primary)" : "#f87171" }}
+                      >
+                        {r.kind === "sale" ? "" : "−"}₱{r.amount.toLocaleString()}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* AI Business Analyst — toggleable, manual-trigger, cached */}
               <div className="p-5 mb-6" style={{ ...cardStyle, boxShadow: "var(--glow-shadow)" }}>
                 <div className="flex justify-between items-center mb-3">
                   <p className="text-sm font-semibold" style={{ color: "var(--color-primary-light)" }}>
@@ -738,6 +849,14 @@ function DashboardContent() {
                   </p>
                 ) : insightError ? (
                   <p className="text-sm" style={{ color: "#f87171" }}>{insightError}</p>
+                ) : insight && insightOutdated ? (
+                  <p
+                    className="text-sm p-3 leading-snug"
+                    style={{ color: "#facc15", background: "rgba(250, 204, 21, 0.1)", borderRadius: "var(--radius-button)" }}
+                  >
+                    📊 Your sales or expenses have changed since the last analysis, so its summary and action items are
+                    hidden — they would show old numbers. Tap &quot;Re-analyze My Business&quot; for an up-to-date one.
+                  </p>
                 ) : insight ? (
                   <>
                     <p className="text-sm font-medium mb-4" style={{ color: "var(--color-text-primary)" }}>
@@ -760,8 +879,8 @@ function DashboardContent() {
                   </>
                 ) : null}
 
-                {/* Persistent, checkable task list — shown regardless of toggle, since these are already saved */}
-                {tenant.aiAnalyticsEnabled && activeTasks.length > 0 && (
+                {/* Persistent, checkable task list from the latest analysis — hidden once the records it came from change */}
+                {tenant.aiAnalyticsEnabled && !insightOutdated && activeTasks.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
                       Action items

@@ -50,15 +50,21 @@ function getRangeBounds(rangeKey, earliestDate) {
   return { start, end, granularity };
 }
 
+const pad2 = (n) => String(n).padStart(2, "0");
+// The device's own calendar date (Philippine time on PH phones). toISOString()
+// is UTC, which put sales from midnight–8 AM on the previous day and left
+// today's later sales out of the chart entirely.
+const localDayKey = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
 function bucketKey(date, granularity) {
   const d = new Date(date);
-  if (granularity === "day") return d.toISOString().slice(0, 10);
+  if (granularity === "day") return localDayKey(d);
   if (granularity === "week") {
     const sunday = new Date(d);
     sunday.setDate(d.getDate() - d.getDay());
-    return sunday.toISOString().slice(0, 10);
+    return localDayKey(sunday);
   }
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
 
 function bucketLabel(key, granularity) {
@@ -99,7 +105,16 @@ export function buildTrendSeries(sales, expenses, rangeKey) {
     }
     if (granularity === "day") cursor.setDate(cursor.getDate() + 1);
     else if (granularity === "week") cursor.setDate(cursor.getDate() + 7);
-    else cursor.setMonth(cursor.getMonth() + 1);
+    else {
+      // Step from the 1st so a start on the 31st can't skip a short month.
+      cursor.setDate(1);
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+  // The stepping can skip the final partial week/month — always include it.
+  const lastKey = bucketKey(end, granularity);
+  if (!bucketsMap.has(lastKey)) {
+    bucketsMap.set(lastKey, { key: lastKey, label: bucketLabel(lastKey, granularity), revenue: 0, profit: 0, expenses: 0 });
   }
 
   sales.forEach((s) => {
